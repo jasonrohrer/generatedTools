@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Curved HSV Palette Ramp Tool</title>
+<style>
+    :root {
+        --bg: #161616;
+        --panel: #222222;
+        --panel2: #2b2b2b;
+        --text: #eeeeee;
+        --muted: #aaaaaa;
+        --line: #444444;
+        --radius: 12px;
+    }
+
+    * {
+        box-sizing: border-box;
+    }
+
+    body {
+        margin: 0;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.35;
+    }
+
+    h1 {
+        margin: 0 0 6px 0;
+        font-size: 28px;
+        letter-spacing: -0.03em;
+    }
+
+    .subtitle {
+        margin: 0 0 22px 0;
+        color: var(--muted);
+        max-width: 920px;
+    }
+
+    .layout {
+        display: grid;
+        grid-template-columns: minmax(320px, 450px) 1fr;
+        gap: 18px;
+        align-items: start;
+    }
+
+    .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 16px;
+        box-shadow: 0 12px 35px rgba(0,0,0,0.22);
+    }
+
+    .panel h2 {
+        margin: 0 0 14px 0;
+        font-size: 17px;
+        letter-spacing: -0.01em;
+    }
+
+    .control {
+        margin: 0 0 15px 0;
+    }
+
+    .control label {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 6px;
+        color: var(--text);
+        font-size: 13px;
+    }
+
+    .control .value {
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .range-row {
+        display: grid;
+        grid-template-columns: 1fr 82px;
+        gap: 10px;
+        align-items: center;
+    }
+
+    input[type="range"] {
+        width: 100%;
+    }
+
+    input[type="color"] {
+        width: 54px;
+        height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: transparent;
+        padding: 2px;
+    }
+
+    input[type="text"], input[type="number"], textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--text);
+        background: #151515;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    input[type="text"], input[type="number"] {
+        padding: 9px 10px;
+    }
+
+    input[type="number"] {
+        font-size: 12px;
+    }
+
+    .base-row {
+        display: grid;
+        grid-template-columns: 64px 1fr;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 14px;
+    }
+
+    .double {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+    }
+
+    .small-note {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 6px;
+    }
+
+    .sv-wrap {
+        position: relative;
+    }
+
+    canvas {
+        max-width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: #111;
+        display: block;
+    }
+
+    .palette-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+    }
+
+    .palette-grid {
+        display: grid;
+        grid-template-columns: 96px 1fr;
+        gap: 10px;
+        align-items: center;
+    }
+
+    .row-label {
+        color: var(--muted);
+        font-size: 13px;
+        text-align: right;
+        padding-right: 4px;
+    }
+
+    .swatch-row {
+        display: grid;
+        grid-template-columns: repeat(var(--count), minmax(36px, 1fr));
+        gap: 6px;
+    }
+
+    .swatch {
+        min-height: 68px;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.18);
+        overflow: hidden;
+        cursor: pointer;
+        position: relative;
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12);
+    }
+
+    .swatch span {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        padding: 5px 3px;
+        font-size: 10px;
+        text-align: center;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        background: rgba(0,0,0,0.48);
+        color: white;
+        text-shadow: 0 1px 1px black;
+    }
+
+    .export-box {
+        min-height: 132px;
+        resize: vertical;
+        padding: 12px;
+        font-size: 12px;
+    }
+
+    .import-box {
+        min-height: 78px;
+        resize: vertical;
+        padding: 12px;
+        font-size: 12px;
+        margin-top: 10px;
+    }
+
+    button {
+        border: 1px solid var(--line);
+        background: var(--panel2);
+        color: var(--text);
+        border-radius: 9px;
+        padding: 9px 12px;
+        cursor: pointer;
+    }
+
+    button:hover {
+        border-color: #666;
+        background: #343434;
+    }
+
+    .button-row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 10px;
+    }
+
+    .toast {
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        padding: 10px 14px;
+        background: #111;
+        border: 1px solid #555;
+        border-radius: 9px;
+        color: var(--text);
+        opacity: 0;
+        transform: translateY(10px);
+        transition: opacity 160ms ease, transform 160ms ease;
+        pointer-events: none;
+    }
+
+    .toast.visible {
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .section-break {
+        height: 1px;
+        background: var(--line);
+        margin: 16px 0;
+    }
+
+    @media (max-width: 950px) {
+        body {
+            padding: 14px;
+        }
+        .layout {
+            grid-template-columns: 1fr;
+        }
+        .palette-grid {
+            grid-template-columns: 1fr;
+        }
+        .row-label {
+            text-align: left;
+        }
+    }
+</style>
+</head>
+<body>
+    <h1>Curved HSV Palette Ramp Tool</h1>
+    <p class="subtitle">
+        Generate one continuous saturation/value curve from desaturated white to saturated black.
+        The chosen base color pins the curve shape, and the ramp samples beads along that curve while
+        shifting hue toward the highlights and shadows. Then derive warmer/lighter and cooler/darker companion ramps.
+    </p>
+
+    <div class="layout">
+        <div class="panel">
+            <h2>Controls</h2>
+
+            <div class="base-row">
+                <input id="baseColor" type="color" value="#c46b25">
+                <div>
+                    <input id="hexInput" type="text" value="#c46b25" maxlength="7">
+                    <div class="small-note" id="hsvReadout">HSV</div>
+                </div>
+            </div>
+
+            <div class="double">
+                <div class="control">
+                    <label>Swatches <span class="value" id="countVal"></span></label>
+                    <div class="range-row">
+                        <input id="count" type="range" min="3" max="33" step="2" value="11">
+                        <input id="countNum" type="number" min="3" max="33" step="2" value="11">
+                    </div>
+                </div>
+                <div class="control">
+                    <label>Base index <span class="value" id="baseIndexVal"></span></label>
+                    <div class="range-row">
+                        <input id="baseIndex" type="range" min="0" max="10" step="1" value="5">
+                        <input id="baseIndexNum" type="number" min="0" max="10" step="1" value="5">
+                    </div>
+                </div>
+            </div>
+
+            <div class="control">
+                <label>Main ramp hue span <span class="value" id="hueSpanVal"></span></label>
+                <div class="range-row">
+                    <input id="hueSpan" type="range" min="-360" max="360" step="0.5" value="60">
+                    <input id="hueSpanNum" type="number" min="-360" max="360" step="0.1" value="60">
+                </div>
+                <div class="small-note">Signed total span. Positive and negative values ramp around the hue wheel in opposite directions.</div>
+            </div>
+
+            <div class="section-break"></div>
+
+            <div class="control">
+                <label>Highlight reach toward white <span class="value" id="brightReachVal"></span></label>
+                <div class="range-row">
+                    <input id="brightReach" type="range" min="0" max="1" step="0.01" value="0.85">
+                    <input id="brightReachNum" type="number" min="0" max="1" step="0.001" value="0.85">
+                </div>
+            </div>
+
+            <div class="control">
+                <label>Highlight bead spacing <span class="value" id="brightSpacingVal"></span></label>
+                <div class="range-row">
+                    <input id="brightSpacing" type="range" min="0.25" max="4" step="0.01" value="1.00">
+                    <input id="brightSpacingNum" type="number" min="0.25" max="4" step="0.001" value="1.00">
+                </div>
+            </div>
+
+            <div class="control">
+                <label>Shadow reach toward black <span class="value" id="darkReachVal"></span></label>
+                <div class="range-row">
+                    <input id="darkReach" type="range" min="0" max="1" step="0.01" value="0.78">
+                    <input id="darkReachNum" type="number" min="0" max="1" step="0.001" value="0.78">
+                </div>
+            </div>
+
+            <div class="control">
+                <label>Shadow bead spacing <span class="value" id="darkSpacingVal"></span></label>
+                <div class="range-row">
+                    <input id="darkSpacing" type="range" min="0.25" max="4" step="0.01" value="1.00">
+                    <input id="darkSpacingNum" type="number" min="0.25" max="4" step="0.001" value="1.00">
+                </div>
+            </div>
+
+            <div class="control">
+                <label>Implied SV curve gamma <span class="value" id="gammaVal"></span></label>
+                <div class="range-row">
+                    <input id="gammaDisplay" type="range" min="0.01" max="20" step="0.01" value="1.00" disabled>
+                    <input id="gammaDisplayNum" type="number" value="1.00" disabled>
+                </div>
+                <div class="small-note">Read-only. The base color determines the curve: V = 1 - S^gamma.</div>
+            </div>
+
+            <div class="section-break"></div>
+
+            <div class="control">
+                <label>Top ramp hue shift <span class="value" id="topHueVal"></span></label>
+                <div class="range-row">
+                    <input id="topHue" type="range" min="-180" max="180" step="0.5" value="8">
+                    <input id="topHueNum" type="number" min="-180" max="180" step="0.1" value="8">
+                </div>
+            </div>
+            <div class="control">
+                <label>Top ramp value lift <span class="value" id="topValueVal"></span></label>
+                <div class="range-row">
+                    <input id="topValue" type="range" min="0" max="1" step="0.01" value="0.18">
+                    <input id="topValueNum" type="number" min="0" max="1" step="0.001" value="0.18">
+                </div>
+            </div>
+            <div class="control">
+                <label>Top ramp saturation fade <span class="value" id="topSatVal"></span></label>
+                <div class="range-row">
+                    <input id="topSat" type="range" min="0" max="1" step="0.01" value="0.28">
+                    <input id="topSatNum" type="number" min="0" max="1" step="0.001" value="0.28">
+                </div>
+            </div>
+
+            <div class="control">
+                <label>Bottom ramp hue shift <span class="value" id="bottomHueVal"></span></label>
+                <div class="range-row">
+                    <input id="bottomHue" type="range" min="-180" max="180" step="0.5" value="-12">
+                    <input id="bottomHueNum" type="number" min="-180" max="180" step="0.1" value="-12">
+                </div>
+            </div>
+            <div class="control">
+                <label>Bottom ramp value drop <span class="value" id="bottomValueVal"></span></label>
+                <div class="range-row">
+                    <input id="bottomValue" type="range" min="0" max="1" step="0.01" value="0.24">
+                    <input id="bottomValueNum" type="number" min="0" max="1" step="0.001" value="0.24">
+                </div>
+            </div>
+            <div class="control">
+                <label>Bottom ramp saturation boost <span class="value" id="bottomSatVal"></span></label>
+                <div class="range-row">
+                    <input id="bottomSat" type="range" min="0" max="1" step="0.01" value="0.20">
+                    <input id="bottomSatNum" type="number" min="0" max="1" step="0.001" value="0.20">
+                </div>
+            </div>
+
+            <div class="button-row">
+                <button id="reset">Reset defaults</button>
+                <button id="randomBase">Random base color</button>
+            </div>
+        </div>
+
+        <div class="palette-panel">
+            <div class="panel">
+                <h2>Saturation / Value curve</h2>
+                <div class="sv-wrap">
+                    <canvas id="svCanvas" width="520" height="360"></canvas>
+                </div>
+                <div class="small-note">
+                    Horizontal = saturation. Vertical = value. The white-ringed dot is the selected base color.
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Generated ramps</h2>
+                <div id="palette" class="palette-grid"></div>
+                <div class="small-note">Click any swatch to copy its hex value.</div>
+            </div>
+
+            <div class="panel">
+                <h2>Export / import setup</h2>
+                <textarea id="exportBox" class="export-box" spellcheck="false"></textarea>
+                <div class="button-row">
+                    <button id="copySetup">Copy setup</button>
+                    <button id="copyCArray">Copy C array</button>
+                    <button id="copyJson">Copy full JSON</button>
+                </div>
+                <textarea id="importBox" class="import-box" spellcheck="false" placeholder="Paste exported setup JSON here, then click Import setup"></textarea>
+                <div class="button-row">
+                    <button id="importSetup">Import setup</button>
+                    <button id="loadExportText">Load current export into import box</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast">Copied</div>
+
+<script>
+(function() {
+    "use strict";
+
+    var controlIds = [
+        "count", "baseIndex", "hueSpan",
+        "brightReach", "brightSpacing", "darkReach", "darkSpacing",
+        "topHue", "topValue", "topSat", "bottomHue", "bottomValue", "bottomSat"
+    ];
+
+    var allIds = [
+        "baseColor", "hexInput", "gammaDisplay", "gammaDisplayNum",
+        "countNum", "baseIndexNum", "hueSpanNum",
+        "brightReachNum", "brightSpacingNum", "darkReachNum", "darkSpacingNum",
+        "topHueNum", "topValueNum", "topSatNum", "bottomHueNum", "bottomValueNum", "bottomSatNum"
+    ].concat( controlIds );
+
+    var el = {};
+    var i;
+    for( i = 0; i < allIds.length; i++ ) {
+        el[ allIds[i] ] = document.getElementById( allIds[i] );
+    }
+
+    var labels = {
+        count: document.getElementById( "countVal" ),
+        baseIndex: document.getElementById( "baseIndexVal" ),
+        hueSpan: document.getElementById( "hueSpanVal" ),
+        brightReach: document.getElementById( "brightReachVal" ),
+        brightSpacing: document.getElementById( "brightSpacingVal" ),
+        darkReach: document.getElementById( "darkReachVal" ),
+        darkSpacing: document.getElementById( "darkSpacingVal" ),
+        gamma: document.getElementById( "gammaVal" ),
+        topHue: document.getElementById( "topHueVal" ),
+        topValue: document.getElementById( "topValueVal" ),
+        topSat: document.getElementById( "topSatVal" ),
+        bottomHue: document.getElementById( "bottomHueVal" ),
+        bottomValue: document.getElementById( "bottomValueVal" ),
+        bottomSat: document.getElementById( "bottomSatVal" )
+    };
+
+    var svCanvas = document.getElementById( "svCanvas" );
+    var svCtx = svCanvas.getContext( "2d" );
+    var paletteDiv = document.getElementById( "palette" );
+    var exportBox = document.getElementById( "exportBox" );
+    var importBox = document.getElementById( "importBox" );
+    var hsvReadout = document.getElementById( "hsvReadout" );
+    var toast = document.getElementById( "toast" );
+
+    var currentPalette = null;
+
+    function clamp( x, lo, hi ) {
+        if( x < lo ) { return lo; }
+        if( x > hi ) { return hi; }
+        return x;
+    }
+
+    function mod( x, m ) {
+        return ( ( x % m ) + m ) % m;
+    }
+
+    function hex2( n ) {
+        var s = n.toString( 16 );
+        if( s.length < 2 ) { s = "0" + s; }
+        return s;
+    }
+
+    function rgbToHex( r, g, b ) {
+        return "#" + hex2( r ) + hex2( g ) + hex2( b );
+    }
+
+    function parseHexColor( hex ) {
+        var m;
+        hex = String( hex ).trim();
+        m = /^#?([0-9a-fA-F]{6})$/.exec( hex );
+        if( ! m ) { return null; }
+        hex = m[1];
+        return {
+            r: parseInt( hex.substring( 0, 2 ), 16 ),
+            g: parseInt( hex.substring( 2, 4 ), 16 ),
+            b: parseInt( hex.substring( 4, 6 ), 16 )
+        };
+    }
+
+    function rgbToHsv( r, g, b ) {
+        var rr = r / 255;
+        var gg = g / 255;
+        var bb = b / 255;
+        var max = Math.max( rr, gg, bb );
+        var min = Math.min( rr, gg, bb );
+        var d = max - min;
+        var h = 0;
+        var s = ( max === 0 ) ? 0 : d / max;
+        var v = max;
+
+        if( d !== 0 ) {
+            if( max === rr ) {
+                h = 60 * mod( ( gg - bb ) / d, 6 );
+            }
+            else if( max === gg ) {
+                h = 60 * ( ( bb - rr ) / d + 2 );
+            }
+            else {
+                h = 60 * ( ( rr - gg ) / d + 4 );
+            }
+        }
+        return { h: h, s: s, v: v };
+    }
+
+    function hsvToRgb( h, s, v ) {
+        var c, x, m, r1, g1, b1;
+        h = mod( h, 360 );
+        s = clamp( s, 0, 1 );
+        v = clamp( v, 0, 1 );
+
+        c = v * s;
+        x = c * ( 1 - Math.abs( mod( h / 60, 2 ) - 1 ) );
+        m = v - c;
+
+        if( h < 60 ) { r1 = c; g1 = x; b1 = 0; }
+        else if( h < 120 ) { r1 = x; g1 = c; b1 = 0; }
+        else if( h < 180 ) { r1 = 0; g1 = c; b1 = x; }
+        else if( h < 240 ) { r1 = 0; g1 = x; b1 = c; }
+        else if( h < 300 ) { r1 = x; g1 = 0; b1 = c; }
+        else { r1 = c; g1 = 0; b1 = x; }
+
+        return {
+            r: Math.round( ( r1 + m ) * 255 ),
+            g: Math.round( ( g1 + m ) * 255 ),
+            b: Math.round( ( b1 + m ) * 255 )
+        };
+    }
+
+    function curveGammaFromBase( base ) {
+        var s = clamp( base.s, 0.0001, 0.9999 );
+        var oneMinusV = clamp( 1 - base.v, 0.0001, 0.9999 );
+        return clamp( Math.log( oneMinusV ) / Math.log( s ), 0.01, 20 );
+    }
+
+    function curveValueAtS( s, gamma ) {
+        s = clamp( s, 0, 1 );
+        return clamp( 1 - Math.pow( s, gamma ), 0, 1 );
+    }
+
+    function getNum( id ) {
+        return parseFloat( el[id].value );
+    }
+
+    function getInt( id ) {
+        return parseInt( el[id].value, 10 );
+    }
+
+    function getParams() {
+        var count = getInt( "count" );
+        if( count % 2 === 0 ) { count += 1; }
+        count = clamp( count, 3, 33 );
+
+        return {
+            count: count,
+            baseIndex: clamp( getInt( "baseIndex" ), 0, count - 1 ),
+            hueSpan: clamp( getNum( "hueSpan" ), -360, 360 ),
+            brightReach: clamp( getNum( "brightReach" ), 0, 1 ),
+            brightSpacing: clamp( getNum( "brightSpacing" ), 0.25, 4 ),
+            darkReach: clamp( getNum( "darkReach" ), 0, 1 ),
+            darkSpacing: clamp( getNum( "darkSpacing" ), 0.25, 4 ),
+            gamma: 1,
+            topHue: clamp( getNum( "topHue" ), -180, 180 ),
+            topValue: clamp( getNum( "topValue" ), 0, 1 ),
+            topSat: clamp( getNum( "topSat" ), 0, 1 ),
+            bottomHue: clamp( getNum( "bottomHue" ), -180, 180 ),
+            bottomValue: clamp( getNum( "bottomValue" ), 0, 1 ),
+            bottomSat: clamp( getNum( "bottomSat" ), 0, 1 )
+        };
+    }
+
+    function setControl( id, value ) {
+        if( el[id] ) { el[id].value = String( value ); }
+        if( el[id + "Num"] ) { el[id + "Num"].value = String( value ); }
+    }
+
+    function syncControlPair( id, sourceIsNumber ) {
+        var min = parseFloat( el[id].min );
+        var max = parseFloat( el[id].max );
+        var step = parseFloat( el[id].step );
+        var value = sourceIsNumber ? parseFloat( el[id + "Num"].value ) : parseFloat( el[id].value );
+
+        if( isNaN( value ) ) { return; }
+        value = clamp( value, min, max );
+
+        if( id === "count" ) {
+            value = Math.round( value );
+            if( value % 2 === 0 ) { value += 1; }
+            value = clamp( value, min, max );
+        }
+        else if( id === "baseIndex" ) {
+            value = Math.round( value );
+        }
+        else if( sourceIsNumber && step > 0 ) {
+            /* Keep typed values precise. The slider will quantize visually, but the text field is the source. */
+        }
+
+        el[id].value = String( value );
+        el[id + "Num"].value = String( value );
+        updateAll();
+    }
+
+    function sampleMainRamp( base, p ) {
+        var ramp = [];
+        var denomLeft = Math.max( 1, p.baseIndex );
+        var denomRight = Math.max( 1, p.count - 1 - p.baseIndex );
+        var gamma = curveGammaFromBase( base );
+        var baseS = clamp( base.s, 0.0001, 0.9999 );
+        var k, rawT, sideU, spaceU, h, s, v, rgb, hueOffset;
+
+        p.gamma = gamma;
+        el.gammaDisplay.value = String( gamma );
+        el.gammaDisplayNum.value = gamma.toFixed( 6 );
+
+        for( k = 0; k < p.count; k++ ) {
+            if( k < p.baseIndex ) {
+                rawT = - ( p.baseIndex - k ) / denomLeft;
+            }
+            else if( k > p.baseIndex ) {
+                rawT = ( k - p.baseIndex ) / denomRight;
+            }
+            else {
+                rawT = 0;
+            }
+
+            sideU = Math.abs( rawT );
+
+            if( rawT >= 0 ) {
+                /* Toward desaturated white: S moves toward 0 along the fixed curve. */
+                spaceU = Math.pow( sideU, p.brightSpacing );
+                s = baseS - baseS * p.brightReach * spaceU;
+            }
+            else {
+                /* Toward saturated black: S moves toward 1 along the fixed curve. */
+                spaceU = Math.pow( sideU, p.darkSpacing );
+                s = baseS + ( 1 - baseS ) * p.darkReach * spaceU;
+            }
+
+            v = curveValueAtS( s, gamma );
+
+            if( k === p.baseIndex ) {
+                s = base.s;
+                v = base.v;
+            }
+
+            /* Signed total hue swing, independent of bead count. */
+            hueOffset = rawT * 0.5 * p.hueSpan;
+            h = base.h + hueOffset;
+
+            rgb = hsvToRgb( h, s, v );
+            ramp.push( {
+                h: mod( h, 360 ),
+                s: clamp( s, 0, 1 ),
+                v: clamp( v, 0, 1 ),
+                r: rgb.r,
+                g: rgb.g,
+                b: rgb.b,
+                hex: rgbToHex( rgb.r, rgb.g, rgb.b ),
+                rawT: rawT,
+                u: rawT < 0 ? -sideU : sideU
+            } );
+        }
+
+        return ramp;
+    }
+
+    function deriveRamp( middle, hueShift, valueShift, satShift ) {
+        var ramp = [];
+        var k, c, h, s, v, rgb;
+        for( k = 0; k < middle.length; k++ ) {
+            c = middle[k];
+            h = c.h + hueShift;
+
+            if( valueShift >= 0 ) {
+                v = c.v + ( 1 - c.v ) * valueShift;
+            }
+            else {
+                v = c.v * ( 1 + valueShift );
+            }
+
+            if( satShift >= 0 ) {
+                s = c.s + ( 1 - c.s ) * satShift;
+            }
+            else {
+                s = c.s * ( 1 + satShift );
+            }
+
+            rgb = hsvToRgb( h, s, v );
+            ramp.push( {
+                h: mod( h, 360 ),
+                s: clamp( s, 0, 1 ),
+                v: clamp( v, 0, 1 ),
+                r: rgb.r,
+                g: rgb.g,
+                b: rgb.b,
+                hex: rgbToHex( rgb.r, rgb.g, rgb.b )
+            } );
+        }
+        return ramp;
+    }
+
+    function generatePalette() {
+        var rgb = parseHexColor( el.hexInput.value );
+        var base, p, middle, top, bottom;
+
+        if( ! rgb ) {
+            rgb = parseHexColor( el.baseColor.value );
+        }
+
+        base = rgbToHsv( rgb.r, rgb.g, rgb.b );
+        p = getParams();
+
+        if( p.baseIndex > p.count - 1 ) {
+            p.baseIndex = Math.floor( p.count / 2 );
+            setControl( "baseIndex", p.baseIndex );
+        }
+
+        middle = sampleMainRamp( base, p );
+        top = deriveRamp( middle, p.topHue, p.topValue, -p.topSat );
+        bottom = deriveRamp( middle, p.bottomHue, -p.bottomValue, p.bottomSat );
+
+        currentPalette = {
+            version: 2,
+            baseColor: el.hexInput.value,
+            base: base,
+            params: p,
+            rows: [
+                { name: "warm / light", colors: top },
+                { name: "middle", colors: middle },
+                { name: "cool / dark", colors: bottom }
+            ]
+        };
+    }
+
+    function updateControlLimitsAndDisplays() {
+        var p = getParams();
+
+        el.baseIndex.max = String( p.count - 1 );
+        el.baseIndexNum.max = String( p.count - 1 );
+
+        setControl( "count", p.count );
+        setControl( "baseIndex", p.baseIndex );
+        setControl( "hueSpan", p.hueSpan );
+        setControl( "brightReach", p.brightReach );
+        setControl( "brightSpacing", p.brightSpacing );
+        setControl( "darkReach", p.darkReach );
+        setControl( "darkSpacing", p.darkSpacing );
+        setControl( "topHue", p.topHue );
+        setControl( "topValue", p.topValue );
+        setControl( "topSat", p.topSat );
+        setControl( "bottomHue", p.bottomHue );
+        setControl( "bottomValue", p.bottomValue );
+        setControl( "bottomSat", p.bottomSat );
+    }
+
+    function updateLabels() {
+        var p = currentPalette ? currentPalette.params : getParams();
+
+        labels.count.textContent = p.count;
+        labels.baseIndex.textContent = p.baseIndex;
+        labels.hueSpan.textContent = p.hueSpan.toFixed( 1 ) + "° total";
+        labels.brightReach.textContent = p.brightReach.toFixed( 3 );
+        labels.brightSpacing.textContent = p.brightSpacing.toFixed( 3 );
+        labels.darkReach.textContent = p.darkReach.toFixed( 3 );
+        labels.darkSpacing.textContent = p.darkSpacing.toFixed( 3 );
+        labels.gamma.textContent = p.gamma.toFixed( 6 );
+        labels.topHue.textContent = p.topHue.toFixed( 1 ) + "°";
+        labels.topValue.textContent = p.topValue.toFixed( 3 );
+        labels.topSat.textContent = p.topSat.toFixed( 3 );
+        labels.bottomHue.textContent = p.bottomHue.toFixed( 1 ) + "°";
+        labels.bottomValue.textContent = p.bottomValue.toFixed( 3 );
+        labels.bottomSat.textContent = p.bottomSat.toFixed( 3 );
+    }
+
+    function drawSVCanvas() {
+        var w = svCanvas.width;
+        var h = svCanvas.height;
+        var image = svCtx.createImageData( w, h );
+        var data = image.data;
+        var baseH = currentPalette.base.h;
+        var x, y, s, v, rgb, idx;
+        var ramp = currentPalette.rows[1].colors;
+        var k, cx, cy;
+        var gamma = currentPalette.params.gamma;
+        var steps = 180;
+        var curveS, curveV;
+
+        for( y = 0; y < h; y++ ) {
+            v = 1 - y / ( h - 1 );
+            for( x = 0; x < w; x++ ) {
+                s = x / ( w - 1 );
+                rgb = hsvToRgb( baseH, s, v );
+                idx = 4 * ( y * w + x );
+                data[idx] = rgb.r;
+                data[idx + 1] = rgb.g;
+                data[idx + 2] = rgb.b;
+                data[idx + 3] = 255;
+            }
+        }
+        svCtx.putImageData( image, 0, 0 );
+
+        /* Draw full continuous endpoint-to-endpoint curve. */
+        svCtx.lineWidth = 3;
+        svCtx.strokeStyle = "rgba(255,255,255,0.92)";
+        svCtx.beginPath();
+        for( k = 0; k <= steps; k++ ) {
+            curveS = k / steps;
+            curveV = curveValueAtS( curveS, gamma );
+            cx = curveS * ( w - 1 );
+            cy = ( 1 - curveV ) * ( h - 1 );
+            if( k === 0 ) { svCtx.moveTo( cx, cy ); }
+            else { svCtx.lineTo( cx, cy ); }
+        }
+        svCtx.stroke();
+
+        /* Highlight the actually used segment. */
+        svCtx.lineWidth = 5;
+        svCtx.strokeStyle = "rgba(255,255,255,0.36)";
+        svCtx.beginPath();
+        for( k = 0; k < ramp.length; k++ ) {
+            cx = ramp[k].s * ( w - 1 );
+            cy = ( 1 - ramp[k].v ) * ( h - 1 );
+            if( k === 0 ) { svCtx.moveTo( cx, cy ); }
+            else { svCtx.lineTo( cx, cy ); }
+        }
+        svCtx.stroke();
+
+        svCtx.lineWidth = 1;
+        for( k = 0; k < ramp.length; k++ ) {
+            cx = ramp[k].s * ( w - 1 );
+            cy = ( 1 - ramp[k].v ) * ( h - 1 );
+            svCtx.fillStyle = ramp[k].hex;
+            svCtx.strokeStyle = "rgba(0,0,0,0.75)";
+            svCtx.beginPath();
+            svCtx.arc( cx, cy, k === currentPalette.params.baseIndex ? 7 : 5, 0, Math.PI * 2 );
+            svCtx.fill();
+            svCtx.stroke();
+        }
+
+        k = currentPalette.params.baseIndex;
+        cx = ramp[k].s * ( w - 1 );
+        cy = ( 1 - ramp[k].v ) * ( h - 1 );
+        svCtx.strokeStyle = "white";
+        svCtx.lineWidth = 2;
+        svCtx.beginPath();
+        svCtx.arc( cx, cy, 10, 0, Math.PI * 2 );
+        svCtx.stroke();
+    }
+
+    function renderPalette() {
+        var rows = currentPalette.rows;
+        var html = "";
+        var r, k, row, c;
+
+        paletteDiv.style.setProperty( "--count", currentPalette.params.count );
+
+        for( r = 0; r < rows.length; r++ ) {
+            row = rows[r];
+            html += '<div class="row-label">' + row.name + '</div>';
+            html += '<div class="swatch-row">';
+            for( k = 0; k < row.colors.length; k++ ) {
+                c = row.colors[k];
+                html += '<div class="swatch" data-hex="' + c.hex + '" style="background:' + c.hex + '">';
+                html += '<span>' + c.hex.toUpperCase() + '</span></div>';
+            }
+            html += '</div>';
+        }
+        paletteDiv.innerHTML = html;
+    }
+
+    function makeSetupExport() {
+        return JSON.stringify( {
+            type: "curved-hsv-palette-setup",
+            version: 2,
+            baseColor: el.hexInput.value,
+            params: currentPalette.params
+        }, null, 2 );
+    }
+
+    function makeFullJsonExport() {
+        var out = {
+            type: "curved-hsv-palette-full",
+            version: 2,
+            baseColor: el.hexInput.value,
+            params: currentPalette.params,
+            rows: currentPalette.rows.map( function( row ) {
+                return {
+                    name: row.name,
+                    colors: row.colors.map( function( c ) { return c.hex; } )
+                };
+            } )
+        };
+        return JSON.stringify( out, null, 2 );
+    }
+
+    function makeCArrayExport() {
+        var lines = [];
+        var rows = currentPalette.rows;
+        var r, k, c;
+
+        lines.push( "static unsigned char palette[3][" + currentPalette.params.count + "][3] = {" );
+        for( r = 0; r < rows.length; r++ ) {
+            lines.push( "    {  /* " + rows[r].name + " */" );
+            for( k = 0; k < rows[r].colors.length; k++ ) {
+                c = rows[r].colors[k];
+                lines.push(
+                    "        { " + c.r + ", " + c.g + ", " + c.b + " }" +
+                    ( k < rows[r].colors.length - 1 ? "," : "" )
+                );
+            }
+            lines.push( "    }" + ( r < rows.length - 1 ? "," : "" ) );
+        }
+        lines.push( "};" );
+
+        return lines.join( String.fromCharCode( 10 ) );
+    }
+
+    function updateExport() {
+        exportBox.value = makeSetupExport();
+    }
+
+    function updateReadout() {
+        var base = currentPalette.base;
+        hsvReadout.textContent =
+            "H " + base.h.toFixed( 1 ) + "°  S " + base.s.toFixed( 3 ) + "  V " + base.v.toFixed( 3 );
+    }
+
+    function updateAll() {
+        updateControlLimitsAndDisplays();
+        generatePalette();
+        updateLabels();
+        updateReadout();
+        drawSVCanvas();
+        renderPalette();
+        updateExport();
+    }
+
+    function showToast( text ) {
+        toast.textContent = text;
+        toast.className = "toast visible";
+        window.setTimeout( function() {
+            toast.className = "toast";
+        }, 900 );
+    }
+
+    function copyText( text, message ) {
+        if( navigator.clipboard && navigator.clipboard.writeText ) {
+            navigator.clipboard.writeText( text ).then( function() {
+                showToast( message );
+            } );
+        }
+        else {
+            exportBox.value = text;
+            exportBox.select();
+            document.execCommand( "copy" );
+            showToast( message );
+        }
+    }
+
+    function syncHexFromColor() {
+        el.hexInput.value = el.baseColor.value;
+        updateAll();
+    }
+
+    function syncColorFromHex() {
+        var rgb = parseHexColor( el.hexInput.value );
+        if( rgb ) {
+            el.baseColor.value = rgbToHex( rgb.r, rgb.g, rgb.b );
+            updateAll();
+        }
+    }
+
+    function setDefaults() {
+        el.baseColor.value = "#c46b25";
+        el.hexInput.value = "#c46b25";
+        setControl( "count", 11 );
+        setControl( "baseIndex", 5 );
+        setControl( "hueSpan", 60 );
+        setControl( "brightReach", 0.85 );
+        setControl( "brightSpacing", 1.00 );
+        setControl( "darkReach", 0.78 );
+        setControl( "darkSpacing", 1.00 );
+        setControl( "topHue", 8 );
+        setControl( "topValue", 0.18 );
+        setControl( "topSat", 0.28 );
+        setControl( "bottomHue", -12 );
+        setControl( "bottomValue", 0.24 );
+        setControl( "bottomSat", 0.20 );
+        updateAll();
+    }
+
+    function randomBaseColor() {
+        var h = Math.random() * 360;
+        var s = 0.45 + Math.random() * 0.45;
+        var v = 0.45 + Math.random() * 0.35;
+        var rgb = hsvToRgb( h, s, v );
+        var hex = rgbToHex( rgb.r, rgb.g, rgb.b );
+        el.baseColor.value = hex;
+        el.hexInput.value = hex;
+        updateAll();
+    }
+
+    function handleSVPointer( event ) {
+        var rect = svCanvas.getBoundingClientRect();
+        var x = clamp( ( event.clientX - rect.left ) / rect.width, 0, 1 );
+        var y = clamp( ( event.clientY - rect.top ) / rect.height, 0, 1 );
+        var base = currentPalette.base;
+        var rgb = hsvToRgb( base.h, x, 1 - y );
+        var hex = rgbToHex( rgb.r, rgb.g, rgb.b );
+        el.baseColor.value = hex;
+        el.hexInput.value = hex;
+        updateAll();
+    }
+
+    function importSetupFromText( text ) {
+        var data, params, rgb;
+
+        try {
+            data = JSON.parse( text );
+        }
+        catch( e ) {
+            showToast( "Import failed: invalid JSON" );
+            return;
+        }
+
+        if( data.baseColor ) {
+            rgb = parseHexColor( data.baseColor );
+            if( rgb ) {
+                el.baseColor.value = rgbToHex( rgb.r, rgb.g, rgb.b );
+                el.hexInput.value = rgbToHex( rgb.r, rgb.g, rgb.b );
+            }
+        }
+
+        params = data.params || data;
+
+        if( typeof params.count !== "undefined" ) { setControl( "count", params.count ); }
+        if( typeof params.baseIndex !== "undefined" ) { setControl( "baseIndex", params.baseIndex ); }
+        if( typeof params.hueSpan !== "undefined" ) { setControl( "hueSpan", params.hueSpan ); }
+        else if( typeof params.hueRange !== "undefined" ) { setControl( "hueSpan", params.hueRange ); }
+        else if( typeof params.hueStep !== "undefined" ) { setControl( "hueSpan", params.hueStep ); }
+
+        if( typeof params.brightReach !== "undefined" ) { setControl( "brightReach", params.brightReach ); }
+        else if( typeof params.brightValue !== "undefined" ) { setControl( "brightReach", params.brightValue ); }
+
+        if( typeof params.brightSpacing !== "undefined" ) { setControl( "brightSpacing", params.brightSpacing ); }
+        else if( typeof params.brightSat !== "undefined" ) { setControl( "brightSpacing", params.brightSat ); }
+
+        if( typeof params.darkReach !== "undefined" ) { setControl( "darkReach", params.darkReach ); }
+        else if( typeof params.darkValue !== "undefined" ) { setControl( "darkReach", params.darkValue ); }
+
+        if( typeof params.darkSpacing !== "undefined" ) { setControl( "darkSpacing", params.darkSpacing ); }
+        else if( typeof params.darkSat !== "undefined" ) { setControl( "darkSpacing", params.darkSat ); }
+
+        if( typeof params.topHue !== "undefined" ) { setControl( "topHue", params.topHue ); }
+        if( typeof params.topValue !== "undefined" ) { setControl( "topValue", params.topValue ); }
+        if( typeof params.topSat !== "undefined" ) { setControl( "topSat", params.topSat ); }
+        if( typeof params.bottomHue !== "undefined" ) { setControl( "bottomHue", params.bottomHue ); }
+        if( typeof params.bottomValue !== "undefined" ) { setControl( "bottomValue", params.bottomValue ); }
+        if( typeof params.bottomSat !== "undefined" ) { setControl( "bottomSat", params.bottomSat ); }
+
+        updateAll();
+        showToast( "Imported setup" );
+    }
+
+    for( i = 0; i < controlIds.length; i++ ) {
+        (function( id ) {
+            el[id].addEventListener( "input", function() {
+                syncControlPair( id, false );
+            } );
+            el[id + "Num"].addEventListener( "change", function() {
+                syncControlPair( id, true );
+            } );
+            el[id + "Num"].addEventListener( "keydown", function( event ) {
+                if( event.key === "Enter" ) {
+                    syncControlPair( id, true );
+                    el[id + "Num"].blur();
+                }
+            } );
+        }( controlIds[i] ));
+    }
+
+    el.baseColor.addEventListener( "input", syncHexFromColor );
+    el.hexInput.addEventListener( "input", syncColorFromHex );
+
+    document.getElementById( "reset" ).addEventListener( "click", setDefaults );
+    document.getElementById( "randomBase" ).addEventListener( "click", randomBaseColor );
+
+    document.getElementById( "copySetup" ).addEventListener( "click", function() {
+        var text = makeSetupExport();
+        exportBox.value = text;
+        copyText( text, "Copied setup" );
+    } );
+
+    document.getElementById( "copyJson" ).addEventListener( "click", function() {
+        var text = makeFullJsonExport();
+        exportBox.value = text;
+        copyText( text, "Copied full JSON" );
+    } );
+
+    document.getElementById( "copyCArray" ).addEventListener( "click", function() {
+        var text = makeCArrayExport();
+        exportBox.value = text;
+        copyText( text, "Copied C array" );
+    } );
+
+    document.getElementById( "loadExportText" ).addEventListener( "click", function() {
+        importBox.value = exportBox.value;
+        showToast( "Loaded export text" );
+    } );
+
+    document.getElementById( "importSetup" ).addEventListener( "click", function() {
+        importSetupFromText( importBox.value );
+    } );
+
+    paletteDiv.addEventListener( "click", function( event ) {
+        var node = event.target;
+        while( node && ! node.getAttribute( "data-hex" ) ) {
+            node = node.parentNode;
+        }
+        if( node ) {
+            copyText(
+                node.getAttribute( "data-hex" ).toUpperCase(),
+                "Copied " + node.getAttribute( "data-hex" ).toUpperCase()
+            );
+        }
+    } );
+
+    svCanvas.addEventListener( "pointerdown", function( event ) {
+        svCanvas.setPointerCapture( event.pointerId );
+        handleSVPointer( event );
+    } );
+
+    svCanvas.addEventListener( "pointermove", function( event ) {
+        if( event.buttons ) {
+            handleSVPointer( event );
+        }
+    } );
+
+    updateAll();
+}());
+</script>
+</body>
+</html>

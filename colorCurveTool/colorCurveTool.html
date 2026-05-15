@@ -441,6 +441,7 @@
                     <button id="copySetup">Copy setup</button>
                     <button id="copyCArray">Copy C array</button>
                     <button id="copyJson">Copy full JSON</button>
+                    <button id="copyGPL">Copy Aseprite .gpl palette</button>
                 </div>
                 <textarea id="importBox" class="import-box" spellcheck="false" placeholder="Paste exported setup JSON here, then click Import setup"></textarea>
                 <div class="button-row">
@@ -971,7 +972,30 @@
         lines.push( "};" );
 
         return lines.join( String.fromCharCode( 10 ) );
-    }
+										}
+
+	function makeGPLPalette() {
+		if (!currentPalette) return "";
+		var lines = [];
+		lines.push("GIMP Palette");
+		lines.push("Name: CurvedHSV");
+		lines.push("Columns: " + currentPalette.params.count);
+		lines.push("#");
+		
+		// Combine all rows into one sequential list for the GPL file
+		var allColors = [];
+		currentPalette.rows.forEach(function(row){
+			row.colors.forEach(function(c){
+				allColors.push(c);
+			});
+		});
+		
+		allColors.forEach(function(c){
+			lines.push(c.r + " " + c.g + " " + c.b + "\t" + c.hex);
+		});
+		
+		return lines.join(String.fromCharCode(10));
+	}
 
     function updateExport() {
         exportBox.value = makeSetupExport();
@@ -1160,6 +1184,11 @@
         exportBox.value = text;
         copyText( text, "Copied C array" );
     } );
+
+    document.getElementById("copyGPL").addEventListener("click", function(){
+        var text = makeGPLPalette();
+        copyText(text, "Copied .gpl palette");
+    });
 
     document.getElementById( "loadExportText" ).addEventListener( "click", function() {
         importBox.value = exportBox.value;

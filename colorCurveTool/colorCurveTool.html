@@ -1094,10 +1094,24 @@
         updateAll();
     }
 
+    function cleanJsonTextForImport( text ) {
+        return text
+        /* Normalize weird Unicode spaces to regular spaces. */
+        .replace( /[\u00A0\u1680\u180E\u2000-\u200A\u202F\u205F\u3000]/g, " " )
+
+        /* Normalize curly quotes, just in case. */
+        .replace( /[\u201C\u201D]/g, "\"" )
+        .replace( /[\u2018\u2019]/g, "'" )
+
+        /* Strip UTF-8 BOM if present. */
+        .replace( /^\uFEFF/, "" );
+    }
+										
     function importSetupFromText( text ) {
         var data, params, rgb;
 
         try {
+            text = cleanJsonTextForImport( text );
             data = JSON.parse( text );
         }
         catch( e ) {

@@ -2,7 +2,7 @@
 //
 // Appends the color ramps found in a PNG to a GIMP (.gpl) palette.
 //
-// Usage:  rampToGpl <input.gpl> <ramps.png> <output.gpl>
+// Usage:  rampToGpl <input.gpl> <ramps.png> <output.gpl> [gridWidth]
 //
 // The PNG holds one ramp per row.  A row is treated as a "spacer" (and
 // skipped) if every pixel in it is the same color -- these are just visual
@@ -10,6 +10,15 @@
 // the color changes at least once is a ramp, and ALL of its pixels are added
 // to the palette, including any repeated "padding" pixels at the start or end
 // of a shorter ramp, so that the ramps stay aligned when loaded into aseprite.
+//
+// The palette is aligned to a grid that is gridWidth squares wide.  gridWidth
+// defaults to the PNG width (the ramp width), but can be given as an optional
+// fourth argument so that several palettes can share one fixed row width in
+// aseprite (aseprite keeps the palette-area width fixed when switching files).
+// Two kinds of padding keep everything aligned to that grid:
+//   - tail padding after the main palette, filling out its last partial row;
+//   - left padding on each ramp, when gridWidth is wider than the ramp, so
+//     every ramp still occupies exactly one full grid row.
 //
 // Only stb_image.h and the C standard library are used.  It compiles with a
 // bare "gcc rampToGpl.c" -- no -lm or other linked libraries needed, because
@@ -55,14 +64,27 @@ static int rowIsSpacer( const unsigned char *img, int w, int y ) {
 
 
 int main( int argc, char **argv ) {
-    if( argc != 4 ) {
+    if( argc != 4 && argc != 5 ) {
         fprintf( stderr,
-                 "Usage: %s <input.gpl> <ramps.png> <output.gpl>\n", argv[0] );
+                 "Usage: %s <input.gpl> <ramps.png> <output.gpl> [gridWidth]\n",
+                 argv[0] );
         return 1;
     }
     const char *inGpl  = argv[1];
     const char *inPng  = argv[2];
     const char *outGpl = argv[3];
+
+    // Optional gridWidth override (0 means "derive from the PNG width").
+    int gridWidthArg = 0;
+    if( argc == 5 ) {
+        gridWidthArg = atoi( argv[4] );
+        if( gridWidthArg <= 0 ) {
+            fprintf( stderr,
+                     "Error: gridWidth must be a positive integer, got '%s'\n",
+                     argv[4] );
+            return 1;
+        }
+    }
 
     // Read the whole input palette into memory.
     FILE *f = fopen( inGpl, "rb" );
@@ -102,10 +124,10 @@ int main( int argc, char **argv ) {
         return 1;
     }
 
-    // Count how many palette entries the ramps will add, and find the padding
-    // color: the color of the spacer rows in the PNG (which is also the color
-    // used to pad shorter ramps).  Fall back to black if there are no spacers.
-    int rampPixels = 0;
+    // Count the ramp rows, and find the padding color: the color of the spacer
+    // rows in the PNG (which is also the color used to pad shorter ramps).
+    // Fall back to black if there are no spacers.
+    int rampRows = 0;
     unsigned char padColor[3] = { 0, 0, 0 };
     int foundPadColor = 0;
     for( int y = 0; y < h; y++ ) {
@@ -119,8 +141,22 @@ int main( int argc, char **argv ) {
             }
         }
         else {
-            rampPixels += w;
+            rampRows++;
         }
+    }
+
+    // The grid width: the ramp width by default, or the override if given.
+    int gridWidth = gridWidthArg > 0 ? gridWidthArg : w;
+
+    // When the grid is wider than a ramp, pad each ramp on its LEFT edge so it
+    // still fills exactly one grid row.  A grid narrower than the ramp can't be
+    // aligned (the ramp would wrap), so warn and add no left padding.
+    int leftPad = gridWidth - w;
+    if( leftPad < 0 ) {
+        fprintf( stderr,
+                 "Warning: gridWidth (%d) is narrower than the ramp width "
+                 "(%d); ramps will wrap and won't align.\n", gridWidth, w );
+        leftPad = 0;
     }
 
     // Count the palette entries already present.
@@ -135,12 +171,11 @@ int main( int argc, char **argv ) {
         p = nl + 1;
     }
 
-    // Aseprite lays the palette out in a grid that is one ramp (w squares)
-    // wide.  For the ramps to start on a fresh row, the number of entries
-    // before them must be a multiple of w, so pad the tail of the main palette
-    // with padColor to fill out its last partial row.
-    int padCount = ( w - ( existing % w ) ) % w;
-    int newTotal = existing + padCount + rampPixels;
+    // Pad the tail of the main palette to fill out its last partial grid row so
+    // the ramps start on a fresh row.
+    int tailPad = ( gridWidth - ( existing % gridWidth ) ) % gridWidth;
+    int rampPixels = rampRows * ( leftPad + w );
+    int newTotal = existing + tailPad + rampPixels;
 
     // Write the output palette.
     FILE *o = fopen( outGpl, "wb" );
@@ -172,20 +207,26 @@ int main( int argc, char **argv ) {
     }
 
     // Pad out the last partial row of the main palette so the ramps align.
-    if( padCount > 0 ) {
+    if( tailPad > 0 ) {
         fprintf( o, "#Padding to align ramps%s", NL );
-        for( int i = 0; i < padCount; i++ ) {
+        for( int i = 0; i < tailPad; i++ ) {
             fprintf( o, "%d\t%d\t%d\t%02x%02x%02x%s",
                      padColor[0], padColor[1], padColor[2],
                      padColor[0], padColor[1], padColor[2], NL );
         }
     }
 
-    // Append the ramps.
+    // Append the ramps, each preceded by leftPad padding squares so it fills a
+    // full grid row.
     fprintf( o, "#Ramps%s", NL );
     for( int y = 0; y < h; y++ ) {
         if( rowIsSpacer( img, w, y ) ) {
             continue;
+        }
+        for( int i = 0; i < leftPad; i++ ) {
+            fprintf( o, "%d\t%d\t%d\t%02x%02x%02x%s",
+                     padColor[0], padColor[1], padColor[2],
+                     padColor[0], padColor[1], padColor[2], NL );
         }
         const unsigned char *row = img + (size_t)y * w * 3;
         for( int x = 0; x < w; x++ ) {
@@ -200,7 +241,9 @@ int main( int argc, char **argv ) {
     stbi_image_free( img );
     free( buf );
 
-    printf( "Wrote '%s': %d existing + %d padding + %d ramp = %d colors\n",
-            outGpl, existing, padCount, rampPixels, newTotal );
+    printf( "Wrote '%s': gridWidth %d, %d existing + %d tail-pad + %d ramp "
+            "(%d rows x %d) = %d colors\n",
+            outGpl, gridWidth, existing, tailPad, rampPixels,
+            rampRows, leftPad + w, newTotal );
     return 0;
 }

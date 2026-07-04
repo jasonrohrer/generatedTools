@@ -1,0 +1,20 @@
+In this folder, you are going to make a brand new, clean-room graphical audio editor.  Not a DAW, but just an audio editor like Audacity, OceanAudio, SoundForge, etc..
+
+You may find this folder empty, in which case, you're just getting started.  On the other hand, you may find that someone before you has already made some progress.  If that's the case, pick up where they left off, analyze the current situation, and try to make some improvements.
+
+Also, as users test your audio editor, they will leave notes about any issues or problems in userNotes.txt  Please study that file and fix any reported issues.
+
+The program will be written in pure C89 code, to be compiled with GCC.  The only linked library dependencies will be SDL 2 and OpenGL for creating a window and doing accellerated graphics, and also for sound output.  You can also link against libpthread if that's useful for audio file playback, file loading, etc.  But go easy on the threads and only use when necessary.
+
+For graphical user interface stuff, you will compile in IMGui code, which you will find already in a sub-folder here.  For OGG input and output, compile in stb_vorbis.c, which you will find here.  For WAV input and output, please roll your own code, and do the same for other audio formats (but only WAV and OGG should be supported, at first).
+
+
+This editor focuses on editing only.  So it only needs playback features, no recording.  Assume you can mix all channels together, with pans, for 2-channel stereo output during playback.
+
+The main thing about this new audio editor is that it is FAST and STABLE.  All of the existing audio editors on linux are slow, bloated, and unstable.  This new one should launch INSTANTLY.
+
+In terms of effects, only basic things are needed for now, like Normalize, trimming, copy/paste, fade in, fade out, etc.
+
+You can launch your audio editor and grab screen shots of it with scrot to see if it looks correct.  I think there's some way you can do this in some kind of x headless display without making a window appear on my screen and interfering with other work that I'm doing on this computer.
+
+After you work on this program, please commit your changes to the local git repo with a detailed commit message describing what you did.

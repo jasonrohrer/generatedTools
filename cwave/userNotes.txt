@@ -1,4 +1,16 @@
+Looking good so far!
 
+Notes:
+
+--When trying to trim audio (trim to selection), it crashes.  Copy-paste, and trimming manually with the delete operation, work fine, though.
+
+--There's no way to scroll... instead of scroll bars, can there be a mini waveform overview bar, probably at the top, under the menus.  It should show a highlighted region, representing what's visible in the main waveform view, and you should be able to drag that region around.
+
+--Opening a large file is slow, and takes a few seconds.  There should probably be a progress bar (instead of a half-drawn window, which happens when opening a large file from the command line).
+
+--Zooming in and out gets slow when the wav file is large, especially when you go to zoom way out and then back in.  All manipulations get slow, including moving the selection box around.  See glz.wav in this folder as an example.  You probably need to cache waveform images at various scales somehow, or something to speed it up when manipulating large files from a zoomed-out view.
+
+--Editing selection while holding shift works great, but you should be able to edit the loop start/end while it's playing.  Currently, if you edit the selection during the loop, the old loop points are used (the ones set with the selection before hitting play).
 
 
 

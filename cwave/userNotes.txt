@@ -11,6 +11,25 @@ Notes:
 --For some reason, when I tried opening an 8kHz test file, the playhead moves in a jerky fashion.  It moves very smoothly in the 44.1 files that I've tested.  Look at GLASS.WAV in this folder as an example.
 
 
+Otherwise, things are looking great in terms of functionality.
+
+
+So then, the final big feature:
+
+--We should be able to open multiple files, simultaneously, as tabs that appear at the top of the screen, below the menus.
+
+--We should be able to copy-paste between files.
+
+--"New" should be able to specify how many tracks, and what sample rate, and what sample format (24 bit, 16 bit, 8 bit, 32-bit float, etc... whatever WAV supports).
+
+--Since you could, potentially, paste stuff taken from different files, the pasted samples will just be interpreted at the destination sample rate (no need for rate conversion when pasting).  And I guess... if there's a sample format conversion that needs to happen during paste, it should just happen.
+
+--Of course, each open file should have its own marks, undo chain, pre-rendered waveform views, etc.
+
+--Switching tabs should be instant.
+
+
+
 
 
 

@@ -133,17 +133,31 @@ structural edit call `marksAdjustInsert(at,len)` / `marksAdjustDelete(s,e)`;
 trim remaps manually; effects on a selection drop marks at the edges. Auto-made
 at edit seams; manual via `M` / Marks menu. Selection edges snap to a nearby
 mark in screen space (`snapFrameToMark`). Click a caret to select, shift-click
-for multi; delete via menu. **If you add an edit that changes length, you MUST
-adjust marks or they'll point at the wrong samples.** Each mark carries a
-`color` index into the 8-hue `markColors[]` palette; a group made together (a
-selection's two edges, a paste's two seams, a lone cursor mark) shares one hue
-from `newMarkColor()` so related carets read together. Carets also appear as
-tiny hued triangles in the overview strip.
+for multi; delete via menu (`Delete Selected Marks`, `Clear Marks in Selection`
+— drops every caret inside the current selection — or `Clear All Marks`). **If
+you add an edit that changes length, you MUST adjust marks or they'll point at
+the wrong samples.** Each mark carries a `color` index into the 10-hue
+`markColors[]` palette; blue/cyan is deliberately absent (the waveform is blue),
+so the hues are five bright (orange, yellow, green, magenta, red) + five dark
+(tan, dark green, purple, maroon, brown). A group made together (a selection's
+two edges, a paste's two seams, a lone cursor mark) shares one hue from
+`newMarkColor()` so related carets read together. Carets also appear as tiny
+hued triangles in the overview strip.
+
+**Paste semantics.** `actPaste` lays the clipboard down and leaves it
+*un-selected*, dropping the cursor at the end of the inserted span so repeated
+pastes chain end-to-end ("train cars"). It calls `ensureFrameVisible(end)` so
+the view scrolls to follow the advancing cursor (e.g. pasting at the end keeps
+the growing tail on screen). Seams are still marked.
 
 **Coordinates.** `frameToPixel`/`pixelToFrame` convert using `viewStart` +
 `samplesPerPixel`. `app.wfX/Y/W/H` (wave) and `app.ovX/Y/W/H` (overview) are
 recomputed every frame in `renderWaveform`; input handlers read last frame's
-values, which is fine because layout is stable frame-to-frame.
+values, which is fine because layout is stable frame-to-frame. `clampView`
+allows scrolling `EDGE_PAD_PX` (20px) past either end; that over-scroll region
+is painted solid black in `renderWaveform` as a "beyond the data" boundary cue.
+The overview also shows the bare cursor (yellow) when there is no selection and
+the live playhead (green), mirroring the main view.
 
 ## Style
 

@@ -35,21 +35,27 @@
 #define PATH_MAX_LEN  1024
 #define MAX_MARKS     512       /* marks that can accumulate              */
 #define MARK_SNAP_PX  8.0f      /* selection snaps to a mark within this  */
-#define MARK_NUM_COLORS 8       /* distinct caret colors we cycle through  */
+#define EDGE_PAD_PX   20.0f     /* black scroll-past room beyond start/end */
+#define MARK_NUM_COLORS 10      /* distinct caret colors we cycle through  */
 
-/* A palette of 8 visually distinct caret colors.  Each group of marks made
+/* A palette of 10 visually distinct caret colors.  Each group of marks made
  * together (a selection's two edges, a paste's two seams, or a lone cursor
  * mark) is stamped with the next color in turn, so it is easy to see which
- * carets belong to the same operation. */
+ * carets belong to the same operation.  Cyan/blue hues are deliberately
+ * avoided: the waveform itself is blue, so a blue caret would vanish against
+ * it.  Instead we use five bright hues (orange, yellow, green, magenta, red)
+ * and five darker cousins (tan, dark green, purple, maroon, brown). */
 static const float markColors[MARK_NUM_COLORS][3] = {
-    { 0.95f, 0.60f, 0.20f },   /* orange  */
-    { 0.35f, 0.80f, 1.00f },   /* sky     */
-    { 0.55f, 0.92f, 0.40f },   /* green   */
-    { 1.00f, 0.45f, 0.60f },   /* pink    */
-    { 0.75f, 0.58f, 1.00f },   /* violet  */
-    { 1.00f, 0.85f, 0.30f },   /* yellow  */
-    { 0.35f, 0.95f, 0.78f },   /* teal    */
-    { 1.00f, 0.50f, 0.35f }    /* coral   */
+    { 0.98f, 0.55f, 0.12f },   /* orange     */
+    { 0.95f, 0.85f, 0.20f },   /* yellow     */
+    { 0.35f, 0.85f, 0.30f },   /* green      */
+    { 0.95f, 0.30f, 0.85f },   /* magenta    */
+    { 0.95f, 0.25f, 0.20f },   /* red        */
+    { 0.80f, 0.66f, 0.42f },   /* tan        */
+    { 0.30f, 0.58f, 0.26f },   /* dark green */
+    { 0.62f, 0.38f, 0.90f },   /* purple     */
+    { 0.72f, 0.16f, 0.30f },   /* maroon     */
+    { 0.66f, 0.44f, 0.24f }    /* brown      */
 };
 
 /* -------------------------------------------------------------------- */
@@ -599,6 +605,22 @@ static void deleteSelectedMarks( void )
     else          setStatus( "No marks selected" );
 }
 
+/* delete every mark whose frame lies within the current selection [s,e].
+ * Lets you drag a region and drop all its carets at once, without having to
+ * click each one individually first. */
+static void clearMarksInSelection( void )
+{
+    long s = app.selStart, e = app.selEnd;
+    int  i = 0, removed = 0;
+    while( i < app.numMarks ) {
+        long f = app.marks[i].frame;
+        if( f >= s && f <= e ) { removeMarkAt( i ); removed++; }
+        else i++;
+    }
+    if( removed ) setStatus( "Cleared marks in selection" );
+    else          setStatus( "No marks in selection" );
+}
+
 static void clearAllMarks( void )
 {
     app.numMarks = 0;
@@ -828,13 +850,37 @@ static void clampView( void )
         if( app.samplesPerPixel > maxSpp && maxSpp > 0 )
             app.samplesPerPixel = maxSpp;
     }
-    if( app.viewStart < 0 ) app.viewStart = 0;
     {
+        /* allow scrolling EDGE_PAD_PX pixels past either end so the very first
+         * and last samples can be pulled clear of the window edge; the extra
+         * room shows up as a black region (drawn in renderWaveform) marking
+         * that you have reached the boundary of the data. */
+        double pad     = (double)EDGE_PAD_PX * app.samplesPerPixel;
         double visible = app.samplesPerPixel * ( app.wfW > 1 ? app.wfW : 1000.0 );
-        double maxStart = (double)n - visible;
-        if( maxStart < 0 ) maxStart = 0;
+        double minStart = -pad;
+        double maxStart = (double)n - visible + pad;
+        if( maxStart < minStart ) maxStart = minStart;
+        if( app.viewStart < minStart ) app.viewStart = minStart;
         if( app.viewStart > maxStart ) app.viewStart = maxStart;
     }
+}
+
+/* scroll (without changing zoom) so that 'frame' sits comfortably inside the
+ * visible window, leaving a small screen-space margin so it is not jammed
+ * against an edge.  Used e.g. after a paste so the cursor at the end of the
+ * newly-inserted audio stays on screen -- repeated pastes keep scrolling to
+ * follow the growing end of the file. */
+static void ensureFrameVisible( long frame )
+{
+    double spp    = app.samplesPerPixel;
+    double w      = ( app.wfW > 1 ? app.wfW : 1000.0 );
+    double margin = 40.0 * spp;              /* 40px of breathing room       */
+    double visible = spp * w;
+    double lo = app.viewStart + margin;
+    double hi = app.viewStart + visible - margin;
+    if( (double)frame < lo ) app.viewStart = (double)frame - margin;
+    else if( (double)frame > hi ) app.viewStart = (double)frame - visible + margin;
+    clampView();
 }
 
 static void zoomFit( void )
@@ -1032,9 +1078,12 @@ static void actPaste( void )
     c = newMarkColor();
     addMark( at,        c );          /* paste start seam */
     addMark( at + insN, c );          /* paste end seam   */
-    app.selStart = at;
-    app.selEnd   = at + insN;
+    /* leave the pasted audio UN-selected and drop the cursor at its end so a
+     * run of pastes lays clips down end-to-end like train cars; scroll to keep
+     * that advancing cursor on screen (following the end of a growing file) */
+    app.selStart = app.selEnd = at + insN;
     clampView();
+    ensureFrameVisible( at + insN );
     refreshPlayback();
     setStatus( "Pasted" );
 }
@@ -1326,6 +1375,23 @@ static void renderOverview( int winW )
             drawVLine( bx1, y0, y0 + h, 0.9f, 0.95f, 1.0f, 0.9f );
         }
 
+        /* cursor position (yellow) when there is no selection, so the bare
+         * caret is locatable in the whole-file view too */
+        if( !hasSelection() ) {
+            float cx = x0 + (float)( (double)app.selStart / (double)n ) * w;
+            drawVLine( cx, y0, y0 + h, 0.95f, 0.9f, 0.3f, 0.9f );
+        }
+
+        /* live playhead (green), mirroring the main view's playhead so you can
+         * see where playback is within the whole file */
+        {
+            long ph = playheadFrame();
+            if( ph >= 0 ) {
+                float gx = x0 + (float)( (double)ph / (double)n ) * w;
+                drawVLine( gx, y0, y0 + h, 0.3f, 1.0f, 0.4f, 0.95f );
+            }
+        }
+
         /* tiny mark carets along the top edge, in each mark's hue, so the
          * whole-file position of every mark is visible even when zoomed in */
         for( i = 0; i < app.numMarks; i++ ) {
@@ -1501,6 +1567,22 @@ static void renderWaveform( int winW, int winH )
                 glEnd();
             }
         }
+    }
+
+    /* black "beyond the data" margins: when scrolled to the very start or end
+     * the pad frames outside [0,n] show up as solid black, giving a clear
+     * visual signal that this is the boundary of the file.  Painted over the
+     * waveform (which clamps to the edge sample there) but under the
+     * selection / cursor / marks. */
+    if( n > 0 ) {
+        float lx = frameToPixel( 0 );
+        float rx = frameToPixel( n );
+        if( lx > app.wfX )
+            drawRect( app.wfX, app.wfY, lx, app.wfY + app.wfH,
+                      0.0f, 0.0f, 0.0f, 1.0f );
+        if( rx < app.wfX + app.wfW )
+            drawRect( rx, app.wfY, app.wfX + app.wfW, app.wfY + app.wfH,
+                      0.0f, 0.0f, 0.0f, 1.0f );
     }
 
     /* selection overlay */
@@ -1842,6 +1924,9 @@ static void buildMenuBar( void )
         gui_separator();
         if( gui_menu_item( "Delete Selected Marks", NULL, anySel ) )
             deleteSelectedMarks();
+        if( gui_menu_item( "Clear Marks in Selection", NULL,
+                           anyMk && hasSelection() ) )
+            clearMarksInSelection();
         if( gui_menu_item( "Clear All Marks", NULL, anyMk ) )
             clearAllMarks();
         gui_end_menu();

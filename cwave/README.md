@@ -27,9 +27,22 @@ files.  It does not record.
 - Playback of the whole file, the selection, or from the cursor, with
   looping and a volume control.  All channels are mixed down to stereo.
 - Editing: cut / copy / paste / delete / trim-to-selection, with a
-  32-level undo/redo history.
+  32-level undo/redo history.  Length-preserving edits patch **only the
+  affected span** of the summary pyramid, so processing a short selection
+  is instant even in a 28-minute file (a full rebuild of that file's
+  overview takes ~300 ms; the incremental patch takes ~0.07 ms).
 - Effects: Normalize, Amplify, Fade In, Fade Out, Silence, Reverse.
   Effects act on the selection, or the whole file if nothing is selected.
+  Normalize targets a **dBFS level** (default -1.0 dB), typeable or by
+  slider, with a live linear-amplitude readout.
+- **Marks**: little carets above the waveform that pin a sample position.
+  They are created automatically at edit seams (cut points, paste
+  boundaries, the edges of a processed region) so you never lose where an
+  operation happened, and manually at the cursor or around a selection
+  (menu, or the `M` key).  Marks auto-move as audio is inserted/removed
+  before them.  While dragging a selection, its edge snaps to a nearby
+  mark.  Click a caret to select a mark (shift-click for several), then
+  delete the ones you no longer need from the Marks menu.
 
 ## Building
 
@@ -67,6 +80,7 @@ make
 | + / -          | Zoom in / out                |
 | Home / End     | Cursor to start / end        |
 | Esc            | Clear selection              |
+| M              | Mark cursor / selection edges|
 | Ctrl+O/S/N     | Open / Save / New            |
 | Ctrl+Z/Y       | Undo / Redo                  |
 | Ctrl+X/C/V     | Cut / Copy / Paste           |

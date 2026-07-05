@@ -30,8 +30,11 @@
 
 #define TRANSPORT_H   96.0f     /* height of bottom transport panel      */
 #define OVERVIEW_H    56.0f     /* height of the top overview / scroll bar */
+#define MARK_STRIP_H  16.0f     /* caret strip along the top of the wave  */
 #define UNDO_LEVELS   32
 #define PATH_MAX_LEN  1024
+#define MAX_MARKS     512       /* marks that can accumulate              */
+#define MARK_SNAP_PX  8.0f      /* selection snaps to a mark within this  */
 
 /* -------------------------------------------------------------------- */
 /* waveform summary pyramid                                             */
@@ -145,6 +148,73 @@ static int waveCacheBuild( WaveCache *wc, const AudioClip *c,
     wc->valid = 1;
     if( progress ) *progress = 1000;
     return 0;
+}
+
+/* Incrementally refresh only the pyramid bins covering frames [start,end).
+ * Used after an in-place edit (fade, normalize, silence, ...) that does NOT
+ * change the clip length: the geometry (bin counts / sizes) is unchanged, so
+ * we recompute the handful of affected level-0 bins from the raw samples and
+ * propagate the change up the pyramid.  Cost scales with the edited span, not
+ * with the whole file -- fading the tail of a long file is now instant.
+ *
+ * Caller must guarantee wc was built for a clip with the SAME numFrames and
+ * numChannels as c (i.e. a length-preserving edit). */
+static void waveCacheUpdateRange( WaveCache *wc, const AudioClip *c,
+                                  long start, long end )
+{
+    int  nch = c->numChannels, ch, L;
+    long n = c->numFrames;
+    long b0, b1, b;
+
+    if( !wc->valid || wc->numLevels < 1 ) return;
+    if( start < 0 ) start = 0;
+    if( end > n )   end = n;
+    if( end <= start ) return;
+
+    /* level 0: recompute affected bins straight from raw samples */
+    b0 = start / WF_MIN_BIN;
+    b1 = ( end - 1 ) / WF_MIN_BIN;      /* inclusive */
+    if( b1 >= wc->numBins[0] ) b1 = wc->numBins[0] - 1;
+    for( ch = 0; ch < nch; ch++ ) {
+        float *s   = c->channel[ch];
+        float *omn = wc->mn[0][ch];
+        float *omx = wc->mx[0][ch];
+        for( b = b0; b <= b1; b++ ) {
+            long  i0 = b * WF_MIN_BIN, i1 = i0 + WF_MIN_BIN, i;
+            float mn, mx;
+            if( i1 > n ) i1 = n;
+            if( i0 >= n ) break;
+            mn = mx = s[i0];
+            for( i = i0 + 1; i < i1; i++ ) {
+                float v = s[i];
+                if( v < mn ) mn = v;
+                if( v > mx ) mx = v;
+            }
+            omn[b] = mn; omx[b] = mx;
+        }
+    }
+
+    /* propagate the dirty bin range up through the coarser levels */
+    for( L = 1; L < wc->numLevels; L++ ) {
+        long pbins = wc->numBins[L - 1];
+        long nb    = wc->numBins[L];
+        long ub0 = b0 / 2, ub1 = b1 / 2;
+        if( ub1 >= nb ) ub1 = nb - 1;
+        for( ch = 0; ch < nch; ch++ ) {
+            float *pmn = wc->mn[L - 1][ch], *pmx = wc->mx[L - 1][ch];
+            float *omn = wc->mn[L][ch],     *omx = wc->mx[L][ch];
+            for( b = ub0; b <= ub1; b++ ) {
+                long  a = b * 2, bb = a + 1;
+                float mn = pmn[a], mx = pmx[a];
+                if( bb < pbins ) {
+                    if( pmn[bb] < mn ) mn = pmn[bb];
+                    if( pmx[bb] > mx ) mx = pmx[bb];
+                }
+                omn[b] = mn; omx[b] = mx;
+            }
+        }
+        b0 = ub0; b1 = ub1;
+    }
 }
 
 /* largest level whose bin fits within 'spp' samples-per-pixel, or -1 to
@@ -295,9 +365,23 @@ static void open_audio( int rate )
 /* application state                                                    */
 /* -------------------------------------------------------------------- */
 
+/* A mark is a labelled point in the audio that tracks its sample as edits
+ * insert/remove frames around it.  Marks are created manually (at the
+ * cursor or around a selection) and automatically at the seams of edits
+ * (cut points, paste boundaries, processed-region edges), so you never
+ * lose where an operation happened.  Rendered as carets above the wave. */
+typedef struct {
+    long frame;      /* sample position it points at            */
+    int  selected;   /* highlighted / targeted for deletion     */
+} Mark;
+
 typedef struct {
     AudioClip clip;
     AudioClip clipboard;
+
+    /* marks (see Mark) */
+    Mark marks[MAX_MARKS];
+    int  numMarks;
 
     /* selection (frames); selEnd == selStart means "no selection", the
      * cursor sits at selStart */
@@ -332,7 +416,7 @@ typedef struct {
     char  pendingPopup[64];
     /* dialog scratch values */
     float dlgGain;
-    float dlgNormLevel;
+    float dlgNormDb;              /* normalize target in dBFS            */
     char  statusMsg[256];
 
     /* file browser */
@@ -392,8 +476,29 @@ static long clipLen( void ) { return app.clip.numFrames; }
 static int hasSelection( void ) { return app.selEnd > app.selStart; }
 
 /* mark the waveform sample data as changed so the overview pyramid is
- * rebuilt before the next render */
+ * rebuilt (fully) before the next render.  Use for structural edits that
+ * change the clip length. */
 static void bumpWave( void ) { app.waveGen++; }
+
+/* Fast path for a length-preserving in-place edit of frames [start,end):
+ * patch just the affected pyramid bins instead of rebuilding the whole
+ * thing.  Falls back to a full rebuild if the cache geometry no longer
+ * matches the clip (e.g. first edit before any cache was built). */
+static void waveUpdateRange( long start, long end )
+{
+    if( app.wave.valid &&
+        app.waveBuiltGen     == app.waveGen &&   /* cache current, no rebuild pending */
+        app.wave.numFrames   == app.clip.numFrames &&
+        app.wave.numChannels == app.clip.numChannels ) {
+        waveCacheUpdateRange( &app.wave, &app.clip, start, end );
+        /* keep the generation counters in lock-step so renderWaveform does
+         * NOT trigger a redundant full rebuild this frame */
+        app.waveGen++;
+        app.waveBuiltGen = app.waveGen;
+    } else {
+        bumpWave();
+    }
+}
 
 /* the range effects act on: the selection, or the whole clip */
 static void effectRange( long *s, long *e )
@@ -406,6 +511,85 @@ static void setStatus( const char *msg )
 {
     strncpy( app.statusMsg, msg, sizeof(app.statusMsg) - 1 );
     app.statusMsg[sizeof(app.statusMsg) - 1] = '\0';
+}
+
+/* -------------------------------------------------------------------- */
+/* marks                                                                */
+/* -------------------------------------------------------------------- */
+
+/* add a mark at 'frame' (deduped against an existing mark at the same
+ * frame).  Silently ignored if the mark table is full. */
+static void addMark( long frame )
+{
+    int i;
+    if( frame < 0 ) frame = 0;
+    if( frame > clipLen() ) frame = clipLen();
+    for( i = 0; i < app.numMarks; i++ )
+        if( app.marks[i].frame == frame ) return;   /* already marked */
+    if( app.numMarks >= MAX_MARKS ) return;
+    app.marks[app.numMarks].frame    = frame;
+    app.marks[app.numMarks].selected = 0;
+    app.numMarks++;
+}
+
+/* drop the mark at index i */
+static void removeMarkAt( int i )
+{
+    int k;
+    if( i < 0 || i >= app.numMarks ) return;
+    for( k = i; k < app.numMarks - 1; k++ ) app.marks[k] = app.marks[k + 1];
+    app.numMarks--;
+}
+
+/* delete all marks flagged selected */
+static void deleteSelectedMarks( void )
+{
+    int i = 0, removed = 0;
+    while( i < app.numMarks ) {
+        if( app.marks[i].selected ) { removeMarkAt( i ); removed++; }
+        else i++;
+    }
+    if( removed ) setStatus( "Deleted selected marks" );
+    else          setStatus( "No marks selected" );
+}
+
+static void clearAllMarks( void )
+{
+    app.numMarks = 0;
+    setStatus( "Cleared all marks" );
+}
+
+/* shift marks after an insertion of 'len' frames at 'at' */
+static void marksAdjustInsert( long at, long len )
+{
+    int i;
+    for( i = 0; i < app.numMarks; i++ )
+        if( app.marks[i].frame >= at ) app.marks[i].frame += len;
+}
+
+/* shift marks after deletion of frames [s,e); marks inside collapse to s */
+static void marksAdjustDelete( long s, long e )
+{
+    int i;
+    long span = e - s;
+    for( i = 0; i < app.numMarks; i++ ) {
+        long f = app.marks[i].frame;
+        if( f <= s )      continue;
+        else if( f >= e ) app.marks[i].frame = f - span;
+        else              app.marks[i].frame = s;
+    }
+}
+
+/* clamp all marks into [0,clipLen]; used after undo/redo where the exact
+ * pre-edit geometry is not tracked */
+static void marksClampToClip( void )
+{
+    int i = 0;
+    long n = clipLen();
+    while( i < app.numMarks ) {
+        if( app.marks[i].frame > n ) app.marks[i].frame = n;
+        i++;
+    }
 }
 
 /* stop playback safely (under audio lock) */
@@ -460,6 +644,7 @@ static void doUndo( void )
 
     if( app.selStart > clipLen() ) app.selStart = clipLen();
     if( app.selEnd   > clipLen() ) app.selEnd   = clipLen();
+    marksClampToClip();
     clampView();
     setStatus( "Undo" );
 }
@@ -481,6 +666,7 @@ static void doRedo( void )
 
     if( app.selStart > clipLen() ) app.selStart = clipLen();
     if( app.selEnd   > clipLen() ) app.selEnd   = clipLen();
+    marksClampToClip();
     clampView();
     setStatus( "Redo" );
 }
@@ -545,6 +731,21 @@ static float frameToPixel( long fr )
                               app.samplesPerPixel );
 }
 
+/* If a mark sits within MARK_SNAP_PX screen pixels of frame 'f', return
+ * that mark's frame so the selection edge snaps to it; else return f. */
+static long snapFrameToMark( long f )
+{
+    int   i, best = -1;
+    float fpx = frameToPixel( f );
+    float bestDist = MARK_SNAP_PX;
+    for( i = 0; i < app.numMarks; i++ ) {
+        float d = frameToPixel( app.marks[i].frame ) - fpx;
+        if( d < 0 ) d = -d;
+        if( d <= bestDist ) { bestDist = d; best = i; }
+    }
+    return ( best >= 0 ) ? app.marks[best].frame : f;
+}
+
 /* -------------------------------------------------------------------- */
 /* transport control                                                    */
 /* -------------------------------------------------------------------- */
@@ -602,6 +803,20 @@ static void actSelectNone( void )
     app.selEnd = app.selStart;
 }
 
+/* create marks manually: around the selection, or at the bare cursor */
+static void actAddMark( void )
+{
+    if( clipLen() <= 0 ) return;
+    if( hasSelection() ) {
+        addMark( app.selStart );
+        addMark( app.selEnd );
+        setStatus( "Marked selection edges" );
+    } else {
+        addMark( app.selStart );
+        setStatus( "Added mark at cursor" );
+    }
+}
+
 static void actDelete( void )
 {
     long s, e;
@@ -613,6 +828,8 @@ static void actDelete( void )
     audio_delete_range( &app.clip, s, e );
     audio_unlock();
     bumpWave();
+    marksAdjustDelete( s, e );
+    addMark( s );                 /* mark the seam left behind */
     app.selEnd = app.selStart = s;
     clampView();
     setStatus( "Deleted selection" );
@@ -639,6 +856,8 @@ static void actCut( void )
     audio_delete_range( &app.clip, s, e );
     audio_unlock();
     bumpWave();
+    marksAdjustDelete( s, e );
+    addMark( s );                 /* mark the seam left behind */
     app.selEnd = app.selStart = s;
     clampView();
     setStatus( "Cut selection" );
@@ -656,12 +875,16 @@ static void actPaste( void )
         audio_lock();
         audio_delete_range( &app.clip, app.selStart, app.selEnd );
         audio_unlock();
+        marksAdjustDelete( app.selStart, app.selEnd );
         app.selEnd = app.selStart;
     }
     audio_lock();
     audio_insert( &app.clip, at, &app.clipboard );
     audio_unlock();
     bumpWave();
+    marksAdjustInsert( at, app.clipboard.numFrames );
+    addMark( at );                                    /* paste start seam */
+    addMark( at + app.clipboard.numFrames );          /* paste end seam   */
     app.selStart = at;
     app.selEnd   = at + app.clipboard.numFrames;
     clampView();
@@ -679,6 +902,15 @@ static void actTrim( void )
     audio_trim_to_range( &app.clip, s, e );
     audio_unlock();
     bumpWave();
+    /* remap marks into the kept range [s,e); drop any that fall outside */
+    {
+        int i = 0;
+        while( i < app.numMarks ) {
+            long f = app.marks[i].frame;
+            if( f < s || f > e ) removeMarkAt( i );
+            else { app.marks[i].frame = f - s; i++; }
+        }
+    }
     app.selStart = 0;
     app.selEnd   = clipLen();
     zoomFit();
@@ -688,13 +920,19 @@ static void actTrim( void )
 static void applyEffect( int which )
 {
     long s, e;
+    int  onSelection = hasSelection();
     effectRange( &s, &e );
     if( e <= s ) { setStatus( "Nothing to process" ); return; }
     stopPlayback();
     pushUndo();
     audio_lock();
     switch( which ) {
-        case 0: audio_normalize( &app.clip, s, e, app.dlgNormLevel ); break;
+        case 0: {
+            /* normalize target is specified in dBFS */
+            float peak = (float)pow( 10.0, (double)app.dlgNormDb / 20.0 );
+            audio_normalize( &app.clip, s, e, peak );
+            break;
+        }
         case 1: audio_amplify( &app.clip, s, e, app.dlgGain );        break;
         case 2: audio_fade_in( &app.clip, s, e );                     break;
         case 3: audio_fade_out( &app.clip, s, e );                    break;
@@ -702,7 +940,11 @@ static void applyEffect( int which )
         case 5: audio_reverse( &app.clip, s, e );                     break;
     }
     audio_unlock();
-    bumpWave();
+    /* these effects preserve length, so patch only the edited span of the
+     * overview pyramid rather than rebuilding the whole (possibly huge) file */
+    waveUpdateRange( s, e );
+    /* leave marks at the edges of the processed region so the seam is kept */
+    if( onSelection ) { addMark( s ); addMark( e ); }
     switch( which ) {
         case 0: setStatus( "Normalized" ); break;
         case 1: setStatus( "Amplified" ); break;
@@ -725,6 +967,7 @@ static void newFile( void )
     audio_alloc( &app.clip, 1, 44100, 0 );
     audio_unlock();
     bumpWave();
+    app.numMarks = 0;
     app.selStart = app.selEnd = 0;
     app.path[0] = '\0';
     app.dirty = 0;
@@ -779,6 +1022,7 @@ static void finishLoad( void )
 
     open_audio( app.clip.sampleRate );
 
+    app.numMarks = 0;
     app.selStart = app.selEnd = 0;
     strncpy( app.path, loadJob.path, PATH_MAX_LEN - 1 );
     app.path[PATH_MAX_LEN - 1] = '\0';
@@ -932,6 +1176,49 @@ static void renderOverview( int winW )
     glEnd();
 }
 
+/* draw the mark carets in the top strip plus faint guide lines down the
+ * waveform.  stripTop is app.wfY; the carets live in the first
+ * MARK_STRIP_H pixels, guides run to the bottom of the wave area. */
+static void renderMarks( void )
+{
+    int   i;
+    float x0 = app.wfX, x1 = app.wfX + app.wfW;
+    float stripTop = app.wfY;
+    float stripBot = app.wfY + MARK_STRIP_H;
+    float waveBot  = app.wfY + app.wfH;
+
+    for( i = 0; i < app.numMarks; i++ ) {
+        float px = frameToPixel( app.marks[i].frame );
+        int   sel = app.marks[i].selected;
+        float hw  = 5.0f;
+        if( px < x0 - hw || px > x1 + hw ) continue;
+
+        /* faint vertical guide the height of the wave */
+        if( sel )
+            drawVLine( px, stripBot, waveBot, 1.0f, 0.85f, 0.25f, 0.45f );
+        else
+            drawVLine( px, stripBot, waveBot, 0.95f, 0.55f, 0.20f, 0.22f );
+
+        /* caret: downward triangle sitting in the strip, tip at the line */
+        if( sel ) glColor4f( 1.0f, 0.9f, 0.35f, 1.0f );
+        else      glColor4f( 0.95f, 0.6f, 0.2f, 1.0f );
+        glBegin( GL_TRIANGLES );
+            glVertex2f( px - hw, stripTop + 1.0f );
+            glVertex2f( px + hw, stripTop + 1.0f );
+            glVertex2f( px,      stripBot - 2.0f );
+        glEnd();
+        /* outline selected carets so they read as picked */
+        if( sel ) {
+            glColor4f( 1.0f, 1.0f, 1.0f, 0.9f );
+            glBegin( GL_LINE_LOOP );
+                glVertex2f( px - hw, stripTop + 1.0f );
+                glVertex2f( px + hw, stripTop + 1.0f );
+                glVertex2f( px,      stripBot - 2.0f );
+            glEnd();
+        }
+    }
+}
+
 static void renderWaveform( int winW, int winH )
 {
     float menuH  = gui_main_menu_bar_height();
@@ -939,7 +1226,7 @@ static void renderWaveform( int winW, int winH )
     float bottom = (float)winH - TRANSPORT_H;
     int   nch    = app.clip.numChannels;
     int   ch;
-    float laneH;
+    float laneH, laneTop, laneAreaH;
     long  n = clipLen();
 
     /* rebuild the overview pyramid if the sample data changed */
@@ -959,7 +1246,11 @@ static void renderWaveform( int winW, int winH )
     app.wfH = bottom - top;
     if( app.wfH < 10.0f ) app.wfH = 10.0f;
     if( nch < 1 ) nch = 1;
-    laneH = app.wfH / (float)nch;
+    /* reserve a thin strip along the top for the mark carets */
+    laneTop   = app.wfY + MARK_STRIP_H;
+    laneAreaH = app.wfH - MARK_STRIP_H;
+    if( laneAreaH < 10.0f ) laneAreaH = 10.0f;
+    laneH = laneAreaH / (float)nch;
 
     setPixelProjection( winW, winH );
 
@@ -968,7 +1259,7 @@ static void renderWaveform( int winW, int winH )
               0.10f, 0.11f, 0.13f, 1.0f );
 
     for( ch = 0; ch < nch; ch++ ) {
-        float y0 = top + laneH * (float)ch;
+        float y0 = laneTop + laneH * (float)ch;
         float yc = y0 + laneH * 0.5f;
         float amp = laneH * 0.45f;
         float *samples = app.clip.channel[ch];
@@ -1067,6 +1358,9 @@ static void renderWaveform( int winW, int winH )
         }
     }
 
+    /* mark carets + guides on top of the wave */
+    renderMarks();
+
     /* overview / scroll bar across the top */
     renderOverview( winW );
 }
@@ -1084,11 +1378,40 @@ static int inWaveform( int mx, int my )
            (float)my >= app.wfY && (float)my <= app.wfY + app.wfH;
 }
 
+/* a click within the caret strip picks the nearest mark (shift toggles /
+ * multi-selects); an empty click clears the mark selection */
+static void handleMarkStripDown( int mx, int shift )
+{
+    int   i, k, best = -1;
+    float bestDist = 7.0f;   /* pixel pick radius */
+    for( i = 0; i < app.numMarks; i++ ) {
+        float d = frameToPixel( app.marks[i].frame ) - (float)mx;
+        if( d < 0 ) d = -d;
+        if( d <= bestDist ) { bestDist = d; best = i; }
+    }
+    if( best < 0 ) {
+        if( !shift )
+            for( k = 0; k < app.numMarks; k++ ) app.marks[k].selected = 0;
+        return;
+    }
+    if( shift ) {
+        app.marks[best].selected = !app.marks[best].selected;
+    } else {
+        for( k = 0; k < app.numMarks; k++ ) app.marks[k].selected = 0;
+        app.marks[best].selected = 1;
+    }
+}
+
 static void handleWaveMouseDown( int mx, int my, int shift )
 {
     long f;
     if( !inWaveform( mx, my ) ) return;
-    f = pixelToFrame( (float)mx );
+    /* the top strip belongs to the mark carets, not the audio selection */
+    if( (float)my <= app.wfY + MARK_STRIP_H ) {
+        handleMarkStripDown( mx, shift );
+        return;
+    }
+    f = snapFrameToMark( pixelToFrame( (float)mx ) );
     if( shift && hasSelection() ) {
         /* extend selection from the nearer edge */
         if( f < app.selStart ) app.selStart = f;
@@ -1106,7 +1429,7 @@ static void handleWaveMouseMove( int mx )
 {
     long f;
     if( !dragging ) return;
-    f = pixelToFrame( (float)mx );
+    f = snapFrameToMark( pixelToFrame( (float)mx ) );
     if( f < dragAnchor ) { app.selStart = f; app.selEnd = dragAnchor; }
     else                 { app.selStart = dragAnchor; app.selEnd = f; }
 }
@@ -1333,6 +1656,24 @@ static void buildMenuBar( void )
         gui_end_menu();
     }
 
+    if( gui_begin_menu( "Marks" ) ) {
+        int have  = clipLen() > 0;
+        int anyMk = app.numMarks > 0;
+        int anySel = 0, i;
+        for( i = 0; i < app.numMarks; i++ )
+            if( app.marks[i].selected ) { anySel = 1; break; }
+        if( gui_menu_item(
+                hasSelection() ? "Mark Selection Edges" : "Add Mark at Cursor",
+                "M", have ) )
+            actAddMark();
+        gui_separator();
+        if( gui_menu_item( "Delete Selected Marks", NULL, anySel ) )
+            deleteSelectedMarks();
+        if( gui_menu_item( "Clear All Marks", NULL, anyMk ) )
+            clearAllMarks();
+        gui_end_menu();
+    }
+
     if( gui_begin_menu( "View" ) ) {
         if( gui_menu_item( "Zoom In", "+", 1 ) )
             { app.samplesPerPixel *= 0.5; clampView(); }
@@ -1451,8 +1792,17 @@ static void buildDialogs( void )
     }
 
     if( gui_begin_popup_modal( "Normalize" ) ) {
-        gui_text( "Peak normalize to level:" );
-        gui_slider_float( "Level", &app.dlgNormLevel, 0.0f, 1.0f, "%.3f" );
+        char lbl[64];
+        float lin;
+        gui_text( "Peak normalize to target level (dBFS):" );
+        gui_slider_float( "dB", &app.dlgNormDb, -60.0f, 0.0f, "%.1f dB" );
+        gui_input_float( "Exact dB", &app.dlgNormDb );
+        if( app.dlgNormDb >  0.0f ) app.dlgNormDb =  0.0f;
+        if( app.dlgNormDb < -60.0f ) app.dlgNormDb = -60.0f;
+        lin = (float)pow( 10.0, (double)app.dlgNormDb / 20.0 );
+        snprintf( lbl, sizeof(lbl), "= %.4f peak amplitude", lin );
+        gui_text( lbl );
+        gui_spacing();
         if( gui_button( "Apply" ) ) { applyEffect( 0 ); gui_close_current_popup(); }
         gui_same_line();
         if( gui_button( "Cancel" ) ) gui_close_current_popup();
@@ -1476,7 +1826,9 @@ static void buildDialogs( void )
         gui_text( "WAV read/write, OGG read." );
         gui_text( "" );
         gui_text( "Space: play/stop   F: fit   wheel: zoom" );
-        gui_text( "Drag: select   Shift+click: extend" );
+        gui_text( "Drag: select   Shift+click: extend   M: mark" );
+        gui_text( "Click a caret to select a mark; selection" );
+        gui_text( "snaps to nearby marks while dragging." );
         gui_spacing();
         if( gui_button( "Close" ) ) gui_close_current_popup();
         gui_end_popup();
@@ -1530,6 +1882,7 @@ static void handleKey( SDL_Keycode key, int ctrl )
         case SDLK_DELETE:
         case SDLK_BACKSPACE: actDelete(); break;
         case SDLK_f:      zoomFit(); break;
+        case SDLK_m:      actAddMark(); break;
         case SDLK_HOME:   app.selStart = app.selEnd = 0;
                           app.viewStart = 0; break;
         case SDLK_END:    app.selStart = app.selEnd = clipLen();
@@ -1558,7 +1911,7 @@ int main( int argc, char **argv )
     player.loop   = 0;
     app.samplesPerPixel = 1.0;
     app.dlgGain = 2.0f;
-    app.dlgNormLevel = 0.98f;
+    app.dlgNormDb = -1.0f;
     audio_alloc( &app.clip, 1, 44100, 0 );
 
     if( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_AUDIO ) != 0 ) {

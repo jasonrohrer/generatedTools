@@ -101,4 +101,87 @@ int  audio_splice( AudioClip *c, long at, long removeLen,
 /* Compute the peak absolute sample over the range (for metering). */
 float audio_peak( const AudioClip *c, long start, long end );
 
+/* ====================================================================== */
+/* Sequence -- a block-list ("piece list") document                       */
+/*                                                                        */
+/* The editable audio document is stored NOT as one giant contiguous      */
+/* buffer per channel but as an ordered list of bounded blocks, each      */
+/* owning its own contiguous samples AND its own min/max summary bins.    */
+/* Structural edits (insert / delete / cut / paste) only split the two    */
+/* boundary blocks (a bounded copy) and relink the small block-pointer    */
+/* array, so their cost is O(edit size + numBlocks) -- independent of     */
+/* WHERE in the file the edit happens (the whole point: a paste at the    */
+/* start of a 28-minute file is as fast as one at the end).  Because each */
+/* block keeps its own summary bins, the waveform overview needs no       */
+/* O(numFrames) pyramid rebuild after an edit either -- unchanged blocks  */
+/* keep their bins; only split/new blocks recompute (bounded).            */
+/* ====================================================================== */
+
+#define SEQ_BIN          256        /* frames summarized per level-0 bin   */
+#ifndef SEQ_BLOCK_FRAMES            /* overridable so tests can force tiny  */
+#define SEQ_BLOCK_FRAMES ( 1 << 18 )/* max frames per block (~1 MB / ch)   */
+#endif
+
+typedef struct {
+    AudioClip buf;                          /* this block's samples        */
+    long      numBins;                      /* ceil(buf.numFrames/SEQ_BIN) */
+    float    *mn[AUDIO_MAX_CHANNELS];       /* per-bin min, numBins each    */
+    float    *mx[AUDIO_MAX_CHANNELS];       /* per-bin max                  */
+} Block;
+
+typedef struct {
+    int     numChannels;
+    int     sampleRate;
+    long    numFrames;                      /* total across all blocks      */
+    Block **blocks;
+    long   *start;                          /* start[i] = abs frame of blk i*/
+    int     numBlocks, capBlocks;
+} Sequence;
+
+/* ---- lifecycle ---- */
+void seq_init( Sequence *s );               /* zero an empty sequence       */
+void seq_free( Sequence *s );
+/* Adopt an already-loaded contiguous clip's samples into a fresh sequence
+ * (splitting into blocks + computing bins).  'src' is consumed: its data is
+ * moved into the sequence and src is left empty.  Returns 0 on success. */
+int  seq_adopt_clip( Sequence *s, AudioClip *src );
+/* Reset to an empty clip with the given geometry (numFrames==0). */
+int  seq_set_empty( Sequence *s, int numChannels, int sampleRate );
+
+/* ---- reads ---- */
+float seq_sample( const Sequence *s, int ch, long frame );
+/* Locate the block containing absolute 'frame' (0<=frame<numFrames): returns
+ * the block index in *bIdx and the offset within that block in *local.  For
+ * frame>=numFrames returns bIdx==numBlocks.  Used by the playback cursor. */
+void  seq_locate( const Sequence *s, long frame, int *bIdx, long *local );
+/* Flatten frames [start,end) of every channel into a contiguous clip. */
+int   seq_read_range( AudioClip *dst, const Sequence *s, long start, long end );
+/* Min/max of channel ch over the absolute frame span [f0,f1); uses block
+ * summary bins when spp>=SEQ_BIN, raw samples otherwise.  Returns 1 if any
+ * data was covered. */
+int   seq_col_minmax( const Sequence *s, int ch, double f0, double f1,
+                      double spp, float *mn, float *mx );
+
+/* ---- structural edits ---- */
+int  seq_delete_range( Sequence *s, long start, long end );
+/* Insert the contiguous clip 'ins' at frame 'at'. */
+int  seq_insert_clip( Sequence *s, long at, const AudioClip *ins );
+/* Replace [at,at+removeLen) with insLen frames taken from ins[ch] (ins may be
+ * NULL when insLen==0).  The single primitive behind undo/redo. */
+int  seq_splice( Sequence *s, long at, long removeLen,
+                 float *const ins[], long insLen );
+
+/* ---- length-preserving effects on [start,end) ---- */
+float seq_peak( const Sequence *s, long start, long end );
+void  seq_normalize( Sequence *s, long start, long end, float peak );
+void  seq_amplify( Sequence *s, long start, long end, float gain );
+void  seq_fade_in( Sequence *s, long start, long end );
+void  seq_fade_out( Sequence *s, long start, long end );
+void  seq_silence( Sequence *s, long start, long end );
+void  seq_reverse( Sequence *s, long start, long end );
+
+/* Save the whole sequence to a 16-bit PCM WAV. */
+int   seq_save_wav( const Sequence *s, const char *path,
+                    char *errBuf, int errBufLen );
+
 #endif /* CWAVE_AUDIO_H */

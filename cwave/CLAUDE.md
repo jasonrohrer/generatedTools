@@ -53,69 +53,75 @@ machine). Run under Xvfb and grab with scrot:
   scratchpad `itest*.sh` from the marks work for a template.
 - Read the PNGs back with the Read tool to actually see the UI.
 
-For pure-logic correctness (e.g. the pyramid), a standalone C test that copies
-the relevant functions and diffs incremental-vs-full is faster and more
-rigorous than eyeballing screenshots. Do both.
+For pure-logic correctness (e.g. the `Sequence` block list), a standalone C
+test that links `audio.o` and diffs the block-list result against a naive
+contiguous reference is faster and more rigorous than eyeballing screenshots —
+see `fuzz.c` (repo-local, gitignored) (random insert/delete/splice/effect fuzz, bit-exact,
+also runnable under valgrind and with a tiny `-DSEQ_BLOCK_FRAMES` to stress
+splitting/coalescing). Do both.
 
 ## File map
 
-- `cwave.c` — everything UI/app: state (`App app`), waveform mip pyramid,
+- `cwave.c` — everything UI/app: state (`App app`), block-list rendering,
   playback (SDL audio callback), editing actions, effects dispatch, marks,
   file browser, ImGui panels, main loop. Big file, well-sectioned by banners.
-- `audio.c` / `audio.h` — `AudioClip` (planar float32 per channel, `[-1,1]`),
-  WAV/OGG load, WAV save, and the in-place DSP primitives (normalize, amplify,
-  fade, silence, reverse, delete/trim/insert, peak).
+- `audio.c` / `audio.h` — `AudioClip` (planar float32 per channel, `[-1,1]`, a
+  *contiguous* leaf buffer), the in-place DSP primitives (normalize, amplify,
+  fade, silence, reverse, peak), WAV/OGG load, WAV save — AND the `Sequence`
+  block-list document (the editable audio), see below.
 - `gui.cpp` / `gui.h` — the C↔ImGui shim.
 - `Makefile`, `shot.sh`, `shot2.sh`, `README.md`, `userNotes.txt`.
 
 ## Architecture notes & invariants
 
 **Audio clip.** `AudioClip` is planar: one `float*` per channel, `numFrames`
-samples each, values in `[-1,1]`. Mixing to stereo for playback is cheap.
-`audio_delete_range` shrinks logical length without shrinking the allocation.
+samples each, values in `[-1,1]`. It is now the *leaf buffer* type — used for
+individual `Sequence` blocks, the copy/paste clipboard, undo deltas, and
+load/save scratch. Its DSP primitives (`audio_amplify`, `audio_silence`,
+`audio_reverse`, `audio_peak`) run per-block inside the `Sequence` effects.
+
+**Sequence — the block-list document (THE core data model).** The editable
+audio (`app.clip`, and the load worker's result) is a `Sequence`: an ordered
+array of `Block*`, each block owning a bounded contiguous `AudioClip`
+(≤ `SEQ_BLOCK_FRAMES`, ~256K frames) **plus its own min/max summary bins**
+(one bin per `SEQ_BIN`=256 frames). This is what makes paste/delete/cut
+**position-independent** — measured ~0.4–4.8 ms at start/middle/end of the
+28-min `glz.wav`, vs. up to 800 ms before. Why both costs vanish:
+- *Structural edit* (`seq_insert_clip`/`seq_delete_range`/`seq_splice`): only
+  the ≤2 boundary blocks are split (a bounded copy via `seq_split_at`) and the
+  small `Block*` array is relinked; unchanged blocks are untouched. No O(tail)
+  `memmove`.
+- *Overview*: each block keeps its own bins, so a shift never invalidates
+  downstream summaries — there is **no global pyramid to rebuild** (the old
+  `WaveCache`/`waveGen`/`bumpWave` machinery is GONE). Rendering composites
+  block bins directly via `seq_col_minmax`, which costs ≤ `numFrames/256`
+  bin-reads per frame (trivial even zoomed all the way out).
+`seq_reindex` keeps `start[i]` (absolute frame of block i) + `numFrames`
+current after every mutation. `seq_coalesce_around` merges undersized adjacent
+blocks after an edit so repeated small pastes (train cars) don't fragment the
+list into thousands of tiny blocks (verified: 20 000 end-pastes → 153 blocks).
+**Invariant: every `Sequence` mutation must leave `start[]`/`numFrames` and each
+touched block's bins consistent** — verified bit-exact vs. a naive contiguous
+reference by `fuzz.c` (repo-local, gitignored) (also run under valgrind, and byte-exact WAV
+save). If you add a length-preserving effect, do it per-block and call
+`block_bins()` on each touched block (or go read→`audio_*`→write via
+`seq_write_range`, which refreshes bins for you).
 
 **Playback.** One SDL audio callback thread mixes all channels → stereo with a
-volume. `Player player` holds playhead/range/flags. **Invariant: any edit that
-mutates or frees clip data must do so under `audio_lock()/audio_unlock()`** so
-the callback never touches freed memory. Edits also `stopPlayback()` first.
+volume. Because the clip is a block list, the callback keeps a **cursor** —
+`seq_locate(playhead)` once per callback (cheap binary search, ~once/1024
+frames) then advances (block idx + local offset), crossing block boundaries and
+re-seeking on a loop wrap. `Player player` holds playhead/range/flags.
+**Invariant: any edit that mutates or frees clip data must do so under
+`audio_lock()/audio_unlock()`** so the callback never touches freed block
+memory. Edits no longer `stopPlayback()` — see "Playback survives edits".
 
-**Async load.** Large files decode on a short-lived pthread (`loadWorker`),
-building the clip AND its pyramid off-thread; main loop polls a progress value
-and swaps the finished clip in under the audio lock. Keeps startup responsive.
-
-**Waveform summary pyramid (`WaveCache`).** Min/max mip levels: level 0 bins
-`WF_MIN_BIN`(256) samples, each higher level doubles. Rendering picks the
-coarsest level whose bin ≤ samples-per-pixel (`waveCacheLevel`), so zoom/scroll
-stay O(pixels) not O(frames). When zoomed in past 1 sample/pixel it draws raw
-samples instead. **Note:** at moderate zoom on a short file, spp may be < 256,
-so the pyramid isn't consulted and raw samples are scanned — keep that in mind
-when a change "looks right" on test.wav but you haven't exercised the cache.
-
-**Incremental pyramid update — the key perf invariant.** A full
-`waveCacheBuild` is O(numFrames) (~300 ms on the 28-min `glz.wav`) — and that
-rebuild, NOT the buffer op, was the real cost of a paste/delete on a long file
-(the `realloc`+`memmove` measures ~1 ms; glibc `mremap` makes an append nearly
-free). So NO edit should full-rebuild if it can help it:
-
-- *Length-preserving* effects → `waveUpdateRange(s,e)`, patching only the
-  affected bins via `waveCacheUpdateRange` (~0.07 ms).
-- *Length-changing* structural edits whose change begins at `from` and runs to
-  the new end (insert/delete/cut/paste and their undo/redo) →
-  `waveReplaceTail(from)`, which recomputes only the level-0 bins from `from`
-  onward (realloc keeps the untouched `[0,from)` prefix) and then rebuilds the
-  cheap coarse levels via `waveCacheRebuildUpper`. An edit at the END of
-  `glz.wav` drops from ~300 ms to ~4 ms. Middle edits recompute the suffix from
-  `from` — still ≤ the full rebuild, never worse.
-
-Both fast paths take the fast path ONLY when `wave.valid && waveBuiltGen==
-waveGen` and channel counts match (plus lengths, for `waveUpdateRange`), else
-they defer to a full rebuild — so **the overview can never drift out of sync
-with the samples** (verified bit-exact vs. full rebuild by a standalone fuzz
-test). `bumpWave()` (deferred full rebuild in `renderWaveform`) remains for the
-inherently-whole-file cases: **trim** (drops a prefix, not a tail) and load/new.
-If you add a new edit: length-preserving → `waveUpdateRange`; length-changing
-tail edit → `waveReplaceTail(from)`; anything that reshuffles a prefix →
-`bumpWave`.
+**Async load.** Large files decode on a short-lived pthread (`loadWorker`) into
+a contiguous `AudioClip`, then `seq_adopt_clip` splits that into blocks +
+per-block bins (phase 1, "Building overview"); the main loop polls progress and
+swaps the finished `Sequence` in under the audio lock. (Adopt copies the decoded
+clip into blocks then frees it, so load briefly holds ~2× the audio in RAM — an
+accepted tradeoff; edits, not load, were the perf complaint.)
 
 **Undo/redo — delta records, NOT whole-clip copies.** Each `UndoRec` is a
 self-reversing *splice*: it stores only the frames at `[at,at+oldLen)` before
@@ -134,19 +140,22 @@ has set the final selection/marks — snapshots the new span AND the post-edit
 selection/marks, then pushes the record). **Invariant: `commitEdit` must be the
 last thing an edit action does, after selection and marks are in their final
 state**, or the redo snapshot will be stale. `doUndo`/`doRedo` call
-`audio_splice` with the record's data, move the record between the undo/redo
+`seq_splice` with the record's data, move the record between the undo/redo
 stacks (no re-copy), then restore the before/after selection + marks via
 `restoreMarks`. **Invariant: `beginEdit`'s `[at,oldLen)` must exactly cover
 every frame the edit changes, and `commitEdit`'s `newLen` the resulting span.**
-Length-preserving edits (`oldLen==newLen`) undo via `waveUpdateRange`; length-
-changing ones via `waveReplaceTail(r.at)` (the splice leaves `[0,r.at)`
-untouched). Trim is the one inherently-O(n) case (its record holds the whole
-pre-trim clip, and it `bumpWave`s a full rebuild). `clearUndoRedo()` on load/new.
+The `Sequence` keeps every block's summary bins current, so undo/redo need no
+overview bookkeeping at all. Trim is the one still-O(n) case (its record holds
+the whole pre-trim clip — `beginEdit(0, clipLen())`); it is implemented as two
+`seq_delete_range`s (drop the tail then the head), each itself O(1)-ish, so only
+the *undo snapshot copy* is O(n), not the edit. `clearUndoRedo()` on load/new.
+`captureRange` flattens the undo span out of the block list via `seq_read_range`
+and steals its channel pointers.
 
-**`audio_splice`** (in `audio.c`) is the single primitive behind delete
-(`insLen=0`), insert (`removeLen=0`), in-place overwrite (`removeLen==insLen`,
-no realloc) and undo/redo. `audio_insert`/`audio_delete_range` are `realloc` +
-`memmove` (O(tail)), not full rebuilds — paste-at-end is a realloc + small copy.
+**`seq_splice`** (in `audio.c`) is the single primitive behind undo/redo:
+`seq_splice(at, removeLen, ins[], insLen)` = a `seq_delete_range` then a
+`seq_insert_clip`, both block relinks (no O(tail) copy). Structural edit actions
+call `seq_delete_range` / `seq_insert_clip` directly.
 
 **Playback survives edits.** Edit actions no longer `stopPlayback()`; they
 mutate under `audio_lock` and then call `refreshPlayback()`, which re-clamps the

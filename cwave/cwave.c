@@ -59,332 +59,11 @@ static const float markColors[MARK_NUM_COLORS][3] = {
 };
 
 /* -------------------------------------------------------------------- */
-/* waveform summary pyramid                                             */
-/*                                                                      */
-/* Rendering a big file by scanning every raw sample per pixel column   */
-/* is O(numFrames) per frame, which makes zooming / dragging on large   */
-/* files crawl.  Instead we precompute a mip pyramid of (min,max) pairs */
-/* once, and render from the coarsest level whose bin fits in a pixel.  */
-/* Level 0 bins WF_MIN_BIN samples; each higher level doubles the bin.  */
-/* -------------------------------------------------------------------- */
-
-#define WF_MIN_BIN     256
-#define WF_MAX_LEVELS  24
-
-typedef struct {
-    int    valid;
-    int    numChannels;
-    long   numFrames;
-    int    numLevels;
-    long   binSize[WF_MAX_LEVELS];
-    long   numBins[WF_MAX_LEVELS];
-    float *mn[WF_MAX_LEVELS][AUDIO_MAX_CHANNELS];
-    float *mx[WF_MAX_LEVELS][AUDIO_MAX_CHANNELS];
-} WaveCache;
-
-static void waveCacheFree( WaveCache *wc )
-{
-    int L, ch;
-    for( L = 0; L < WF_MAX_LEVELS; L++ )
-        for( ch = 0; ch < AUDIO_MAX_CHANNELS; ch++ ) {
-            if( wc->mn[L][ch] ) free( wc->mn[L][ch] );
-            if( wc->mx[L][ch] ) free( wc->mx[L][ch] );
-            wc->mn[L][ch] = wc->mx[L][ch] = NULL;
-        }
-    wc->valid = 0; wc->numLevels = 0;
-    wc->numFrames = 0; wc->numChannels = 0;
-}
-
-/* (Re)build every coarse level (1..) by combining pairs of bins from the level
- * below.  Frees any existing coarse levels first.  The caller must already
- * have populated level 0 (mn[0]/mx[0], numBins[0], binSize[0]) and set
- * numChannels/numFrames.  This is the cheap part of a build -- O(number of
- * level-0 bins), i.e. O(numFrames/WF_MIN_BIN) -- and is shared by the full
- * build and the incremental tail rebuild.  On allocation failure the whole
- * cache is freed (left invalid). */
-static void waveCacheRebuildUpper( WaveCache *wc )
-{
-    int  nch = wc->numChannels, ch, L;
-    long b;
-
-    for( L = 1; L < WF_MAX_LEVELS; L++ )
-        for( ch = 0; ch < AUDIO_MAX_CHANNELS; ch++ ) {
-            if( wc->mn[L][ch] ) { free( wc->mn[L][ch] ); wc->mn[L][ch] = NULL; }
-            if( wc->mx[L][ch] ) { free( wc->mx[L][ch] ); wc->mx[L][ch] = NULL; }
-        }
-
-    L = 0;
-    while( wc->numBins[L] > 1 && L + 1 < WF_MAX_LEVELS ) {
-        long pbins = wc->numBins[L];
-        long nbins = ( pbins + 1 ) / 2;
-        int  Lp = L + 1;
-        wc->binSize[Lp] = wc->binSize[L] * 2;
-        wc->numBins[Lp] = nbins;
-        for( ch = 0; ch < nch; ch++ ) {
-            float *pmn = wc->mn[L][ch], *pmx = wc->mx[L][ch];
-            float *omn = (float *)malloc( (size_t)nbins * sizeof(float) );
-            float *omx = (float *)malloc( (size_t)nbins * sizeof(float) );
-            if( !omn || !omx ) {
-                if( omn ) free( omn );
-                if( omx ) free( omx );
-                waveCacheFree( wc ); return;
-            }
-            for( b = 0; b < nbins; b++ ) {
-                long  a = b * 2, bb = a + 1;
-                float mn = pmn[a], mx = pmx[a];
-                if( bb < pbins ) {
-                    if( pmn[bb] < mn ) mn = pmn[bb];
-                    if( pmx[bb] > mx ) mx = pmx[bb];
-                }
-                omn[b] = mn; omx[b] = mx;
-            }
-            wc->mn[Lp][ch] = omn; wc->mx[Lp][ch] = omx;
-        }
-        L = Lp;
-    }
-    wc->numLevels = L + 1;
-    wc->valid = 1;
-}
-
-/* Build the pyramid for clip c.  If 'progress' is non-NULL it is filled
- * 0..1000 as the (dominant) level-0 pass proceeds. */
-static int waveCacheBuild( WaveCache *wc, const AudioClip *c,
-                           volatile int *progress )
-{
-    int  nch = c->numChannels, ch;
-    long n = c->numFrames, bins, b;
-
-    waveCacheFree( wc );
-    if( n <= 0 || nch < 1 ) { if( progress ) *progress = 1000; return 0; }
-
-    wc->numChannels = nch;
-    wc->numFrames   = n;
-    wc->binSize[0]  = WF_MIN_BIN;
-    bins = ( n + WF_MIN_BIN - 1 ) / WF_MIN_BIN;
-    wc->numBins[0]  = bins;
-
-    for( ch = 0; ch < nch; ch++ ) {
-        wc->mn[0][ch] = (float *)malloc( (size_t)bins * sizeof(float) );
-        wc->mx[0][ch] = (float *)malloc( (size_t)bins * sizeof(float) );
-        if( !wc->mn[0][ch] || !wc->mx[0][ch] ) { waveCacheFree( wc ); return 1; }
-    }
-    /* level 0 straight from raw samples (the O(numFrames) pass) */
-    for( ch = 0; ch < nch; ch++ ) {
-        float *s   = c->channel[ch];
-        float *omn = wc->mn[0][ch];
-        float *omx = wc->mx[0][ch];
-        for( b = 0; b < bins; b++ ) {
-            long  i0 = b * WF_MIN_BIN, i1 = i0 + WF_MIN_BIN, i;
-            float mn, mx;
-            if( i1 > n ) i1 = n;
-            mn = mx = s[i0];
-            for( i = i0 + 1; i < i1; i++ ) {
-                float v = s[i];
-                if( v < mn ) mn = v;
-                if( v > mx ) mx = v;
-            }
-            omn[b] = mn; omx[b] = mx;
-        }
-        if( progress ) *progress = (int)( 1000.0 * (double)( ch + 1 ) / nch );
-    }
-    waveCacheRebuildUpper( wc );
-    if( progress ) *progress = 1000;
-    return wc->valid ? 0 : 1;
-}
-
-/* Incrementally patch the pyramid after a *length-changing* structural edit
- * that left frames [0,from) untouched and rewrote everything from 'from' to the
- * (new) end -- an insert at 'from', a delete/cut starting there, a paste that
- * replaced a tail selection, or an undo/redo splice at 'from'.  Only the
- * level-0 bins from 'from' onward are recomputed from raw samples (the array is
- * realloc'd to the new length, preserving the untouched [0,from) prefix); the
- * cheap coarse levels are then rebuilt.  Cost scales with the changed tail, so
- * an edit at the END of a long file avoids the full O(numFrames) rebuild.
- *
- * Caller guarantees the current level-0 bins covering [0,from) are still valid
- * for clip c.  Falls back to a full build if the cache is not usable. */
-static void waveCacheReplaceTail( WaveCache *wc, const AudioClip *c, long from )
-{
-    int  nch = c->numChannels, ch;
-    long n = c->numFrames;
-    long newBins, b0, b;
-
-    if( !wc->valid || wc->numChannels != nch ) {
-        waveCacheBuild( wc, c, NULL );
-        return;
-    }
-    if( n <= 0 ) { waveCacheFree( wc ); return; }
-    if( from < 0 ) from = 0;
-
-    newBins = ( n + WF_MIN_BIN - 1 ) / WF_MIN_BIN;
-    b0 = from / WF_MIN_BIN;              /* first level-0 bin that may differ */
-    if( b0 > newBins ) b0 = newBins;
-
-    /* resize level-0 arrays to the new bin count; realloc preserves the
-     * [0,b0) prefix (unchanged frames), and any growth is filled below */
-    for( ch = 0; ch < nch; ch++ ) {
-        float *pn = (float *)realloc( wc->mn[0][ch],
-                        (size_t)( newBins > 0 ? newBins : 1 ) * sizeof(float) );
-        float *px = (float *)realloc( wc->mx[0][ch],
-                        (size_t)( newBins > 0 ? newBins : 1 ) * sizeof(float) );
-        if( pn ) wc->mn[0][ch] = pn;
-        if( px ) wc->mx[0][ch] = px;
-        if( !pn || !px ) { waveCacheBuild( wc, c, NULL ); return; }
-    }
-    wc->numBins[0]  = newBins;
-    wc->numChannels = nch;
-    wc->numFrames   = n;
-
-    /* recompute the changed level-0 bins [b0, newBins) from raw samples */
-    for( ch = 0; ch < nch; ch++ ) {
-        float *s   = c->channel[ch];
-        float *omn = wc->mn[0][ch];
-        float *omx = wc->mx[0][ch];
-        for( b = b0; b < newBins; b++ ) {
-            long  i0 = b * WF_MIN_BIN, i1 = i0 + WF_MIN_BIN, i;
-            float mn, mx;
-            if( i1 > n ) i1 = n;
-            if( i0 >= n ) break;
-            mn = mx = s[i0];
-            for( i = i0 + 1; i < i1; i++ ) {
-                float v = s[i];
-                if( v < mn ) mn = v;
-                if( v > mx ) mx = v;
-            }
-            omn[b] = mn; omx[b] = mx;
-        }
-    }
-    waveCacheRebuildUpper( wc );
-}
-
-/* Incrementally refresh only the pyramid bins covering frames [start,end).
- * Used after an in-place edit (fade, normalize, silence, ...) that does NOT
- * change the clip length: the geometry (bin counts / sizes) is unchanged, so
- * we recompute the handful of affected level-0 bins from the raw samples and
- * propagate the change up the pyramid.  Cost scales with the edited span, not
- * with the whole file -- fading the tail of a long file is now instant.
- *
- * Caller must guarantee wc was built for a clip with the SAME numFrames and
- * numChannels as c (i.e. a length-preserving edit). */
-static void waveCacheUpdateRange( WaveCache *wc, const AudioClip *c,
-                                  long start, long end )
-{
-    int  nch = c->numChannels, ch, L;
-    long n = c->numFrames;
-    long b0, b1, b;
-
-    if( !wc->valid || wc->numLevels < 1 ) return;
-    if( start < 0 ) start = 0;
-    if( end > n )   end = n;
-    if( end <= start ) return;
-
-    /* level 0: recompute affected bins straight from raw samples */
-    b0 = start / WF_MIN_BIN;
-    b1 = ( end - 1 ) / WF_MIN_BIN;      /* inclusive */
-    if( b1 >= wc->numBins[0] ) b1 = wc->numBins[0] - 1;
-    for( ch = 0; ch < nch; ch++ ) {
-        float *s   = c->channel[ch];
-        float *omn = wc->mn[0][ch];
-        float *omx = wc->mx[0][ch];
-        for( b = b0; b <= b1; b++ ) {
-            long  i0 = b * WF_MIN_BIN, i1 = i0 + WF_MIN_BIN, i;
-            float mn, mx;
-            if( i1 > n ) i1 = n;
-            if( i0 >= n ) break;
-            mn = mx = s[i0];
-            for( i = i0 + 1; i < i1; i++ ) {
-                float v = s[i];
-                if( v < mn ) mn = v;
-                if( v > mx ) mx = v;
-            }
-            omn[b] = mn; omx[b] = mx;
-        }
-    }
-
-    /* propagate the dirty bin range up through the coarser levels */
-    for( L = 1; L < wc->numLevels; L++ ) {
-        long pbins = wc->numBins[L - 1];
-        long nb    = wc->numBins[L];
-        long ub0 = b0 / 2, ub1 = b1 / 2;
-        if( ub1 >= nb ) ub1 = nb - 1;
-        for( ch = 0; ch < nch; ch++ ) {
-            float *pmn = wc->mn[L - 1][ch], *pmx = wc->mx[L - 1][ch];
-            float *omn = wc->mn[L][ch],     *omx = wc->mx[L][ch];
-            for( b = ub0; b <= ub1; b++ ) {
-                long  a = b * 2, bb = a + 1;
-                float mn = pmn[a], mx = pmx[a];
-                if( bb < pbins ) {
-                    if( pmn[bb] < mn ) mn = pmn[bb];
-                    if( pmx[bb] > mx ) mx = pmx[bb];
-                }
-                omn[b] = mn; omx[b] = mx;
-            }
-        }
-        b0 = ub0; b1 = ub1;
-    }
-}
-
-/* largest level whose bin fits within 'spp' samples-per-pixel, or -1 to
- * scan raw samples (when zoomed in enough that raw is already cheap). */
-static int waveCacheLevel( const WaveCache *wc, double spp )
-{
-    int L, best = -1;
-    if( !wc->valid ) return -1;
-    for( L = 0; L < wc->numLevels; L++ ) {
-        if( (double)wc->binSize[L] <= spp ) best = L;
-        else break;
-    }
-    return best;
-}
-
-/* min/max of channel ch over frame span [f0,f1); via cache level or raw.
- * Returns 1 if any data covered. */
-static int colMinMax( const AudioClip *c, const WaveCache *wc, int level,
-                      int ch, double f0, double f1, float *mn, float *mx )
-{
-    long n = c->numFrames;
-    long i0 = (long)f0, i1 = (long)f1;
-    if( i0 < 0 ) i0 = 0;
-    if( i1 > n ) i1 = n;
-    if( i1 <= i0 ) i1 = i0 + 1;
-    if( i0 >= n ) return 0;
-
-    if( level >= 0 ) {
-        long   bs = wc->binSize[level];
-        long   b0 = i0 / bs, b1 = ( i1 + bs - 1 ) / bs, b;
-        long   nb = wc->numBins[level];
-        float *pmn = wc->mn[level][ch], *pmx = wc->mx[level][ch];
-        float  lo = 0.0f, hi = 0.0f;
-        int    any = 0;
-        if( b1 > nb ) b1 = nb;
-        for( b = b0; b < b1; b++ ) {
-            if( !any ) { lo = pmn[b]; hi = pmx[b]; any = 1; }
-            else {
-                if( pmn[b] < lo ) lo = pmn[b];
-                if( pmx[b] > hi ) hi = pmx[b];
-            }
-        }
-        if( !any ) return 0;
-        *mn = lo; *mx = hi; return 1;
-    } else {
-        float *s = c->channel[ch];
-        long   i;
-        float  lo = s[i0], hi = s[i0];
-        for( i = i0 + 1; i < i1 && i < n; i++ ) {
-            float v = s[i];
-            if( v < lo ) lo = v;
-            if( v > hi ) hi = v;
-        }
-        *mn = lo; *mx = hi; return 1;
-    }
-}
-
-/* -------------------------------------------------------------------- */
 /* playback                                                             */
 /* -------------------------------------------------------------------- */
 
 typedef struct {
-    AudioClip *clip;
+    Sequence *clip;
     long  playhead;
     long  playStart;
     long  playEnd;
@@ -405,36 +84,58 @@ static float clamp1( float v )
     return v;
 }
 
+/* The clip is now a block list, so playback keeps a cursor (block index +
+ * offset within that block) instead of a flat sample index.  The cursor is
+ * located once per callback via a binary search (cheap -- once per ~1024
+ * frames) and then advanced per frame, crossing block boundaries and
+ * re-seeking on a loop wrap.  Edits happen under audio_lock so the block
+ * pointers cannot change mid-callback. */
 static void SDLCALL audio_cb( void *ud, Uint8 *stream, int len )
 {
-    Player *p = (Player *)ud;
-    float *out = (float *)stream;
-    int frames = len / (int)( 2 * sizeof(float) );
-    int i;
+    Player   *p = (Player *)ud;
+    float    *out = (float *)stream;
+    int       frames = len / (int)( 2 * sizeof(float) );
+    Sequence *c = p->clip;
+    int       i, bIdx = 0, have = 0, nch = 0;
+    long      local = 0;
+
+    if( p->playing && c && c->numFrames > 0 ) {
+        seq_locate( c, p->playhead, &bIdx, &local );
+        have = ( bIdx < c->numBlocks );
+        nch  = c->numChannels;
+    }
     for( i = 0; i < frames; i++ ) {
         float L = 0.0f, R = 0.0f;
-        if( p->playing && p->clip && p->clip->numFrames > 0 &&
+        if( p->playing && have &&
             p->playhead >= 0 && p->playhead < p->playEnd &&
-            p->playhead < p->clip->numFrames ) {
-            AudioClip *c = p->clip;
-            long h = p->playhead;
-            if( c->numChannels == 1 ) {
-                L = R = c->channel[0][h];
+            p->playhead < c->numFrames ) {
+            AudioClip *b = &c->blocks[bIdx]->buf;
+            if( nch == 1 ) {
+                L = R = b->channel[0][local];
             } else {
                 int ch;
-                L = c->channel[0][h];
-                R = c->channel[1][h];
-                for( ch = 2; ch < c->numChannels; ch++ ) {
-                    float s = c->channel[ch][h] * 0.5f;
+                L = b->channel[0][local];
+                R = b->channel[1][local];
+                for( ch = 2; ch < nch; ch++ ) {
+                    float s = b->channel[ch][local] * 0.5f;
                     L += s; R += s;
                 }
             }
             L = clamp1( L * p->volume );
             R = clamp1( R * p->volume );
             p->playhead++;
+            if( ++local >= b->numFrames ) {   /* advance to next block */
+                bIdx++; local = 0;
+                have = ( bIdx < c->numBlocks );
+            }
             if( p->playhead >= p->playEnd ) {
-                if( p->loop ) p->playhead = p->playStart;
-                else          p->playing  = 0;
+                if( p->loop ) {
+                    p->playhead = p->playStart;
+                    seq_locate( c, p->playhead, &bIdx, &local );
+                    have = ( bIdx < c->numBlocks );
+                } else {
+                    p->playing = 0;
+                }
             }
         }
         out[2 * i]     = L;
@@ -516,8 +217,8 @@ typedef struct {
 } UndoRec;
 
 typedef struct {
-    AudioClip clip;
-    AudioClip clipboard;
+    Sequence  clip;          /* block-list document (owns per-block summaries) */
+    AudioClip clipboard;     /* copy/cut buffer stays a flat contiguous clip   */
 
     /* marks (see Mark) */
     Mark marks[MAX_MARKS];
@@ -538,11 +239,6 @@ typedef struct {
 
     /* overview / scroll bar pixel region (updated each render) */
     float  ovX, ovY, ovW, ovH;
-
-    /* waveform summary pyramid, rebuilt when waveGen changes */
-    WaveCache wave;
-    long      waveGen;      /* bumped whenever the clip data mutates      */
-    long      waveBuiltGen; /* generation the current cache was built for */
 
     /* undo / redo (delta records, see UndoRec) */
     UndoRec undo[UNDO_LEVELS];
@@ -575,8 +271,8 @@ static App app;
 
 typedef struct {
     char         path[PATH_MAX_LEN];
-    AudioClip    clip;
-    WaveCache    cache;
+    AudioClip    clip;       /* decode target (moved into 'seq' on phase 1) */
+    Sequence     seq;        /* block-list built from the decoded clip       */
     volatile int progress;   /* 0..1000 within the current phase          */
     volatile int phase;      /* 0 = decoding file, 1 = building overview   */
     volatile int done;       /* set by the worker when finished            */
@@ -591,8 +287,8 @@ static int       loading = 0;   /* a load is in flight (main-thread flag)  */
 static void *loadWorker( void *arg )
 {
     LoadJob *j = (LoadJob *)arg;
-    memset( &j->clip,  0, sizeof(j->clip) );
-    memset( &j->cache, 0, sizeof(j->cache) );
+    memset( &j->clip, 0, sizeof(j->clip) );
+    seq_init( &j->seq );
     j->phase = 0;
     j->progress = 0;
     if( audio_load_progress( &j->clip, j->path, j->err, sizeof(j->err),
@@ -603,7 +299,9 @@ static void *loadWorker( void *arg )
     }
     j->phase    = 1;
     j->progress = 0;
-    waveCacheBuild( &j->cache, &j->clip, &j->progress );
+    /* split the decoded clip into blocks + per-block summaries (consumes clip) */
+    seq_adopt_clip( &j->seq, &j->clip );
+    j->progress = 1000;
     j->error = 0;
     j->done  = 1;
     return NULL;
@@ -617,52 +315,11 @@ static long clipLen( void ) { return app.clip.numFrames; }
 
 static int hasSelection( void ) { return app.selEnd > app.selStart; }
 
-/* mark the waveform sample data as changed so the overview pyramid is
- * rebuilt (fully) before the next render.  Use for structural edits that
- * change the clip length. */
-static void bumpWave( void ) { app.waveGen++; }
-
-/* Fast path for a length-preserving in-place edit of frames [start,end):
- * patch just the affected pyramid bins instead of rebuilding the whole
- * thing.  Falls back to a full rebuild if the cache geometry no longer
- * matches the clip (e.g. first edit before any cache was built). */
-static void waveUpdateRange( long start, long end )
-{
-    if( app.wave.valid &&
-        app.waveBuiltGen     == app.waveGen &&   /* cache current, no rebuild pending */
-        app.wave.numFrames   == app.clip.numFrames &&
-        app.wave.numChannels == app.clip.numChannels ) {
-        waveCacheUpdateRange( &app.wave, &app.clip, start, end );
-        /* keep the generation counters in lock-step so renderWaveform does
-         * NOT trigger a redundant full rebuild this frame */
-        app.waveGen++;
-        app.waveBuiltGen = app.waveGen;
-    } else {
-        bumpWave();
-    }
-}
-
-/* Fast path for a length-CHANGING structural edit (insert / delete / cut /
- * paste / undo / redo) whose change begins at frame 'from' and runs to the new
- * end, leaving [0,from) untouched: patch only the affected tail of the pyramid
- * instead of rebuilding the whole file.  This is what makes paste / delete at
- * the end of a long file instant (the buffer op itself is already ~O(1); the
- * old bumpWave() full rebuild was the real cost).  Falls back to a deferred
- * full rebuild when the cache is not in a patchable state. */
-static void waveReplaceTail( long from )
-{
-    if( app.wave.valid &&
-        app.waveBuiltGen     == app.waveGen &&   /* cache current, no rebuild pending */
-        app.wave.numChannels == app.clip.numChannels ) {
-        waveCacheReplaceTail( &app.wave, &app.clip, from );
-        /* keep generation counters in lock-step so renderWaveform does NOT
-         * trigger a redundant full rebuild this frame */
-        app.waveGen++;
-        app.waveBuiltGen = app.waveGen;
-    } else {
-        bumpWave();
-    }
-}
+/* NOTE: the overview no longer uses a separate global pyramid that must be
+ * rebuilt after edits -- each block in app.clip carries its own min/max
+ * summary bins, kept current by the Sequence ops themselves, so structural
+ * edits need no pyramid bookkeeping at all (that is what makes an edit at the
+ * start of a long file as fast as one at the end). */
 
 /* the range effects act on: the selection, or the whole clip */
 static void effectRange( long *s, long *e )
@@ -857,14 +514,18 @@ static void clearUndoRedo( void )
 static void captureRange( float *dst[AUDIO_MAX_CHANNELS], long start, long len )
 {
     int ch, nch = app.clip.numChannels;
+    AudioClip tmp;
     for( ch = 0; ch < AUDIO_MAX_CHANNELS; ch++ ) dst[ch] = NULL;
     if( len <= 0 ) return;
+    /* flatten the block-list range into a contiguous clip, then take over its
+     * per-channel arrays (avoiding a second copy) */
+    memset( &tmp, 0, sizeof(tmp) );
+    if( seq_read_range( &tmp, &app.clip, start, start + len ) ) return;
     for( ch = 0; ch < nch; ch++ ) {
-        dst[ch] = (float *)malloc( (size_t)len * sizeof(float) );
-        if( dst[ch] )
-            memcpy( dst[ch], app.clip.channel[ch] + start,
-                    (size_t)len * sizeof(float) );
+        dst[ch] = tmp.channel[ch];       /* steal the pointer */
+        tmp.channel[ch] = NULL;
     }
+    audio_free( &tmp );                  /* frees only the remaining channels */
 }
 
 /* Record in progress between beginEdit() and commitEdit(). */
@@ -931,7 +592,7 @@ static void doUndo( void )
 
     /* reverse the edit: at 'at', replace the newLen frames with oldData */
     audio_lock();
-    audio_splice( &app.clip, r.at, r.newLen, r.oldData, r.oldLen );
+    seq_splice( &app.clip, r.at, r.newLen, r.oldData, r.oldLen );
     audio_unlock();
 
     /* move the record onto the redo stack (it replays the edit unchanged) */
@@ -941,11 +602,7 @@ static void doUndo( void )
         app.redoCount--;
     }
     app.redo[app.redoCount++] = r;
-
-    /* length-preserving -> patch the touched span; length-changing -> patch
-     * only the rewritten tail from r.at (both avoid a full rebuild) */
-    if( lenChanged ) waveReplaceTail( r.at );
-    else             waveUpdateRange( r.at, r.at + r.oldLen );
+    (void)lenChanged;   /* the Sequence keeps its block summaries current */
 
     /* restore the exact selection + marks that existed before the edit, so
      * a cut's selection comes back and a paste's seam marks disappear */
@@ -968,7 +625,7 @@ static void doRedo( void )
 
     /* replay the edit: at 'at', replace the oldLen frames with newData */
     audio_lock();
-    audio_splice( &app.clip, r.at, r.oldLen, r.newData, r.newLen );
+    seq_splice( &app.clip, r.at, r.oldLen, r.newData, r.newLen );
     audio_unlock();
 
     if( app.undoCount == UNDO_LEVELS ) {
@@ -977,9 +634,7 @@ static void doRedo( void )
         app.undoCount--;
     }
     app.undo[app.undoCount++] = r;
-
-    if( lenChanged ) waveReplaceTail( r.at );
-    else             waveUpdateRange( r.at, r.at + r.newLen );
+    (void)lenChanged;
 
     /* restore the selection + marks as they were just after the edit */
     app.selStart = r.selAfterS;
@@ -1168,9 +823,8 @@ static void actDelete( void )
     s = app.selStart; e = app.selEnd;
     beginEdit( s, e - s );
     audio_lock();
-    audio_delete_range( &app.clip, s, e );
+    seq_delete_range( &app.clip, s, e );
     audio_unlock();
-    waveReplaceTail( s );             /* only frames from s changed */
     marksAdjustDelete( s, e );
     addMark( s, newMarkColor() );     /* mark the seam left behind */
     app.selEnd = app.selStart = s;
@@ -1185,7 +839,7 @@ static void actCopy( void )
     long s, e;
     if( !hasSelection() ) { setStatus( "No selection to copy" ); return; }
     s = app.selStart; e = app.selEnd;
-    audio_copy_range( &app.clipboard, &app.clip, s, e );
+    seq_read_range( &app.clipboard, &app.clip, s, e );
     /* mark the copied region's edges so you can see / return to what was
      * grabbed (copy is not an undoable edit, so these are plain annotations) */
     {
@@ -1201,12 +855,11 @@ static void actCut( void )
     long s, e;
     if( !hasSelection() ) { setStatus( "No selection to cut" ); return; }
     s = app.selStart; e = app.selEnd;
-    audio_copy_range( &app.clipboard, &app.clip, s, e );
+    seq_read_range( &app.clipboard, &app.clip, s, e );
     beginEdit( s, e - s );
     audio_lock();
-    audio_delete_range( &app.clip, s, e );
+    seq_delete_range( &app.clip, s, e );
     audio_unlock();
-    waveReplaceTail( s );             /* only frames from s changed */
     marksAdjustDelete( s, e );
     addMark( s, newMarkColor() );     /* mark the seam left behind */
     app.selEnd = app.selStart = s;
@@ -1229,10 +882,9 @@ static void actPaste( void )
     /* one splice: the (optional) replaced selection out, the clipboard in */
     beginEdit( at, hadSel ? ( selE - selS ) : 0 );
     audio_lock();
-    if( hadSel ) audio_delete_range( &app.clip, selS, selE );
-    audio_insert( &app.clip, at, &app.clipboard );
+    if( hadSel ) seq_delete_range( &app.clip, selS, selE );
+    seq_insert_clip( &app.clip, at, &app.clipboard );
     audio_unlock();
-    waveReplaceTail( at );            /* frames [0,at) unchanged; tail rewritten */
     if( hadSel ) marksAdjustDelete( selS, selE );
     marksAdjustInsert( at, insN );
     c = newMarkColor();
@@ -1258,9 +910,11 @@ static void actTrim( void )
      * to hold the whole pre-trim clip (inherently O(n) -- unavoidable) */
     beginEdit( 0, clipLen() );
     audio_lock();
-    audio_trim_to_range( &app.clip, s, e );
+    /* keep only [s,e): drop the tail first (so [0,e) indices stay put), then
+     * the head.  Both are block relinks -- no O(n) copy of the kept region. */
+    seq_delete_range( &app.clip, e, clipLen() );
+    seq_delete_range( &app.clip, 0, s );
     audio_unlock();
-    bumpWave();
     /* remap marks into the kept range [s,e); drop any that fall outside */
     {
         int i = 0;
@@ -1290,19 +944,18 @@ static void applyEffect( int which )
         case 0: {
             /* normalize target is specified in dBFS */
             float peak = (float)pow( 10.0, (double)app.dlgNormDb / 20.0 );
-            audio_normalize( &app.clip, s, e, peak );
+            seq_normalize( &app.clip, s, e, peak );
             break;
         }
-        case 1: audio_amplify( &app.clip, s, e, app.dlgGain );        break;
-        case 2: audio_fade_in( &app.clip, s, e );                     break;
-        case 3: audio_fade_out( &app.clip, s, e );                    break;
-        case 4: audio_silence( &app.clip, s, e );                     break;
-        case 5: audio_reverse( &app.clip, s, e );                     break;
+        case 1: seq_amplify( &app.clip, s, e, app.dlgGain );          break;
+        case 2: seq_fade_in( &app.clip, s, e );                       break;
+        case 3: seq_fade_out( &app.clip, s, e );                      break;
+        case 4: seq_silence( &app.clip, s, e );                       break;
+        case 5: seq_reverse( &app.clip, s, e );                       break;
     }
     audio_unlock();
-    /* these effects preserve length, so patch only the edited span of the
-     * overview pyramid rather than rebuilding the whole (possibly huge) file */
-    waveUpdateRange( s, e );
+    /* these length-preserving effects update only the touched blocks' summary
+     * bins internally -- no whole-file pyramid work needed */
     /* leave marks at the edges of the processed region so the seam is kept */
     if( onSelection ) {
         int c = newMarkColor();
@@ -1328,10 +981,8 @@ static void newFile( void )
 {
     stopPlayback();
     audio_lock();
-    audio_free( &app.clip );
-    audio_alloc( &app.clip, 1, 44100, 0 );
+    seq_set_empty( &app.clip, 1, 44100 );
     audio_unlock();
-    bumpWave();
     clearUndoRedo();       /* stale deltas would splice into the empty clip */
     app.numMarks = 0;
     app.markColorNext = 0;
@@ -1367,24 +1018,19 @@ static void finishLoad( void )
 
     if( loadJob.error ) {
         audio_free( &loadJob.clip );
-        waveCacheFree( &loadJob.cache );
+        seq_free( &loadJob.seq );
         setStatus( loadJob.err );
         strncpy( app.pendingPopup, "Error", sizeof(app.pendingPopup) - 1 );
         return;
     }
 
-    /* swap the freshly decoded clip + its prebuilt overview into place */
+    /* swap the freshly decoded block-list document into place (its per-block
+     * summaries are already built, so the overview is ready with no rebuild) */
     audio_lock();
-    audio_free( &app.clip );
-    app.clip = loadJob.clip;
+    seq_free( &app.clip );
+    app.clip = loadJob.seq;
     audio_unlock();
-    memset( &loadJob.clip, 0, sizeof(loadJob.clip) );
-
-    waveCacheFree( &app.wave );
-    app.wave = loadJob.cache;
-    memset( &loadJob.cache, 0, sizeof(loadJob.cache) );
-    app.waveGen      = app.waveGen + 1;
-    app.waveBuiltGen = app.waveGen;   /* cache already matches, no rebuild */
+    seq_init( &loadJob.seq );
 
     open_audio( app.clip.sampleRate );
 
@@ -1418,7 +1064,7 @@ static void saveFile( const char *path )
         strncpy( app.pendingPopup, "Error", sizeof(app.pendingPopup) - 1 );
         return;
     }
-    rc = audio_save_wav( &app.clip, path, err, sizeof(err) );
+    rc = seq_save_wav( &app.clip, path, err, sizeof(err) );
     if( rc ) {
         setStatus( err );
         strncpy( app.pendingPopup, "Error", sizeof(app.pendingPopup) - 1 );
@@ -1478,7 +1124,7 @@ static void renderOverview( int winW )
     float yc = y0 + h * 0.5f;
     float amp = h * 0.42f;
     long  n = clipLen();
-    int   level, px, i;
+    int   px, i;
     double spp;
     (void)winW;
 
@@ -1491,7 +1137,6 @@ static void renderOverview( int winW )
 
     if( n > 0 && w > 1.0f ) {
         spp   = (double)n / (double)w;
-        level = waveCacheLevel( &app.wave, spp );
         glColor4f( 0.40f, 0.55f, 0.72f, 1.0f );
         glBegin( GL_LINES );
         for( px = 0; px < (int)w; px++ ) {
@@ -1500,8 +1145,8 @@ static void renderOverview( int winW )
             float  mn = 0.0f, mx = 0.0f, cmn, cmx;
             int    ch, any = 0;
             for( ch = 0; ch < app.clip.numChannels; ch++ ) {
-                if( colMinMax( &app.clip, &app.wave, level, ch, f0, f1,
-                               &cmn, &cmx ) ) {
+                if( seq_col_minmax( &app.clip, ch, f0, f1, spp,
+                                    &cmn, &cmx ) ) {
                     if( !any ) { mn = cmn; mx = cmx; any = 1; }
                     else { if( cmn < mn ) mn = cmn; if( cmx > mx ) mx = cmx; }
                 }
@@ -1628,12 +1273,9 @@ static void renderWaveform( int winW, int winH )
     int   ch;
     float laneH, laneTop, laneAreaH;
     long  n = clipLen();
-
-    /* rebuild the overview pyramid if the sample data changed */
-    if( !loading && app.waveGen != app.waveBuiltGen ) {
-        waveCacheBuild( &app.wave, &app.clip, NULL );
-        app.waveBuiltGen = app.waveGen;
-    }
+    AudioClip win;            /* flattened visible window (zoomed-in path)   */
+    int   haveWin = 0;
+    long  wi0 = 0, wi1 = 0;
 
     app.ovX = 0.0f;
     app.ovY = menuH;
@@ -1658,11 +1300,22 @@ static void renderWaveform( int winW, int winH )
     drawRect( app.wfX, app.wfY, app.wfX + app.wfW, app.wfY + app.wfH,
               0.10f, 0.11f, 0.13f, 1.0f );
 
+    /* zoomed in enough to draw individual samples: flatten just the visible
+     * window (all channels) out of the block list once, then index it */
+    if( n > 0 && app.samplesPerPixel < 1.0 ) {
+        wi0 = (long)app.viewStart - 1;
+        wi1 = (long)( app.viewStart + app.samplesPerPixel * app.wfW ) + 2;
+        if( wi0 < 0 ) wi0 = 0;
+        if( wi1 > n ) wi1 = n;
+        memset( &win, 0, sizeof(win) );
+        if( wi1 > wi0 && seq_read_range( &win, &app.clip, wi0, wi1 ) == 0 )
+            haveWin = 1;
+    }
+
     for( ch = 0; ch < nch; ch++ ) {
         float y0 = laneTop + laneH * (float)ch;
         float yc = y0 + laneH * 0.5f;
         float amp = laneH * 0.45f;
-        float *samples = app.clip.channel[ch];
         int   px;
 
         /* lane separator */
@@ -1681,12 +1334,11 @@ static void renderWaveform( int winW, int winH )
             glVertex2f( app.wfX + app.wfW, yc );
         glEnd();
 
-        if( n <= 0 || samples == NULL ) continue;
+        if( n <= 0 ) continue;
 
         if( app.samplesPerPixel >= 1.0 ) {
             /* peak (min/max) rendering: one vertical line per column,
-             * summarized through the pyramid when zoomed out on a big file */
-            int level = waveCacheLevel( &app.wave, app.samplesPerPixel );
+             * summarized through each block's own bins when zoomed out */
             glColor4f( 0.45f, 0.72f, 0.95f, 1.0f );
             glBegin( GL_LINES );
             for( px = 0; px < (int)app.wfW; px++ ) {
@@ -1694,26 +1346,22 @@ static void renderWaveform( int winW, int winH )
                 double f1 = f0 + app.samplesPerPixel;
                 float  mn, mx;
                 if( f0 >= (double)n ) break;
-                if( colMinMax( &app.clip, &app.wave, level, ch,
-                               f0, f1, &mn, &mx ) ) {
+                if( seq_col_minmax( &app.clip, ch, f0, f1,
+                                    app.samplesPerPixel, &mn, &mx ) ) {
                     glVertex2f( (float)px, yc - mx * amp );
                     glVertex2f( (float)px, yc - mn * amp );
                 }
             }
             glEnd();
-        } else {
-            /* zoomed in: connect individual samples */
-            long i0 = (long)app.viewStart - 1;
-            long i1 = (long)( app.viewStart +
-                              app.samplesPerPixel * app.wfW ) + 2;
+        } else if( haveWin ) {
+            /* zoomed in: connect individual samples from the flattened window */
+            float *samples = win.channel[ch];
             long i;
-            if( i0 < 0 ) i0 = 0;
-            if( i1 > n ) i1 = n;
             glColor4f( 0.45f, 0.72f, 0.95f, 1.0f );
             glBegin( GL_LINE_STRIP );
-            for( i = i0; i < i1; i++ ) {
+            for( i = wi0; i < wi1; i++ ) {
                 float x = frameToPixel( i );
-                glVertex2f( x, yc - samples[i] * amp );
+                glVertex2f( x, yc - samples[i - wi0] * amp );
             }
             glEnd();
             /* sample dots when very zoomed */
@@ -1721,14 +1369,15 @@ static void renderWaveform( int winW, int winH )
                 glColor4f( 0.85f, 0.9f, 1.0f, 1.0f );
                 glPointSize( 3.0f );
                 glBegin( GL_POINTS );
-                for( i = i0; i < i1; i++ ) {
+                for( i = wi0; i < wi1; i++ ) {
                     float x = frameToPixel( i );
-                    glVertex2f( x, yc - samples[i] * amp );
+                    glVertex2f( x, yc - samples[i - wi0] * amp );
                 }
                 glEnd();
             }
         }
     }
+    if( haveWin ) audio_free( &win );
 
     /* black "beyond the data" margins: when scrolled to the very start or end
      * the pad frames outside [0,n] show up as solid black, giving a clear
@@ -2383,7 +2032,8 @@ int main( int argc, char **argv )
     app.dlgNormDb = -1.0f;
     app.browserW = 640.0f;
     app.browserH = 480.0f;
-    audio_alloc( &app.clip, 1, 44100, 0 );
+    seq_init( &app.clip );
+    seq_set_empty( &app.clip, 1, 44100 );
 
     if( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_AUDIO ) != 0 ) {
         fprintf( stderr, "SDL_Init failed: %s\n", SDL_GetError() );
@@ -2512,10 +2162,10 @@ int main( int argc, char **argv )
     /* if a load is still running at quit, wait for it so we can free */
     if( loading ) { pthread_join( loadThread, NULL );
                     audio_free( &loadJob.clip );
-                    waveCacheFree( &loadJob.cache ); }
+                    seq_free( &loadJob.seq ); }
 
     stopPlayback();
-    waveCacheFree( &app.wave );
+    seq_free( &app.clip );
     if( audioDev ) SDL_CloseAudioDevice( audioDev );
     gui_shutdown();
     SDL_GL_DeleteContext( glctx );

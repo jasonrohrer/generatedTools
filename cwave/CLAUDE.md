@@ -115,6 +115,15 @@ re-seeking on a loop wrap. `Player player` holds playhead/range/flags.
 **Invariant: any edit that mutates or frees clip data must do so under
 `audio_lock()/audio_unlock()`** so the callback never touches freed block
 memory. Edits no longer `stopPlayback()` — see "Playback survives edits".
+The on-screen playhead only advances once per callback (the display samples it
+per video frame), so `open_audio` sizes the SDL buffer to keep the callback
+period ~constant (~20 ms) across sample rates — pow2 nearest `rate/50`, clamped
+`[128,2048]`. A fixed 1024-sample buffer looked smooth at 44.1 kHz but jerky at
+8 kHz (128 ms/callback); scaling it fixed that. **Loop follows the live
+selection:** the main-loop sync block re-points `playStart/End` at the current
+selection whenever a selection exists AND (`followSel` OR `player.loop`), so
+checking Loop and then selecting mid-playback redefines the loop region at once
+without a Stop/Play cycle.
 
 **Async load.** Large files decode on a short-lived pthread (`loadWorker`) into
 a contiguous `AudioClip`, then `seq_adopt_clip` splits that into blocks +

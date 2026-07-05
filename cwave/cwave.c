@@ -149,15 +149,32 @@ static void audio_unlock( void ) { if( audioDev ) SDL_UnlockAudioDevice( audioDe
 static void open_audio( int rate )
 {
     SDL_AudioSpec want, have;
+    int samples, target;
     if( rate <= 0 ) rate = 44100;
     if( audioDev && audioDevRate == rate ) return;
     if( audioDev ) { SDL_CloseAudioDevice( audioDev ); audioDev = 0; }
+
+    /* The callback advances the playhead once per invocation, and the display
+       reads it once per video frame -- so the on-screen playhead only moves as
+       often as the callback fires (every want.samples/rate seconds).  A fixed
+       1024-sample buffer is ~23 ms at 44.1 kHz (smooth) but ~128 ms at 8 kHz
+       (visibly jerky).  Pick a buffer that keeps the callback period ~constant
+       (~20 ms) across sample rates: the power of two nearest rate/50, clamped
+       to [128, 2048].  The callback is a trivial copy, so a small buffer is
+       safe. */
+    target  = rate / 50;
+    samples = 128;
+    while( ( samples << 1 ) <= 2048 && ( samples << 1 ) <= target )
+        samples <<= 1;
+    if( ( samples << 1 ) <= 2048 &&
+        ( target - samples ) > ( ( samples << 1 ) - target ) )
+        samples <<= 1;
 
     SDL_memset( &want, 0, sizeof(want) );
     want.freq     = rate;
     want.format   = AUDIO_F32SYS;
     want.channels = 2;
-    want.samples  = 1024;
+    want.samples  = (Uint16) samples;
     want.callback = audio_cb;
     want.userdata = &player;
 
@@ -2130,8 +2147,14 @@ int main( int argc, char **argv )
         /* a background load just finished: swap in the result */
         if( loading && loadJob.done ) finishLoad();
 
-        /* live loop: while playing a selection, track edits to its edges */
-        if( player.playing && player.followSel && hasSelection() ) {
+        /* live loop: while playing a selection, track edits to its edges.
+           Also, when Loop is on, obey a selection made *after* playback
+           started -- checking Loop and then selecting redefines the loop
+           region immediately, without a Stop/Play cycle.  (Playback may have
+           begun with no selection, so followSel is 0; the loop gate covers
+           that case.) */
+        if( player.playing && hasSelection() &&
+            ( player.followSel || player.loop ) ) {
             audio_lock();
             player.playStart = app.selStart;
             player.playEnd   = app.selEnd;

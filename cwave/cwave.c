@@ -19,6 +19,7 @@
 #include <math.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include "audio.h"
 #include "gui.h"
@@ -28,8 +29,178 @@
 /* -------------------------------------------------------------------- */
 
 #define TRANSPORT_H   96.0f     /* height of bottom transport panel      */
+#define OVERVIEW_H    56.0f     /* height of the top overview / scroll bar */
 #define UNDO_LEVELS   32
 #define PATH_MAX_LEN  1024
+
+/* -------------------------------------------------------------------- */
+/* waveform summary pyramid                                             */
+/*                                                                      */
+/* Rendering a big file by scanning every raw sample per pixel column   */
+/* is O(numFrames) per frame, which makes zooming / dragging on large   */
+/* files crawl.  Instead we precompute a mip pyramid of (min,max) pairs */
+/* once, and render from the coarsest level whose bin fits in a pixel.  */
+/* Level 0 bins WF_MIN_BIN samples; each higher level doubles the bin.  */
+/* -------------------------------------------------------------------- */
+
+#define WF_MIN_BIN     256
+#define WF_MAX_LEVELS  24
+
+typedef struct {
+    int    valid;
+    int    numChannels;
+    long   numFrames;
+    int    numLevels;
+    long   binSize[WF_MAX_LEVELS];
+    long   numBins[WF_MAX_LEVELS];
+    float *mn[WF_MAX_LEVELS][AUDIO_MAX_CHANNELS];
+    float *mx[WF_MAX_LEVELS][AUDIO_MAX_CHANNELS];
+} WaveCache;
+
+static void waveCacheFree( WaveCache *wc )
+{
+    int L, ch;
+    for( L = 0; L < WF_MAX_LEVELS; L++ )
+        for( ch = 0; ch < AUDIO_MAX_CHANNELS; ch++ ) {
+            if( wc->mn[L][ch] ) free( wc->mn[L][ch] );
+            if( wc->mx[L][ch] ) free( wc->mx[L][ch] );
+            wc->mn[L][ch] = wc->mx[L][ch] = NULL;
+        }
+    wc->valid = 0; wc->numLevels = 0;
+    wc->numFrames = 0; wc->numChannels = 0;
+}
+
+/* Build the pyramid for clip c.  If 'progress' is non-NULL it is filled
+ * 0..1000 as the (dominant) level-0 pass proceeds. */
+static int waveCacheBuild( WaveCache *wc, const AudioClip *c,
+                           volatile int *progress )
+{
+    int  nch = c->numChannels, ch, L;
+    long n = c->numFrames, bins, b;
+
+    waveCacheFree( wc );
+    if( n <= 0 || nch < 1 ) { if( progress ) *progress = 1000; return 0; }
+
+    wc->numChannels = nch;
+    wc->numFrames   = n;
+    wc->binSize[0]  = WF_MIN_BIN;
+    bins = ( n + WF_MIN_BIN - 1 ) / WF_MIN_BIN;
+    wc->numBins[0]  = bins;
+
+    for( ch = 0; ch < nch; ch++ ) {
+        wc->mn[0][ch] = (float *)malloc( (size_t)bins * sizeof(float) );
+        wc->mx[0][ch] = (float *)malloc( (size_t)bins * sizeof(float) );
+        if( !wc->mn[0][ch] || !wc->mx[0][ch] ) { waveCacheFree( wc ); return 1; }
+    }
+    /* level 0 straight from raw samples */
+    for( ch = 0; ch < nch; ch++ ) {
+        float *s   = c->channel[ch];
+        float *omn = wc->mn[0][ch];
+        float *omx = wc->mx[0][ch];
+        for( b = 0; b < bins; b++ ) {
+            long  i0 = b * WF_MIN_BIN, i1 = i0 + WF_MIN_BIN, i;
+            float mn, mx;
+            if( i1 > n ) i1 = n;
+            mn = mx = s[i0];
+            for( i = i0 + 1; i < i1; i++ ) {
+                float v = s[i];
+                if( v < mn ) mn = v;
+                if( v > mx ) mx = v;
+            }
+            omn[b] = mn; omx[b] = mx;
+        }
+        if( progress ) *progress = (int)( 1000.0 * (double)( ch + 1 ) / nch );
+    }
+    /* higher levels combine pairs of bins from the level below */
+    L = 0;
+    while( wc->numBins[L] > 1 && L + 1 < WF_MAX_LEVELS ) {
+        long pbins = wc->numBins[L];
+        long nbins = ( pbins + 1 ) / 2;
+        int  Lp = L + 1;
+        wc->binSize[Lp] = wc->binSize[L] * 2;
+        wc->numBins[Lp] = nbins;
+        for( ch = 0; ch < nch; ch++ ) {
+            float *pmn = wc->mn[L][ch], *pmx = wc->mx[L][ch];
+            float *omn = (float *)malloc( (size_t)nbins * sizeof(float) );
+            float *omx = (float *)malloc( (size_t)nbins * sizeof(float) );
+            if( !omn || !omx ) {
+                if( omn ) free( omn );
+                if( omx ) free( omx );
+                waveCacheFree( wc ); return 1;
+            }
+            for( b = 0; b < nbins; b++ ) {
+                long  a = b * 2, bb = a + 1;
+                float mn = pmn[a], mx = pmx[a];
+                if( bb < pbins ) {
+                    if( pmn[bb] < mn ) mn = pmn[bb];
+                    if( pmx[bb] > mx ) mx = pmx[bb];
+                }
+                omn[b] = mn; omx[b] = mx;
+            }
+            wc->mn[Lp][ch] = omn; wc->mx[Lp][ch] = omx;
+        }
+        L = Lp;
+    }
+    wc->numLevels = L + 1;
+    wc->valid = 1;
+    if( progress ) *progress = 1000;
+    return 0;
+}
+
+/* largest level whose bin fits within 'spp' samples-per-pixel, or -1 to
+ * scan raw samples (when zoomed in enough that raw is already cheap). */
+static int waveCacheLevel( const WaveCache *wc, double spp )
+{
+    int L, best = -1;
+    if( !wc->valid ) return -1;
+    for( L = 0; L < wc->numLevels; L++ ) {
+        if( (double)wc->binSize[L] <= spp ) best = L;
+        else break;
+    }
+    return best;
+}
+
+/* min/max of channel ch over frame span [f0,f1); via cache level or raw.
+ * Returns 1 if any data covered. */
+static int colMinMax( const AudioClip *c, const WaveCache *wc, int level,
+                      int ch, double f0, double f1, float *mn, float *mx )
+{
+    long n = c->numFrames;
+    long i0 = (long)f0, i1 = (long)f1;
+    if( i0 < 0 ) i0 = 0;
+    if( i1 > n ) i1 = n;
+    if( i1 <= i0 ) i1 = i0 + 1;
+    if( i0 >= n ) return 0;
+
+    if( level >= 0 ) {
+        long   bs = wc->binSize[level];
+        long   b0 = i0 / bs, b1 = ( i1 + bs - 1 ) / bs, b;
+        long   nb = wc->numBins[level];
+        float *pmn = wc->mn[level][ch], *pmx = wc->mx[level][ch];
+        float  lo = 0.0f, hi = 0.0f;
+        int    any = 0;
+        if( b1 > nb ) b1 = nb;
+        for( b = b0; b < b1; b++ ) {
+            if( !any ) { lo = pmn[b]; hi = pmx[b]; any = 1; }
+            else {
+                if( pmn[b] < lo ) lo = pmn[b];
+                if( pmx[b] > hi ) hi = pmx[b];
+            }
+        }
+        if( !any ) return 0;
+        *mn = lo; *mx = hi; return 1;
+    } else {
+        float *s = c->channel[ch];
+        long   i;
+        float  lo = s[i0], hi = s[i0];
+        for( i = i0 + 1; i < i1 && i < n; i++ ) {
+            float v = s[i];
+            if( v < lo ) lo = v;
+            if( v > hi ) hi = v;
+        }
+        *mn = lo; *mx = hi; return 1;
+    }
+}
 
 /* -------------------------------------------------------------------- */
 /* playback                                                             */
@@ -42,6 +213,7 @@ typedef struct {
     long  playEnd;
     int   playing;
     int   loop;
+    int   followSel;   /* live-track the selection as loop/play range     */
     float volume;
 } Player;
 
@@ -139,6 +311,14 @@ typedef struct {
     /* waveform pixel region for this frame (updated each render) */
     float  wfX, wfY, wfW, wfH;
 
+    /* overview / scroll bar pixel region (updated each render) */
+    float  ovX, ovY, ovW, ovH;
+
+    /* waveform summary pyramid, rebuilt when waveGen changes */
+    WaveCache wave;
+    long      waveGen;      /* bumped whenever the clip data mutates      */
+    long      waveBuiltGen; /* generation the current cache was built for */
+
     /* undo / redo */
     AudioClip undo[UNDO_LEVELS];
     AudioClip redo[UNDO_LEVELS];
@@ -164,12 +344,56 @@ typedef struct {
 static App app;
 
 /* -------------------------------------------------------------------- */
+/* asynchronous file loading (worker thread + progress bar)             */
+/* -------------------------------------------------------------------- */
+
+typedef struct {
+    char         path[PATH_MAX_LEN];
+    AudioClip    clip;
+    WaveCache    cache;
+    volatile int progress;   /* 0..1000 within the current phase          */
+    volatile int phase;      /* 0 = decoding file, 1 = building overview   */
+    volatile int done;       /* set by the worker when finished            */
+    int          error;
+    char         err[256];
+} LoadJob;
+
+static LoadJob   loadJob;
+static pthread_t loadThread;
+static int       loading = 0;   /* a load is in flight (main-thread flag)  */
+
+static void *loadWorker( void *arg )
+{
+    LoadJob *j = (LoadJob *)arg;
+    memset( &j->clip,  0, sizeof(j->clip) );
+    memset( &j->cache, 0, sizeof(j->cache) );
+    j->phase = 0;
+    j->progress = 0;
+    if( audio_load_progress( &j->clip, j->path, j->err, sizeof(j->err),
+                             &j->progress ) ) {
+        j->error = 1;
+        j->done  = 1;
+        return NULL;
+    }
+    j->phase    = 1;
+    j->progress = 0;
+    waveCacheBuild( &j->cache, &j->clip, &j->progress );
+    j->error = 0;
+    j->done  = 1;
+    return NULL;
+}
+
+/* -------------------------------------------------------------------- */
 /* helpers                                                              */
 /* -------------------------------------------------------------------- */
 
 static long clipLen( void ) { return app.clip.numFrames; }
 
 static int hasSelection( void ) { return app.selEnd > app.selStart; }
+
+/* mark the waveform sample data as changed so the overview pyramid is
+ * rebuilt before the next render */
+static void bumpWave( void ) { app.waveGen++; }
 
 /* the range effects act on: the selection, or the whole clip */
 static void effectRange( long *s, long *e )
@@ -232,6 +456,7 @@ static void doUndo( void )
     app.clip = app.undo[app.undoCount];
     memset( &app.undo[app.undoCount], 0, sizeof(AudioClip) );
     audio_unlock();
+    bumpWave();
 
     if( app.selStart > clipLen() ) app.selStart = clipLen();
     if( app.selEnd   > clipLen() ) app.selEnd   = clipLen();
@@ -252,6 +477,7 @@ static void doRedo( void )
     app.clip = app.redo[app.redoCount];
     memset( &app.redo[app.redoCount], 0, sizeof(AudioClip) );
     audio_unlock();
+    bumpWave();
 
     if( app.selStart > clipLen() ) app.selStart = clipLen();
     if( app.selEnd   > clipLen() ) app.selEnd   = clipLen();
@@ -336,14 +562,20 @@ static void playFrom( long from, long to )
     player.playEnd   = to;
     player.playhead  = from;
     player.playing   = 1;
+    player.followSel = 0;
     audio_unlock();
 }
 
 static void togglePlay( void )
 {
     if( player.playing ) { stopPlayback(); return; }
-    if( hasSelection() ) playFrom( app.selStart, app.selEnd );
-    else                 playFrom( app.selStart, clipLen() );
+    if( hasSelection() ) {
+        playFrom( app.selStart, app.selEnd );
+        player.followSel = 1;   /* let selection edits move the loop live */
+    } else {
+        playFrom( app.selStart, clipLen() );
+        player.followSel = 0;
+    }
 }
 
 static long playheadFrame( void )
@@ -380,6 +612,7 @@ static void actDelete( void )
     audio_lock();
     audio_delete_range( &app.clip, s, e );
     audio_unlock();
+    bumpWave();
     app.selEnd = app.selStart = s;
     clampView();
     setStatus( "Deleted selection" );
@@ -405,6 +638,7 @@ static void actCut( void )
     audio_lock();
     audio_delete_range( &app.clip, s, e );
     audio_unlock();
+    bumpWave();
     app.selEnd = app.selStart = s;
     clampView();
     setStatus( "Cut selection" );
@@ -427,6 +661,7 @@ static void actPaste( void )
     audio_lock();
     audio_insert( &app.clip, at, &app.clipboard );
     audio_unlock();
+    bumpWave();
     app.selStart = at;
     app.selEnd   = at + app.clipboard.numFrames;
     clampView();
@@ -443,6 +678,7 @@ static void actTrim( void )
     audio_lock();
     audio_trim_to_range( &app.clip, s, e );
     audio_unlock();
+    bumpWave();
     app.selStart = 0;
     app.selEnd   = clipLen();
     zoomFit();
@@ -466,6 +702,7 @@ static void applyEffect( int which )
         case 5: audio_reverse( &app.clip, s, e );                     break;
     }
     audio_unlock();
+    bumpWave();
     switch( which ) {
         case 0: setStatus( "Normalized" ); break;
         case 1: setStatus( "Amplified" ); break;
@@ -487,6 +724,7 @@ static void newFile( void )
     audio_free( &app.clip );
     audio_alloc( &app.clip, 1, 44100, 0 );
     audio_unlock();
+    bumpWave();
     app.selStart = app.selEnd = 0;
     app.path[0] = '\0';
     app.dirty = 0;
@@ -494,33 +732,60 @@ static void newFile( void )
     setStatus( "New empty file" );
 }
 
-static void loadFile( const char *path )
+/* Kick off a background load.  The main loop shows a progress bar and
+ * calls finishLoad() when the worker signals done. */
+static void startLoad( const char *path )
 {
-    AudioClip tmp;
-    char err[256];
-    memset( &tmp, 0, sizeof(tmp) );
-    if( audio_load( &tmp, path, err, sizeof(err) ) ) {
-        setStatus( err );
+    if( loading ) return;   /* one load at a time */
+    stopPlayback();
+    memset( &loadJob, 0, sizeof(loadJob) );
+    strncpy( loadJob.path, path, PATH_MAX_LEN - 1 );
+    loadJob.path[PATH_MAX_LEN - 1] = '\0';
+    if( pthread_create( &loadThread, NULL, loadWorker, &loadJob ) != 0 ) {
+        setStatus( "Could not start loader thread" );
+        return;
+    }
+    loading = 1;
+    setStatus( "Loading..." );
+}
+
+/* Called on the main thread once the worker has finished. */
+static void finishLoad( void )
+{
+    int i;
+    pthread_join( loadThread, NULL );
+    loading = 0;
+
+    if( loadJob.error ) {
+        audio_free( &loadJob.clip );
+        waveCacheFree( &loadJob.cache );
+        setStatus( loadJob.err );
         strncpy( app.pendingPopup, "Error", sizeof(app.pendingPopup) - 1 );
         return;
     }
-    stopPlayback();
+
+    /* swap the freshly decoded clip + its prebuilt overview into place */
     audio_lock();
     audio_free( &app.clip );
-    app.clip = tmp;
+    app.clip = loadJob.clip;
     audio_unlock();
+    memset( &loadJob.clip, 0, sizeof(loadJob.clip) );
+
+    waveCacheFree( &app.wave );
+    app.wave = loadJob.cache;
+    memset( &loadJob.cache, 0, sizeof(loadJob.cache) );
+    app.waveGen      = app.waveGen + 1;
+    app.waveBuiltGen = app.waveGen;   /* cache already matches, no rebuild */
 
     open_audio( app.clip.sampleRate );
 
     app.selStart = app.selEnd = 0;
-    strncpy( app.path, path, PATH_MAX_LEN - 1 );
+    strncpy( app.path, loadJob.path, PATH_MAX_LEN - 1 );
     app.path[PATH_MAX_LEN - 1] = '\0';
     app.dirty = 0;
-    /* clear undo history */
-    { int i;
-      for( i = 0; i < app.undoCount; i++ ) audio_free( &app.undo[i] );
-      for( i = 0; i < app.redoCount; i++ ) audio_free( &app.redo[i] );
-      app.undoCount = app.redoCount = 0; }
+    for( i = 0; i < app.undoCount; i++ ) audio_free( &app.undo[i] );
+    for( i = 0; i < app.redoCount; i++ ) audio_free( &app.redo[i] );
+    app.undoCount = app.redoCount = 0;
     zoomFit();
     setStatus( "Loaded file" );
 }
@@ -582,14 +847,111 @@ static void drawVLine( float x, float y0, float y1,
     glEnd();
 }
 
+/* pixel-space orthographic projection, y increasing downward */
+static void setPixelProjection( int winW, int winH )
+{
+    glViewport( 0, 0, winW, winH );
+    glMatrixMode( GL_PROJECTION );
+    glLoadIdentity();
+    glOrtho( 0.0, (double)winW, (double)winH, 0.0, -1.0, 1.0 );
+    glMatrixMode( GL_MODELVIEW );
+    glLoadIdentity();
+    glDisable( GL_TEXTURE_2D );
+    glEnable( GL_BLEND );
+    glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+}
+
+/* the mini overview / scroll bar under the menus: whole file at a glance
+ * with a draggable box marking the region shown in the main view. */
+static void renderOverview( int winW )
+{
+    float x0 = app.ovX, y0 = app.ovY, w = app.ovW, h = app.ovH;
+    float yc = y0 + h * 0.5f;
+    float amp = h * 0.42f;
+    long  n = clipLen();
+    int   level, px;
+    double spp;
+    (void)winW;
+
+    /* background + frame */
+    drawRect( x0, y0, x0 + w, y0 + h, 0.06f, 0.07f, 0.09f, 1.0f );
+    glColor4f( 0.30f, 0.32f, 0.36f, 1.0f );
+    glBegin( GL_LINES );
+        glVertex2f( x0, yc ); glVertex2f( x0 + w, yc );
+    glEnd();
+
+    if( n > 0 && w > 1.0f ) {
+        spp   = (double)n / (double)w;
+        level = waveCacheLevel( &app.wave, spp );
+        glColor4f( 0.40f, 0.55f, 0.72f, 1.0f );
+        glBegin( GL_LINES );
+        for( px = 0; px < (int)w; px++ ) {
+            double f0 = (double)px * spp;
+            double f1 = f0 + spp;
+            float  mn = 0.0f, mx = 0.0f, cmn, cmx;
+            int    ch, any = 0;
+            for( ch = 0; ch < app.clip.numChannels; ch++ ) {
+                if( colMinMax( &app.clip, &app.wave, level, ch, f0, f1,
+                               &cmn, &cmx ) ) {
+                    if( !any ) { mn = cmn; mx = cmx; any = 1; }
+                    else { if( cmn < mn ) mn = cmn; if( cmx > mx ) mx = cmx; }
+                }
+            }
+            if( any ) {
+                glVertex2f( x0 + (float)px, yc - mx * amp );
+                glVertex2f( x0 + (float)px, yc - mn * amp );
+            }
+        }
+        glEnd();
+
+        /* selection tint in the overview */
+        if( hasSelection() ) {
+            float sx0 = x0 + (float)( (double)app.selStart / (double)n ) * w;
+            float sx1 = x0 + (float)( (double)app.selEnd   / (double)n ) * w;
+            drawRect( sx0, y0, sx1, y0 + h, 0.9f, 0.9f, 0.3f, 0.12f );
+        }
+
+        /* visible-window box */
+        {
+            double visible = app.samplesPerPixel * ( app.wfW > 1 ? app.wfW : 1 );
+            float bx0 = x0 + (float)( app.viewStart / (double)n ) * w;
+            float bx1 = x0 + (float)( ( app.viewStart + visible ) / (double)n ) * w;
+            if( bx0 < x0 ) bx0 = x0;
+            if( bx1 > x0 + w ) bx1 = x0 + w;
+            if( bx1 < bx0 + 2.0f ) bx1 = bx0 + 2.0f;
+            drawRect( bx0, y0, bx1, y0 + h, 0.95f, 0.95f, 1.0f, 0.14f );
+            drawVLine( bx0, y0, y0 + h, 0.9f, 0.95f, 1.0f, 0.9f );
+            drawVLine( bx1, y0, y0 + h, 0.9f, 0.95f, 1.0f, 0.9f );
+        }
+    }
+
+    /* bottom divider */
+    glColor4f( 0.25f, 0.27f, 0.30f, 1.0f );
+    glBegin( GL_LINES );
+        glVertex2f( x0, y0 + h ); glVertex2f( x0 + w, y0 + h );
+    glEnd();
+}
+
 static void renderWaveform( int winW, int winH )
 {
-    float top    = gui_main_menu_bar_height();
+    float menuH  = gui_main_menu_bar_height();
+    float top    = menuH + OVERVIEW_H;
     float bottom = (float)winH - TRANSPORT_H;
     int   nch    = app.clip.numChannels;
     int   ch;
     float laneH;
     long  n = clipLen();
+
+    /* rebuild the overview pyramid if the sample data changed */
+    if( !loading && app.waveGen != app.waveBuiltGen ) {
+        waveCacheBuild( &app.wave, &app.clip, NULL );
+        app.waveBuiltGen = app.waveGen;
+    }
+
+    app.ovX = 0.0f;
+    app.ovY = menuH;
+    app.ovW = (float)winW;
+    app.ovH = OVERVIEW_H;
 
     app.wfX = 0.0f;
     app.wfY = top;
@@ -599,17 +961,7 @@ static void renderWaveform( int winW, int winH )
     if( nch < 1 ) nch = 1;
     laneH = app.wfH / (float)nch;
 
-    /* set up pixel-space orthographic projection, y increasing downward */
-    glViewport( 0, 0, winW, winH );
-    glMatrixMode( GL_PROJECTION );
-    glLoadIdentity();
-    glOrtho( 0.0, (double)winW, (double)winH, 0.0, -1.0, 1.0 );
-    glMatrixMode( GL_MODELVIEW );
-    glLoadIdentity();
-
-    glDisable( GL_TEXTURE_2D );
-    glEnable( GL_BLEND );
-    glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+    setPixelProjection( winW, winH );
 
     /* overall background of waveform area */
     drawRect( app.wfX, app.wfY, app.wfX + app.wfW, app.wfY + app.wfH,
@@ -641,28 +993,21 @@ static void renderWaveform( int winW, int winH )
         if( n <= 0 || samples == NULL ) continue;
 
         if( app.samplesPerPixel >= 1.0 ) {
-            /* peak (min/max) rendering: one vertical line per column */
+            /* peak (min/max) rendering: one vertical line per column,
+             * summarized through the pyramid when zoomed out on a big file */
+            int level = waveCacheLevel( &app.wave, app.samplesPerPixel );
             glColor4f( 0.45f, 0.72f, 0.95f, 1.0f );
             glBegin( GL_LINES );
             for( px = 0; px < (int)app.wfW; px++ ) {
                 double f0 = app.viewStart + (double)px * app.samplesPerPixel;
                 double f1 = f0 + app.samplesPerPixel;
-                long   i0 = (long)f0;
-                long   i1 = (long)f1;
-                long   i;
-                float  mn = 1.0f, mx = -1.0f;
-                if( i0 < 0 ) i0 = 0;
-                if( i1 > n ) i1 = n;
-                if( i1 <= i0 ) i1 = i0 + 1;
-                if( i0 >= n ) break;
-                for( i = i0; i < i1 && i < n; i++ ) {
-                    float v = samples[i];
-                    if( v < mn ) mn = v;
-                    if( v > mx ) mx = v;
+                float  mn, mx;
+                if( f0 >= (double)n ) break;
+                if( colMinMax( &app.clip, &app.wave, level, ch,
+                               f0, f1, &mn, &mx ) ) {
+                    glVertex2f( (float)px, yc - mx * amp );
+                    glVertex2f( (float)px, yc - mn * amp );
                 }
-                if( mx < mn ) { mn = mx = 0.0f; }
-                glVertex2f( (float)px, yc - mx * amp );
-                glVertex2f( (float)px, yc - mn * amp );
             }
             glEnd();
         } else {
@@ -721,6 +1066,9 @@ static void renderWaveform( int winW, int winH )
                            0.3f, 1.0f, 0.4f, 0.95f );
         }
     }
+
+    /* overview / scroll bar across the top */
+    renderOverview( winW );
 }
 
 /* -------------------------------------------------------------------- */
@@ -774,6 +1122,56 @@ static void handleWheel( int mx, int my, float wheelY )
     if( app.samplesPerPixel < 0.01 ) app.samplesPerPixel = 0.01;
     /* keep the frame under the cursor fixed */
     app.viewStart = anchorFrame - (double)( mx - app.wfX ) * app.samplesPerPixel;
+    clampView();
+}
+
+/* -------------------------------------------------------------------- */
+/* overview / scroll bar interaction                                    */
+/* -------------------------------------------------------------------- */
+
+static int    ovDragging = 0;
+static double ovGrabOffset = 0.0;   /* frames from view start to grab point */
+
+static int inOverview( int mx, int my )
+{
+    return (float)mx >= app.ovX && (float)mx <= app.ovX + app.ovW &&
+           (float)my >= app.ovY && (float)my <= app.ovY + app.ovH;
+}
+
+static double overviewFrame( int mx )
+{
+    long n = clipLen();
+    double f;
+    if( app.ovW <= 1.0f || n <= 0 ) return 0.0;
+    f = (double)( mx - app.ovX ) / (double)app.ovW * (double)n;
+    if( f < 0 ) f = 0;
+    if( f > (double)n ) f = (double)n;
+    return f;
+}
+
+static void handleOverviewMouseDown( int mx, int my )
+{
+    double visible, f, vEnd;
+    if( !inOverview( mx, my ) || clipLen() <= 0 ) return;
+    visible = app.samplesPerPixel * ( app.wfW > 1 ? app.wfW : 1 );
+    f       = overviewFrame( mx );
+    vEnd    = app.viewStart + visible;
+    if( f >= app.viewStart && f <= vEnd ) {
+        /* grabbed inside the box: pan, keeping the grab point steady */
+        ovGrabOffset = f - app.viewStart;
+    } else {
+        /* clicked elsewhere: center the view there */
+        app.viewStart = f - visible * 0.5;
+        ovGrabOffset  = visible * 0.5;
+        clampView();
+    }
+    ovDragging = 1;
+}
+
+static void handleOverviewMouseMove( int mx )
+{
+    if( !ovDragging ) return;
+    app.viewStart = overviewFrame( mx ) - ovGrabOffset;
     clampView();
 }
 
@@ -872,7 +1270,7 @@ static void drawFileBrowser( const char *popupId )
                       app.browserDir, app.browserFile );
             gui_close_current_popup();
             if( app.browserSave ) saveFile( full );
-            else                  loadFile( full );
+            else                  startLoad( full );
         }
     }
     gui_same_line();
@@ -1006,6 +1404,40 @@ static void buildTransport( int winW, int winH )
                   app.dirty ? " *" : "",
                   app.statusMsg );
         gui_text_colored( 0.7f, 0.85f, 1.0f, buf );
+    }
+    gui_end();
+}
+
+/* centered progress panel shown while a file loads in the background */
+static void buildLoadingOverlay( int winW, int winH )
+{
+    char  base[PATH_MAX_LEN];
+    char  msg[PATH_MAX_LEN + 32];
+    const char *p = loadJob.path;
+    const char *slash = strrchr( p, '/' );
+    float w = 420.0f, h = 96.0f;
+    int   ph = loadJob.phase;
+    int   pr = loadJob.progress;
+    float frac;
+
+    strncpy( base, slash ? slash + 1 : p, sizeof(base) - 1 );
+    base[sizeof(base) - 1] = '\0';
+
+    /* combined fraction: decode is phase 0 (0..0.7), overview 1 (0.7..1.0) */
+    if( ph == 0 ) frac = ( (float)pr / 1000.0f ) * 0.7f;
+    else          frac = 0.7f + ( (float)pr / 1000.0f ) * 0.3f;
+    if( frac < 0.0f ) frac = 0.0f;
+    if( frac > 1.0f ) frac = 1.0f;
+
+    gui_set_next_window_pos( ( (float)winW - w ) * 0.5f,
+                             ( (float)winH - h ) * 0.5f );
+    gui_set_next_window_size( w, h );
+    if( gui_begin( "##loading", 1 ) ) {
+        snprintf( msg, sizeof(msg), "Loading %s", base );
+        gui_text( msg );
+        gui_text( ph == 0 ? "Reading audio data..."
+                          : "Building overview..." );
+        gui_progress_bar( frac, NULL );
     }
     gui_end();
 }
@@ -1164,7 +1596,7 @@ int main( int argc, char **argv )
 
     open_audio( 44100 );
 
-    if( argc > 1 ) loadFile( argv[1] );
+    if( argc > 1 ) startLoad( argv[1] );
     else           setStatus( "Open a WAV or OGG file to begin" );
 
     while( running ) {
@@ -1186,16 +1618,24 @@ int main( int argc, char **argv )
                     }
                     break;
                 case SDL_MOUSEBUTTONDOWN:
-                    if( !mouseCapture && ev.button.button == SDL_BUTTON_LEFT ) {
+                    if( !mouseCapture && !loading &&
+                        ev.button.button == SDL_BUTTON_LEFT ) {
                         int shift = ( SDL_GetModState() & KMOD_SHIFT ) ? 1 : 0;
-                        handleWaveMouseDown( ev.button.x, ev.button.y, shift );
+                        if( inOverview( ev.button.x, ev.button.y ) )
+                            handleOverviewMouseDown( ev.button.x, ev.button.y );
+                        else
+                            handleWaveMouseDown( ev.button.x, ev.button.y, shift );
                     }
                     break;
                 case SDL_MOUSEBUTTONUP:
-                    if( ev.button.button == SDL_BUTTON_LEFT ) dragging = 0;
+                    if( ev.button.button == SDL_BUTTON_LEFT ) {
+                        dragging = 0;
+                        ovDragging = 0;
+                    }
                     break;
                 case SDL_MOUSEMOTION:
-                    if( dragging ) handleWaveMouseMove( ev.motion.x );
+                    if( ovDragging )    handleOverviewMouseMove( ev.motion.x );
+                    else if( dragging ) handleWaveMouseMove( ev.motion.x );
                     break;
                 case SDL_MOUSEWHEEL:
                     if( !mouseCapture ) {
@@ -1206,6 +1646,20 @@ int main( int argc, char **argv )
                     break;
                 default: break;
             }
+        }
+
+        /* a background load just finished: swap in the result */
+        if( loading && loadJob.done ) finishLoad();
+
+        /* live loop: while playing a selection, track edits to its edges */
+        if( player.playing && player.followSel && hasSelection() ) {
+            audio_lock();
+            player.playStart = app.selStart;
+            player.playEnd   = app.selEnd;
+            if( player.playhead < player.playStart ||
+                player.playhead >= player.playEnd )
+                player.playhead = player.playStart;
+            audio_unlock();
         }
 
         SDL_GetWindowSize( window, &winW, &winH );
@@ -1220,12 +1674,19 @@ int main( int argc, char **argv )
         buildMenuBar();
         buildTransport( winW, winH );
         buildDialogs();
+        if( loading ) buildLoadingOverlay( winW, winH );
         gui_render();
 
         SDL_GL_SwapWindow( window );
     }
 
+    /* if a load is still running at quit, wait for it so we can free */
+    if( loading ) { pthread_join( loadThread, NULL );
+                    audio_free( &loadJob.clip );
+                    waveCacheFree( &loadJob.cache ); }
+
     stopPlayback();
+    waveCacheFree( &app.wave );
     if( audioDev ) SDL_CloseAudioDevice( audioDev );
     gui_shutdown();
     SDL_GL_DeleteContext( glctx );

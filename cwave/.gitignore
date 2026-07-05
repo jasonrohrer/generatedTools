@@ -4,3 +4,8 @@ cwave
 
 # editor backups
 *~
+
+# local test media / screenshots (not part of the source)
+*.wav
+*.ogg
+*.png

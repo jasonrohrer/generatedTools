@@ -43,6 +43,14 @@ int  audio_copy_range( AudioClip *dst, const AudioClip *src,
 int  audio_load( AudioClip *c, const char *path,
                  char *errBuf, int errBufLen );
 
+/* Same as audio_load, but if 'progress' is non-NULL it is updated with a
+ * 0..1000 completion value as the file is read (for a progress bar in a
+ * worker thread).  Safe to read 'progress' concurrently from another
+ * thread while this runs. */
+int  audio_load_progress( AudioClip *c, const char *path,
+                          char *errBuf, int errBufLen,
+                          volatile int *progress );
+
 /* Save the clip to a WAV file (16-bit PCM).  Returns 0 on success. */
 int  audio_save_wav( const AudioClip *c, const char *path,
                      char *errBuf, int errBufLen );

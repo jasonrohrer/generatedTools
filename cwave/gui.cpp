@@ -165,6 +165,11 @@ float gui_content_avail_h( void )
     return ImGui::GetContentRegionAvail().y;
 }
 
+void gui_progress_bar( float fraction, const char *overlay )
+{
+    ImGui::ProgressBar( fraction, ImVec2( -1.0f, 0.0f ), overlay );
+}
+
 /* ---- popups ---- */
 void gui_open_popup( const char *id ) { ImGui::OpenPopup( id ); }
 

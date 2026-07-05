@@ -133,7 +133,8 @@ static void seterr( char *buf, int len, const char *msg )
     }
 }
 
-static int load_wav( AudioClip *c, const char *path, char *err, int errLen )
+static int load_wav( AudioClip *c, const char *path, char *err, int errLen,
+                     volatile int *progress )
 {
     FILE *f;
     unsigned char hdr[12];
@@ -220,12 +221,26 @@ static int load_wav( AudioClip *c, const char *path, char *err, int errLen )
         audio_free( c ); fclose( f ); return 1;
     }
     fseek( f, dataPos, SEEK_SET );
-    if( fread( raw, 1, (size_t)dataBytes, f ) != (size_t)dataBytes ) {
-        /* tolerate short read; already zeroed target */
+    /* read in chunks so a large file can report progress (phase 0..400) */
+    {
+        long got = 0;
+        const long CHUNK = 4L * 1024 * 1024;
+        while( got < dataBytes ) {
+            long want = dataBytes - got;
+            size_t rd;
+            if( want > CHUNK ) want = CHUNK;
+            rd = fread( raw + got, 1, (size_t)want, f );
+            got += (long)rd;
+            if( progress && dataBytes > 0 )
+                *progress = (int)( 400.0 * (double)got / (double)dataBytes );
+            if( rd < (size_t)want ) break; /* tolerate short read */
+        }
     }
     fclose( f );
 
     for( i = 0; i < frames; i++ ) {
+        if( progress && ( i & 0x3FFFF ) == 0 && frames > 0 )
+            *progress = 400 + (int)( 600.0 * (double)i / (double)frames );
         for( ch = 0; ch < numCh; ch++ ) {
             unsigned char *p = raw + ( i * numCh + ch ) * bytesPerSample;
             float v = 0.0f;
@@ -259,6 +274,7 @@ static int load_wav( AudioClip *c, const char *path, char *err, int errLen )
         }
     }
     free( raw );
+    if( progress ) *progress = 1000;
     return 0;
 }
 
@@ -266,7 +282,8 @@ static int load_wav( AudioClip *c, const char *path, char *err, int errLen )
 /* OGG loading (via stb_vorbis)                                         */
 /* -------------------------------------------------------------------- */
 
-static int load_ogg( AudioClip *c, const char *path, char *err, int errLen )
+static int load_ogg( AudioClip *c, const char *path, char *err, int errLen,
+                     volatile int *progress )
 {
     int   channels = 0, rate = 0;
     short *data = NULL;
@@ -274,6 +291,7 @@ static int load_ogg( AudioClip *c, const char *path, char *err, int errLen )
     long  i;
     int   ch;
 
+    if( progress ) *progress = 100;
     frames = stb_vorbis_decode_filename( path, &channels, &rate, &data );
     if( frames < 0 || data == NULL ) {
         seterr( err, errLen, "Failed to decode OGG file" );
@@ -289,10 +307,14 @@ static int load_ogg( AudioClip *c, const char *path, char *err, int errLen )
         free( data );
         return 1;
     }
-    for( i = 0; i < frames; i++ )
+    for( i = 0; i < frames; i++ ) {
+        if( progress && ( i & 0x3FFFF ) == 0 && frames > 0 )
+            *progress = 100 + (int)( 900.0 * (double)i / (double)frames );
         for( ch = 0; ch < channels; ch++ )
             c->channel[ch][i] = (float)data[i * channels + ch] / 32768.0f;
+    }
     free( data );
+    if( progress ) *progress = 1000;
     return 0;
 }
 
@@ -312,12 +334,18 @@ static int has_ext( const char *path, const char *ext )
     return 1;
 }
 
-int audio_load( AudioClip *c, const char *path, char *err, int errLen )
+int audio_load_progress( AudioClip *c, const char *path, char *err, int errLen,
+                         volatile int *progress )
 {
     if( has_ext( path, ".ogg" ) )
-        return load_ogg( c, path, err, errLen );
+        return load_ogg( c, path, err, errLen, progress );
     /* default to WAV */
-    return load_wav( c, path, err, errLen );
+    return load_wav( c, path, err, errLen, progress );
+}
+
+int audio_load( AudioClip *c, const char *path, char *err, int errLen )
+{
+    return audio_load_progress( c, path, err, errLen, NULL );
 }
 
 /* -------------------------------------------------------------------- */
@@ -526,6 +554,8 @@ int audio_trim_to_range( AudioClip *c, long start, long end )
 {
     AudioClip tmp;
     int i;
+    /* tmp must be a valid (empty) clip before audio_copy_range frees it */
+    memset( &tmp, 0, sizeof(tmp) );
     clip_range( c, &start, &end );
     if( audio_copy_range( &tmp, c, start, end ) ) return 1;
     /* move tmp into c */

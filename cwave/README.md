@@ -12,8 +12,17 @@ files.  It does not record.
 - Saves **WAV** (16-bit PCM by default; 32-bit float supported in code).
 - Multi-channel waveform display with peak (min/max) rendering when
   zoomed out and connected per-sample rendering (with sample dots) when
-  zoomed in.
+  zoomed in.  A **summary pyramid** (min/max mip levels) is built once
+  per file so zooming, scrolling, and dragging stay fast even on very
+  large files (tested on a 28-minute stereo WAV).
+- A **mini overview bar** under the menus shows the whole file with a
+  draggable box marking the region shown in the main view — drag it (or
+  click elsewhere in the bar) to scroll.
+- **Large files load in the background** with a progress bar, so the
+  window is responsive immediately instead of freezing while decoding.
 - Mouse selection with time / frame readout; shift-click to extend.
+  While looping a selection, dragging its edges moves the loop points
+  live.
 - Mouse-wheel zoom centered on the cursor; Fit / Zoom-to-selection.
 - Playback of the whole file, the selection, or from the cursor, with
   looping and a volume control.  All channels are mixed down to stereo.
@@ -43,6 +52,9 @@ make
 - Audio output uses one SDL2 audio callback thread.  Edits stop playback
   and mutate the clip under the audio lock, so the callback never touches
   freed memory.
+- File loading runs on a short-lived pthread worker that decodes the file
+  and builds the overview pyramid; the main thread polls a progress value
+  and swaps the finished clip in under the audio lock.
 - WAV reading/writing is hand-rolled.  OGG is decoded via `stb_vorbis`.
 
 ## Keyboard shortcuts

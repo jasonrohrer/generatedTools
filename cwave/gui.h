@@ -56,6 +56,7 @@ int  gui_input_text( const char *label, char *buf, int buflen );
 int  gui_checkbox( const char *label, int *v );
 int  gui_selectable( const char *label, int selected );
 float gui_content_avail_h( void );
+void gui_progress_bar( float fraction, const char *overlay );
 
 /* ---- popups / modals ---- */
 void gui_open_popup( const char *id );

@@ -1,13 +1,32 @@
 Nice work!
 
+The marks are working GREAT, and very useful.
+
 
 Notes:
 
---The time it takes for an edit to happen (like a fade-out) depends on the length of the file, and not just on the length of the region selected.  A tiny operation (like fading out just the end of a long file) should be fast.  I think this is because you are regenerating the whole waveform MIP whenever a change is made.  Not sure what to do here, but maybe only regenerate the part that has changed?  Or something else?  Think of a good way to handle this.  Obviously, we don't want the waveform view falling out of sync with the actual samples.
 
---Seams when editing are lost.... like if you remove audio from the middle, or duck it to silence, you lose where the start and end of that selection was, if you're not careful.  Audacity shows actual seams, and clips in boxes that get created and can be moved around, but this might be overkill.  Maybe marks are better?  Like... you can create marks at the current cursor, or around the current selection (with a menu command or keyboard shortcut), but also when operations happen, marks are auto-created around the affected regions (or at the cut point, if something is removed).  And then selection can just snap to those marks after that, when the end of the selection is near a mark?  (near in screen space).  Marks can be above the waveform view as little carets.  And then we should be able to click on a mark to select it (and shift-click to select multiple) and then have a menu option to delete them.  So marks just build up, after various operations are performed on selections, cutting stuff, copy-pasting, etc.  And then we can delete the ones that we no longer need.  And of course the marks should auto-move, to track the actual sample they point to, when stuff is inserted or removed before a given mark.
+--The edit time on long files (like fade out of a small portion) does seem to be slightly faster than it used to be, but it's still slower than the same operation on a short file.  Not sure what's going on here, so take a look.
 
---Normalize should have a dB level displayed too, as you move the slider, and you should be able to type a value in the DB field.  the default should be -1.0 dB
+
+--And YES, all operations (including copy-paste, delete, etc) should be the same speed regardless of file length.  Actually, I'm not sure this is possible, because you do have to shift more data (potentially).  But the wave-form calculation shouldn't be the slow part.  For example, pasting 1 second of audio at the end of a file should be the same speed, regardless of file size.  And it's currently slow.  I get that pasting audio at the beginning of a long file might be inherently slow... though it should be as fast as the memmove, right?  Let's see how fast that can be.  If that's still slow, we can talk later about ways to speed that up.
+
+
+--There need to be a "jump to end" button, just like there's currently a jump to start.  It's very hard to move the cursor to the end of the file (without setting a mark there first with a selection, or zooming way out first).
+
+
+--The selected region in the overview scroll area is too hard to see... I think that's because it doesn't have end-lines around it, and it's true that end-lines would make it more cluttered.  So make it a little bit more solid of a yellow than the selection in the main view, or something...  It's actually a bit dimmer than the yellow used in the main view, currently.
+
+
+--Can you have a set of nice, distinct colors, and then cycle through those when setting marks, so that each pair of marks (or each lone mark) has a different color?  Would help us to remember which marks belong together.  Maybe like.. 8 distinct colors?
+
+
+--There should be some small representation of the marks in the scroll overview... maybe just as tiny carets only.
+
+
+--If we're currently playing audio (like looping a selection), then audio should continue playing after an operation.  Currently it stops.  Maybe it needs to stop during the operation, and then resume when done, but it would be great if it just kept playing the whole time.
+
+
 
 
 

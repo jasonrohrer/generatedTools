@@ -35,6 +35,22 @@
 #define PATH_MAX_LEN  1024
 #define MAX_MARKS     512       /* marks that can accumulate              */
 #define MARK_SNAP_PX  8.0f      /* selection snaps to a mark within this  */
+#define MARK_NUM_COLORS 8       /* distinct caret colors we cycle through  */
+
+/* A palette of 8 visually distinct caret colors.  Each group of marks made
+ * together (a selection's two edges, a paste's two seams, or a lone cursor
+ * mark) is stamped with the next color in turn, so it is easy to see which
+ * carets belong to the same operation. */
+static const float markColors[MARK_NUM_COLORS][3] = {
+    { 0.95f, 0.60f, 0.20f },   /* orange  */
+    { 0.35f, 0.80f, 1.00f },   /* sky     */
+    { 0.55f, 0.92f, 0.40f },   /* green   */
+    { 1.00f, 0.45f, 0.60f },   /* pink    */
+    { 0.75f, 0.58f, 1.00f },   /* violet  */
+    { 1.00f, 0.85f, 0.30f },   /* yellow  */
+    { 0.35f, 0.95f, 0.78f },   /* teal    */
+    { 1.00f, 0.50f, 0.35f }    /* coral   */
+};
 
 /* -------------------------------------------------------------------- */
 /* waveform summary pyramid                                             */
@@ -373,7 +389,25 @@ static void open_audio( int rate )
 typedef struct {
     long frame;      /* sample position it points at            */
     int  selected;   /* highlighted / targeted for deletion     */
+    int  color;      /* index into markColors (per-group hue)   */
 } Mark;
+
+/* An undo record is a self-reversing "splice": it stores the frames that
+ * occupied [at, at+oldLen) before the edit (oldData) and the frames that
+ * occupy [at, at+newLen) after it (newData).  Reversing the edit splices
+ * oldData back in; replaying it splices newData in.  Crucially only the
+ * edited span is copied, so an undo of a small edit on a huge file costs
+ * the size of the edit -- NOT a full-clip snapshot as before.  (A length-
+ * changing structural edit, e.g. trim, still stores the affected spans,
+ * which for trim is the whole clip -- that case is inherently O(n).) */
+typedef struct {
+    long   at;
+    long   oldLen;
+    long   newLen;
+    int    numChannels;
+    float *oldData[AUDIO_MAX_CHANNELS];  /* oldLen frames/ch, NULL if 0 */
+    float *newData[AUDIO_MAX_CHANNELS];  /* newLen frames/ch, NULL if 0 */
+} UndoRec;
 
 typedef struct {
     AudioClip clip;
@@ -382,6 +416,7 @@ typedef struct {
     /* marks (see Mark) */
     Mark marks[MAX_MARKS];
     int  numMarks;
+    int  markColorNext;      /* next hue to hand out for a new mark group */
 
     /* selection (frames); selEnd == selStart means "no selection", the
      * cursor sits at selStart */
@@ -403,11 +438,11 @@ typedef struct {
     long      waveGen;      /* bumped whenever the clip data mutates      */
     long      waveBuiltGen; /* generation the current cache was built for */
 
-    /* undo / redo */
-    AudioClip undo[UNDO_LEVELS];
-    AudioClip redo[UNDO_LEVELS];
-    int       undoCount;
-    int       redoCount;
+    /* undo / redo (delta records, see UndoRec) */
+    UndoRec undo[UNDO_LEVELS];
+    UndoRec redo[UNDO_LEVELS];
+    int     undoCount;
+    int     redoCount;
 
     char path[PATH_MAX_LEN];
     int  dirty;
@@ -517,9 +552,19 @@ static void setStatus( const char *msg )
 /* marks                                                                */
 /* -------------------------------------------------------------------- */
 
-/* add a mark at 'frame' (deduped against an existing mark at the same
- * frame).  Silently ignored if the mark table is full. */
-static void addMark( long frame )
+/* hand out the next caret hue, advancing the cycle.  All marks belonging to
+ * one operation (a selection's two edges, a paste's two seams) should share a
+ * single value from this so they read as a group. */
+static int newMarkColor( void )
+{
+    int c = app.markColorNext % MARK_NUM_COLORS;
+    app.markColorNext++;
+    return c;
+}
+
+/* add a mark at 'frame' with hue 'color' (deduped against an existing mark at
+ * the same frame).  Silently ignored if the mark table is full. */
+static void addMark( long frame, int color )
 {
     int i;
     if( frame < 0 ) frame = 0;
@@ -529,6 +574,7 @@ static void addMark( long frame )
     if( app.numMarks >= MAX_MARKS ) return;
     app.marks[app.numMarks].frame    = frame;
     app.marks[app.numMarks].selected = 0;
+    app.marks[app.numMarks].color    = color;
     app.numMarks++;
 }
 
@@ -600,22 +646,103 @@ static void stopPlayback( void )
     audio_unlock();
 }
 
-/* push current clip onto the undo stack before an edit */
-static void pushUndo( void )
+/* After an edit shifts / resizes the clip, keep any in-progress playback
+ * alive and valid instead of stopping it: re-clamp the loop range and
+ * playhead (under the audio lock) so the callback keeps producing sound
+ * rather than running off the end of moved data.  When looping a selection
+ * (followSel) the loop re-syncs to the edited selection.  No-op when idle. */
+static void refreshPlayback( void )
+{
+    long n = clipLen();
+    audio_lock();
+    if( player.playing ) {
+        if( player.followSel && hasSelection() ) {
+            player.playStart = app.selStart;
+            player.playEnd   = app.selEnd;
+        }
+        if( player.playStart < 0 ) player.playStart = 0;
+        if( player.playStart > n ) player.playStart = n;
+        if( player.playEnd   > n ) player.playEnd   = n;
+        if( player.playEnd <= player.playStart ) player.playEnd = n;
+        if( player.playhead <  player.playStart ||
+            player.playhead >= player.playEnd )
+            player.playhead = player.playStart;
+    }
+    audio_unlock();
+}
+
+/* -------------------------------------------------------------------- */
+/* undo / redo -- delta records (see UndoRec)                           */
+/* -------------------------------------------------------------------- */
+
+/* free the sample copies held by an undo record and reset it to empty */
+static void undoRecFree( UndoRec *r )
+{
+    int ch;
+    for( ch = 0; ch < AUDIO_MAX_CHANNELS; ch++ ) {
+        if( r->oldData[ch] ) free( r->oldData[ch] );
+        if( r->newData[ch] ) free( r->newData[ch] );
+        r->oldData[ch] = r->newData[ch] = NULL;
+    }
+    r->oldLen = r->newLen = 0;
+}
+
+static void clearUndoRedo( void )
 {
     int i;
-    /* clear redo history */
-    for( i = 0; i < app.redoCount; i++ ) audio_free( &app.redo[i] );
+    for( i = 0; i < app.undoCount; i++ ) undoRecFree( &app.undo[i] );
+    for( i = 0; i < app.redoCount; i++ ) undoRecFree( &app.redo[i] );
+    app.undoCount = app.redoCount = 0;
+}
+
+/* Copy len frames of the current clip starting at 'start' into freshly
+ * malloc'd per-channel arrays (dst[ch]).  dst pointers are NULL when len==0. */
+static void captureRange( float *dst[AUDIO_MAX_CHANNELS], long start, long len )
+{
+    int ch, nch = app.clip.numChannels;
+    for( ch = 0; ch < AUDIO_MAX_CHANNELS; ch++ ) dst[ch] = NULL;
+    if( len <= 0 ) return;
+    for( ch = 0; ch < nch; ch++ ) {
+        dst[ch] = (float *)malloc( (size_t)len * sizeof(float) );
+        if( dst[ch] )
+            memcpy( dst[ch], app.clip.channel[ch] + start,
+                    (size_t)len * sizeof(float) );
+    }
+}
+
+/* Record in progress between beginEdit() and commitEdit(). */
+static UndoRec pendingUndo;
+
+/* Snapshot the frames [at, at+oldLen) that are about to be replaced.  Call
+ * BEFORE mutating the clip; pair with commitEdit() AFTER the mutation. */
+static void beginEdit( long at, long oldLen )
+{
+    memset( &pendingUndo, 0, sizeof(pendingUndo) );
+    pendingUndo.at          = at;
+    pendingUndo.oldLen      = oldLen;
+    pendingUndo.numChannels = app.clip.numChannels;
+    captureRange( pendingUndo.oldData, at, oldLen );
+}
+
+/* Snapshot the newLen frames now at [at, newLen) and push the completed
+ * record onto the undo stack (clearing redo, dropping the oldest at depth). */
+static void commitEdit( long newLen )
+{
+    int i;
+    pendingUndo.newLen = newLen;
+    captureRange( pendingUndo.newData, pendingUndo.at, newLen );
+
+    for( i = 0; i < app.redoCount; i++ ) undoRecFree( &app.redo[i] );
     app.redoCount = 0;
 
     if( app.undoCount == UNDO_LEVELS ) {
-        /* drop oldest */
-        audio_free( &app.undo[0] );
+        undoRecFree( &app.undo[0] );
         for( i = 1; i < UNDO_LEVELS; i++ ) app.undo[i - 1] = app.undo[i];
         app.undoCount--;
     }
-    audio_copy( &app.undo[app.undoCount], &app.clip );
+    app.undo[app.undoCount] = pendingUndo;    /* record owns the data now */
     app.undoCount++;
+    memset( &pendingUndo, 0, sizeof(pendingUndo) );
     app.dirty = 1;
 }
 
@@ -623,51 +750,67 @@ static void clampView( void );
 
 static void doUndo( void )
 {
+    UndoRec r;
+    int     i, lenChanged;
     if( app.undoCount == 0 ) { setStatus( "Nothing to undo" ); return; }
-    stopPlayback();
+
+    r = app.undo[--app.undoCount];          /* struct copy; owns the data */
+    lenChanged = ( r.oldLen != r.newLen );
+
+    /* reverse the edit: at 'at', replace the newLen frames with oldData */
+    audio_lock();
+    audio_splice( &app.clip, r.at, r.newLen, r.oldData, r.oldLen );
+    audio_unlock();
+
+    /* move the record onto the redo stack (it replays the edit unchanged) */
     if( app.redoCount == UNDO_LEVELS ) {
-        int i;
-        audio_free( &app.redo[0] );
+        undoRecFree( &app.redo[0] );
         for( i = 1; i < UNDO_LEVELS; i++ ) app.redo[i - 1] = app.redo[i];
         app.redoCount--;
     }
-    audio_copy( &app.redo[app.redoCount], &app.clip );
-    app.redoCount++;
+    app.redo[app.redoCount++] = r;
 
-    app.undoCount--;
-    audio_lock();
-    audio_free( &app.clip );
-    app.clip = app.undo[app.undoCount];
-    memset( &app.undo[app.undoCount], 0, sizeof(AudioClip) );
-    audio_unlock();
-    bumpWave();
+    /* length-preserving -> patch only the touched span; else full rebuild */
+    if( lenChanged ) bumpWave();
+    else             waveUpdateRange( r.at, r.at + r.oldLen );
 
     if( app.selStart > clipLen() ) app.selStart = clipLen();
     if( app.selEnd   > clipLen() ) app.selEnd   = clipLen();
     marksClampToClip();
     clampView();
+    refreshPlayback();
     setStatus( "Undo" );
 }
 
 static void doRedo( void )
 {
+    UndoRec r;
+    int     i, lenChanged;
     if( app.redoCount == 0 ) { setStatus( "Nothing to redo" ); return; }
-    stopPlayback();
-    audio_copy( &app.undo[app.undoCount], &app.clip );
-    app.undoCount++;
 
-    app.redoCount--;
+    r = app.redo[--app.redoCount];
+    lenChanged = ( r.oldLen != r.newLen );
+
+    /* replay the edit: at 'at', replace the oldLen frames with newData */
     audio_lock();
-    audio_free( &app.clip );
-    app.clip = app.redo[app.redoCount];
-    memset( &app.redo[app.redoCount], 0, sizeof(AudioClip) );
+    audio_splice( &app.clip, r.at, r.oldLen, r.newData, r.newLen );
     audio_unlock();
-    bumpWave();
+
+    if( app.undoCount == UNDO_LEVELS ) {
+        undoRecFree( &app.undo[0] );
+        for( i = 1; i < UNDO_LEVELS; i++ ) app.undo[i - 1] = app.undo[i];
+        app.undoCount--;
+    }
+    app.undo[app.undoCount++] = r;
+
+    if( lenChanged ) bumpWave();
+    else             waveUpdateRange( r.at, r.at + r.newLen );
 
     if( app.selStart > clipLen() ) app.selStart = clipLen();
     if( app.selEnd   > clipLen() ) app.selEnd   = clipLen();
     marksClampToClip();
     clampView();
+    refreshPlayback();
     setStatus( "Redo" );
 }
 
@@ -806,13 +949,14 @@ static void actSelectNone( void )
 /* create marks manually: around the selection, or at the bare cursor */
 static void actAddMark( void )
 {
+    int c = newMarkColor();
     if( clipLen() <= 0 ) return;
     if( hasSelection() ) {
-        addMark( app.selStart );
-        addMark( app.selEnd );
+        addMark( app.selStart, c );
+        addMark( app.selEnd,   c );
         setStatus( "Marked selection edges" );
     } else {
-        addMark( app.selStart );
+        addMark( app.selStart, c );
         setStatus( "Added mark at cursor" );
     }
 }
@@ -822,16 +966,17 @@ static void actDelete( void )
     long s, e;
     if( !hasSelection() ) { setStatus( "No selection to delete" ); return; }
     s = app.selStart; e = app.selEnd;
-    stopPlayback();
-    pushUndo();
+    beginEdit( s, e - s );
     audio_lock();
     audio_delete_range( &app.clip, s, e );
     audio_unlock();
+    commitEdit( 0 );
     bumpWave();
     marksAdjustDelete( s, e );
-    addMark( s );                 /* mark the seam left behind */
+    addMark( s, newMarkColor() );     /* mark the seam left behind */
     app.selEnd = app.selStart = s;
     clampView();
+    refreshPlayback();
     setStatus( "Deleted selection" );
 }
 
@@ -850,44 +995,47 @@ static void actCut( void )
     if( !hasSelection() ) { setStatus( "No selection to cut" ); return; }
     s = app.selStart; e = app.selEnd;
     audio_copy_range( &app.clipboard, &app.clip, s, e );
-    stopPlayback();
-    pushUndo();
+    beginEdit( s, e - s );
     audio_lock();
     audio_delete_range( &app.clip, s, e );
     audio_unlock();
+    commitEdit( 0 );
     bumpWave();
     marksAdjustDelete( s, e );
-    addMark( s );                 /* mark the seam left behind */
+    addMark( s, newMarkColor() );     /* mark the seam left behind */
     app.selEnd = app.selStart = s;
     clampView();
+    refreshPlayback();
     setStatus( "Cut selection" );
 }
 
 static void actPaste( void )
 {
-    long at;
+    long at, insN, selS, selE;
+    int  hadSel, c;
     if( app.clipboard.numFrames == 0 ) { setStatus( "Clipboard is empty" ); return; }
-    at = app.selStart;
-    stopPlayback();
-    pushUndo();
-    /* replace selection if any */
-    if( hasSelection() ) {
-        audio_lock();
-        audio_delete_range( &app.clip, app.selStart, app.selEnd );
-        audio_unlock();
-        marksAdjustDelete( app.selStart, app.selEnd );
-        app.selEnd = app.selStart;
-    }
+    insN   = app.clipboard.numFrames;
+    hadSel = hasSelection();
+    selS   = app.selStart;
+    selE   = app.selEnd;
+    at     = selS;
+    /* one splice: the (optional) replaced selection out, the clipboard in */
+    beginEdit( at, hadSel ? ( selE - selS ) : 0 );
     audio_lock();
+    if( hadSel ) audio_delete_range( &app.clip, selS, selE );
     audio_insert( &app.clip, at, &app.clipboard );
     audio_unlock();
+    commitEdit( insN );
     bumpWave();
-    marksAdjustInsert( at, app.clipboard.numFrames );
-    addMark( at );                                    /* paste start seam */
-    addMark( at + app.clipboard.numFrames );          /* paste end seam   */
+    if( hadSel ) marksAdjustDelete( selS, selE );
+    marksAdjustInsert( at, insN );
+    c = newMarkColor();
+    addMark( at,        c );          /* paste start seam */
+    addMark( at + insN, c );          /* paste end seam   */
     app.selStart = at;
-    app.selEnd   = at + app.clipboard.numFrames;
+    app.selEnd   = at + insN;
     clampView();
+    refreshPlayback();
     setStatus( "Pasted" );
 }
 
@@ -896,11 +1044,13 @@ static void actTrim( void )
     long s, e;
     if( !hasSelection() ) { setStatus( "No selection to trim to" ); return; }
     s = app.selStart; e = app.selEnd;
-    stopPlayback();
-    pushUndo();
+    /* trim discards everything outside [s,e); the undo record therefore has
+     * to hold the whole pre-trim clip (inherently O(n) -- unavoidable) */
+    beginEdit( 0, clipLen() );
     audio_lock();
     audio_trim_to_range( &app.clip, s, e );
     audio_unlock();
+    commitEdit( clipLen() );
     bumpWave();
     /* remap marks into the kept range [s,e); drop any that fall outside */
     {
@@ -914,6 +1064,7 @@ static void actTrim( void )
     app.selStart = 0;
     app.selEnd   = clipLen();
     zoomFit();
+    refreshPlayback();
     setStatus( "Trimmed to selection" );
 }
 
@@ -923,8 +1074,7 @@ static void applyEffect( int which )
     int  onSelection = hasSelection();
     effectRange( &s, &e );
     if( e <= s ) { setStatus( "Nothing to process" ); return; }
-    stopPlayback();
-    pushUndo();
+    beginEdit( s, e - s );
     audio_lock();
     switch( which ) {
         case 0: {
@@ -940,11 +1090,16 @@ static void applyEffect( int which )
         case 5: audio_reverse( &app.clip, s, e );                     break;
     }
     audio_unlock();
+    commitEdit( e - s );
     /* these effects preserve length, so patch only the edited span of the
      * overview pyramid rather than rebuilding the whole (possibly huge) file */
     waveUpdateRange( s, e );
     /* leave marks at the edges of the processed region so the seam is kept */
-    if( onSelection ) { addMark( s ); addMark( e ); }
+    if( onSelection ) {
+        int c = newMarkColor();
+        addMark( s, c ); addMark( e, c );
+    }
+    refreshPlayback();
     switch( which ) {
         case 0: setStatus( "Normalized" ); break;
         case 1: setStatus( "Amplified" ); break;
@@ -967,7 +1122,9 @@ static void newFile( void )
     audio_alloc( &app.clip, 1, 44100, 0 );
     audio_unlock();
     bumpWave();
+    clearUndoRedo();       /* stale deltas would splice into the empty clip */
     app.numMarks = 0;
+    app.markColorNext = 0;
     app.selStart = app.selEnd = 0;
     app.path[0] = '\0';
     app.dirty = 0;
@@ -995,7 +1152,6 @@ static void startLoad( const char *path )
 /* Called on the main thread once the worker has finished. */
 static void finishLoad( void )
 {
-    int i;
     pthread_join( loadThread, NULL );
     loading = 0;
 
@@ -1023,13 +1179,12 @@ static void finishLoad( void )
     open_audio( app.clip.sampleRate );
 
     app.numMarks = 0;
+    app.markColorNext = 0;
     app.selStart = app.selEnd = 0;
     strncpy( app.path, loadJob.path, PATH_MAX_LEN - 1 );
     app.path[PATH_MAX_LEN - 1] = '\0';
     app.dirty = 0;
-    for( i = 0; i < app.undoCount; i++ ) audio_free( &app.undo[i] );
-    for( i = 0; i < app.redoCount; i++ ) audio_free( &app.redo[i] );
-    app.undoCount = app.redoCount = 0;
+    clearUndoRedo();
     zoomFit();
     setStatus( "Loaded file" );
 }
@@ -1113,7 +1268,7 @@ static void renderOverview( int winW )
     float yc = y0 + h * 0.5f;
     float amp = h * 0.42f;
     long  n = clipLen();
-    int   level, px;
+    int   level, px, i;
     double spp;
     (void)winW;
 
@@ -1148,11 +1303,14 @@ static void renderOverview( int winW )
         }
         glEnd();
 
-        /* selection tint in the overview */
+        /* selection tint in the overview -- deliberately more solid than the
+         * main view's selection so the region is easy to spot at a glance
+         * (edge lines are omitted here to keep the mini bar uncluttered) */
         if( hasSelection() ) {
             float sx0 = x0 + (float)( (double)app.selStart / (double)n ) * w;
             float sx1 = x0 + (float)( (double)app.selEnd   / (double)n ) * w;
-            drawRect( sx0, y0, sx1, y0 + h, 0.9f, 0.9f, 0.3f, 0.12f );
+            if( sx1 < sx0 + 1.0f ) sx1 = sx0 + 1.0f;
+            drawRect( sx0, y0, sx1, y0 + h, 0.95f, 0.85f, 0.20f, 0.32f );
         }
 
         /* visible-window box */
@@ -1166,6 +1324,20 @@ static void renderOverview( int winW )
             drawRect( bx0, y0, bx1, y0 + h, 0.95f, 0.95f, 1.0f, 0.14f );
             drawVLine( bx0, y0, y0 + h, 0.9f, 0.95f, 1.0f, 0.9f );
             drawVLine( bx1, y0, y0 + h, 0.9f, 0.95f, 1.0f, 0.9f );
+        }
+
+        /* tiny mark carets along the top edge, in each mark's hue, so the
+         * whole-file position of every mark is visible even when zoomed in */
+        for( i = 0; i < app.numMarks; i++ ) {
+            const float *col = markColors[ app.marks[i].color % MARK_NUM_COLORS ];
+            float mx = x0 + (float)( (double)app.marks[i].frame /
+                                     (double)n ) * w;
+            glColor4f( col[0], col[1], col[2], 0.95f );
+            glBegin( GL_TRIANGLES );
+                glVertex2f( mx - 3.0f, y0 + 1.0f );
+                glVertex2f( mx + 3.0f, y0 + 1.0f );
+                glVertex2f( mx,        y0 + 6.0f );
+            glEnd();
         }
     }
 
@@ -1191,17 +1363,18 @@ static void renderMarks( void )
         float px = frameToPixel( app.marks[i].frame );
         int   sel = app.marks[i].selected;
         float hw  = 5.0f;
+        const float *col = markColors[ app.marks[i].color % MARK_NUM_COLORS ];
+        float r = col[0], g = col[1], b = col[2];
         if( px < x0 - hw || px > x1 + hw ) continue;
 
-        /* faint vertical guide the height of the wave */
-        if( sel )
-            drawVLine( px, stripBot, waveBot, 1.0f, 0.85f, 0.25f, 0.45f );
-        else
-            drawVLine( px, stripBot, waveBot, 0.95f, 0.55f, 0.20f, 0.22f );
+        /* faint vertical guide the height of the wave, in the mark's hue */
+        drawVLine( px, stripBot, waveBot, r, g, b, sel ? 0.5f : 0.22f );
 
-        /* caret: downward triangle sitting in the strip, tip at the line */
-        if( sel ) glColor4f( 1.0f, 0.9f, 0.35f, 1.0f );
-        else      glColor4f( 0.95f, 0.6f, 0.2f, 1.0f );
+        /* caret: downward triangle sitting in the strip, tip at the line.
+         * a selected caret is brightened toward white so it reads as picked */
+        if( sel ) glColor4f( 0.5f + r * 0.5f, 0.5f + g * 0.5f,
+                             0.5f + b * 0.5f, 1.0f );
+        else      glColor4f( r, g, b, 1.0f );
         glBegin( GL_TRIANGLES );
             glVertex2f( px - hw, stripTop + 1.0f );
             glVertex2f( px + hw, stripTop + 1.0f );
@@ -1710,6 +1883,14 @@ static void buildTransport( int winW, int winH )
         if( gui_button( "|< Start" ) ) {
             stopPlayback();
             app.selStart = app.selEnd = 0;
+            app.viewStart = 0;
+        }
+        gui_same_line();
+        if( gui_button( "End >|" ) ) {
+            stopPlayback();
+            app.selStart = app.selEnd = clipLen();
+            app.viewStart = clipLen();   /* clampView scrolls back to the end */
+            clampView();
         }
         gui_same_line();
         if( gui_button( "Play All" ) ) { stopPlayback(); playFrom( 0, clipLen() ); }
@@ -1886,7 +2067,7 @@ static void handleKey( SDL_Keycode key, int ctrl )
         case SDLK_HOME:   app.selStart = app.selEnd = 0;
                           app.viewStart = 0; break;
         case SDLK_END:    app.selStart = app.selEnd = clipLen();
-                          clampView(); break;
+                          app.viewStart = clipLen(); clampView(); break;
         case SDLK_EQUALS:
         case SDLK_PLUS:   app.samplesPerPixel *= 0.5; clampView(); break;
         case SDLK_MINUS:  app.samplesPerPixel *= 2.0; clampView(); break;

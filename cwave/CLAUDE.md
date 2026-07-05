@@ -101,9 +101,31 @@ sync with the samples**. Structural edits (cut/paste/delete/trim/undo/redo)
 use `bumpWave()` (deferred full rebuild in `renderWaveform`). If you add a new
 effect: length-preserving → `waveUpdateRange`; length-changing → `bumpWave`.
 
-**Undo/redo.** 32-level deep copies of the whole clip (`app.undo/redo`). Simple
-and robust; fine for now. Marks are NOT in the undo snapshot — they are only
-clamped back into range after undo/redo (`marksClampToClip`).
+**Undo/redo — delta records, NOT whole-clip copies.** Each `UndoRec` is a
+self-reversing *splice*: it stores only the frames at `[at,at+oldLen)` before
+the edit (`oldData`) and `[at,at+newLen)` after (`newData`). So undo cost
+scales with the *edit size*, not the file length — the whole point, since the
+old whole-clip snapshot made every edit O(numFrames) (the real cause of "edits
+are slow on long files"). Edit actions bracket the mutation with
+`beginEdit(at,oldLen)` (snapshot the span about to change) … `commitEdit(newLen)`
+(snapshot the new span, push the record). `doUndo`/`doRedo` just call
+`audio_splice` with the record's data and move the record between the undo/redo
+stacks — no re-copy. **Invariant: `beginEdit`'s `[at,oldLen)` must exactly cover
+every frame the edit changes, and `commitEdit`'s `newLen` the resulting span.**
+Length-preserving edits (`oldLen==newLen`) undo via `waveUpdateRange`; length-
+changing ones via `bumpWave`. Trim is the one inherently-O(n) case (its record
+holds the whole pre-trim clip). Marks are NOT in the record — only clamped back
+into range after undo/redo (`marksClampToClip`). `clearUndoRedo()` on load/new.
+
+**`audio_splice`** (in `audio.c`) is the single primitive behind delete
+(`insLen=0`), insert (`removeLen=0`), in-place overwrite (`removeLen==insLen`,
+no realloc) and undo/redo. `audio_insert`/`audio_delete_range` are `realloc` +
+`memmove` (O(tail)), not full rebuilds — paste-at-end is a realloc + small copy.
+
+**Playback survives edits.** Edit actions no longer `stopPlayback()`; they
+mutate under `audio_lock` and then call `refreshPlayback()`, which re-clamps the
+loop range / playhead (and re-syncs `followSel` to the new selection) so a
+looping selection keeps playing straight through an effect/cut/paste.
 
 **Marks.** Carets in a strip (`MARK_STRIP_H`) along the top of the wave. A mark
 is a `long frame` that must track its sample as edits shift audio: on every
@@ -112,7 +134,11 @@ trim remaps manually; effects on a selection drop marks at the edges. Auto-made
 at edit seams; manual via `M` / Marks menu. Selection edges snap to a nearby
 mark in screen space (`snapFrameToMark`). Click a caret to select, shift-click
 for multi; delete via menu. **If you add an edit that changes length, you MUST
-adjust marks or they'll point at the wrong samples.**
+adjust marks or they'll point at the wrong samples.** Each mark carries a
+`color` index into the 8-hue `markColors[]` palette; a group made together (a
+selection's two edges, a paste's two seams, a lone cursor mark) shares one hue
+from `newMarkColor()` so related carets read together. Carets also appear as
+tiny hued triangles in the overview strip.
 
 **Coordinates.** `frameToPixel`/`pixelToFrame` convert using `viewStart` +
 `samplesPerPixel`. `app.wfX/Y/W/H` (wave) and `app.ovX/Y/W/H` (overview) are

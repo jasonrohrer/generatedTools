@@ -88,6 +88,16 @@ int  audio_trim_to_range( AudioClip *c, long start, long end );
  * needed).  Returns 0 on success. */
 int  audio_insert( AudioClip *c, long at, const AudioClip *ins );
 
+/* Replace frames [at, at+removeLen) with insLen frames taken from ins[ch]
+ * (one array per channel; ins may be NULL only when insLen == 0).  This is
+ * the single primitive behind delete (insLen 0), insert (removeLen 0),
+ * in-place overwrite (removeLen == insLen -- no reallocation) and the
+ * undo/redo of any of those.  Cost is O(tail + insLen): the frames after the
+ * edit are shifted at most once, so it never scans the whole clip.  Channel
+ * count and sample rate are preserved.  Returns 0 on success. */
+int  audio_splice( AudioClip *c, long at, long removeLen,
+                   float *const ins[], long insLen );
+
 /* Compute the peak absolute sample over the range (for metering). */
 float audio_peak( const AudioClip *c, long start, long end );
 

@@ -534,19 +534,18 @@ void audio_reverse( AudioClip *c, long start, long end )
 
 int audio_delete_range( AudioClip *c, long start, long end )
 {
-    long tail, newFrames, i;
+    long tail;
     int  ch;
     clip_range( c, &start, &end );
     if( end <= start ) return 0;
     tail = c->numFrames - end;
-    newFrames = start + tail;
     for( ch = 0; ch < c->numChannels; ch++ ) {
-        float *s = c->channel[ch];
-        for( i = 0; i < tail; i++ ) s[start + i] = s[end + i];
-        /* leave allocation as-is; just shrink logical length */
+        /* slide the tail down over the gap in one move; leave the allocation
+         * as-is (just shrink the logical length) so this stays O(tail) */
+        memmove( c->channel[ch] + start, c->channel[ch] + end,
+                 (size_t)tail * sizeof(float) );
     }
-    c->numFrames = newFrames;
-    (void)start;
+    c->numFrames = start + tail;
     return 0;
 }
 
@@ -569,10 +568,8 @@ int audio_trim_to_range( AudioClip *c, long start, long end )
 
 int audio_insert( AudioClip *c, long at, const AudioClip *ins )
 {
-    AudioClip out;
-    long newFrames, i;
-    int  ch;
-    int  nch = c->numChannels;
+    long tail, newFrames, insN;
+    int  ch, nch = c->numChannels;
 
     if( at < 0 ) at = 0;
     if( at > c->numFrames ) at = c->numFrames;
@@ -583,27 +580,72 @@ int audio_insert( AudioClip *c, long at, const AudioClip *ins )
         return audio_copy( c, ins );
     }
 
-    newFrames = c->numFrames + ins->numFrames;
-    if( audio_alloc( &out, nch, c->sampleRate, newFrames ) ) return 1;
+    insN      = ins->numFrames;
+    tail      = c->numFrames - at;
+    newFrames = c->numFrames + insN;
 
+    /* grow each channel in place, shift its tail up to open a gap, and copy
+     * the inserted data in.  O(tail + insN) rather than rebuilding the clip;
+     * pasting at the end (tail == 0) is just a realloc + a small copy. */
     for( ch = 0; ch < nch; ch++ ) {
-        /* head */
-        for( i = 0; i < at; i++ )
-            out.channel[ch][i] = c->channel[ch][i];
-        /* inserted (use source channel ch, or channel 0 if source is mono) */
-        for( i = 0; i < ins->numFrames; i++ ) {
-            int sch = ( ch < ins->numChannels ) ? ch : 0;
-            out.channel[ch][at + i] = ins->channel[sch][i];
-        }
-        /* tail */
-        for( i = at; i < c->numFrames; i++ )
-            out.channel[ch][ins->numFrames + i] = c->channel[ch][i];
+        int    sch = ( ch < ins->numChannels ) ? ch : 0;
+        float *p   = (float *)realloc( c->channel[ch],
+                                       (size_t)newFrames * sizeof(float) );
+        if( !p ) return 1;
+        memmove( p + at + insN, p + at, (size_t)tail * sizeof(float) );
+        memcpy( p + at, ins->channel[sch], (size_t)insN * sizeof(float) );
+        c->channel[ch] = p;
+    }
+    c->numFrames = newFrames;
+    return 0;
+}
+
+int audio_splice( AudioClip *c, long at, long removeLen,
+                  float *const ins[], long insLen )
+{
+    long tail, newFrames;
+    int  ch, nch = c->numChannels;
+
+    if( at < 0 ) at = 0;
+    if( at > c->numFrames ) at = c->numFrames;
+    if( removeLen < 0 ) removeLen = 0;
+    if( at + removeLen > c->numFrames ) removeLen = c->numFrames - at;
+    if( insLen < 0 ) insLen = 0;
+    tail      = c->numFrames - at - removeLen;   /* frames after the edit */
+    newFrames = c->numFrames - removeLen + insLen;
+
+    if( removeLen == insLen ) {
+        /* pure in-place overwrite: no length change, no reallocation */
+        for( ch = 0; ch < nch; ch++ )
+            if( insLen > 0 )
+                memcpy( c->channel[ch] + at, ins[ch],
+                        (size_t)insLen * sizeof(float) );
+        return 0;
     }
 
-    audio_free( c );
-    c->numChannels = out.numChannels;
-    c->sampleRate  = out.sampleRate;
-    c->numFrames   = out.numFrames;
-    for( i = 0; i < AUDIO_MAX_CHANNELS; i++ ) c->channel[i] = out.channel[i];
+    if( newFrames > c->numFrames ) {
+        /* net growth: enlarge, slide the tail up, drop in the new data */
+        for( ch = 0; ch < nch; ch++ ) {
+            float *p = (float *)realloc( c->channel[ch],
+                          (size_t)( newFrames > 0 ? newFrames : 1 ) *
+                          sizeof(float) );
+            if( !p ) return 1;
+            memmove( p + at + insLen, p + at + removeLen,
+                     (size_t)tail * sizeof(float) );
+            if( insLen > 0 )
+                memcpy( p + at, ins[ch], (size_t)insLen * sizeof(float) );
+            c->channel[ch] = p;
+        }
+    } else {
+        /* net shrink: slide the tail down over the gap; keep the allocation */
+        for( ch = 0; ch < nch; ch++ ) {
+            float *p = c->channel[ch];
+            memmove( p + at + insLen, p + at + removeLen,
+                     (size_t)tail * sizeof(float) );
+            if( insLen > 0 )
+                memcpy( p + at, ins[ch], (size_t)insLen * sizeof(float) );
+        }
+    }
+    c->numFrames = newFrames;
     return 0;
 }

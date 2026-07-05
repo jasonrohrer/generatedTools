@@ -1,38 +1,14 @@
 Nice work!
 
-Edits are very fast now, even in large files!  I tested it with a 114 minute file, and pasting audio was instant!
+Multiple files is working!
 
 
 Notes:
 
---When Loop is checked, and you start playing without anything selected, the whole file loops from the cursor point onward (correct) but then while it's playing, if you make a selection, it is ignored for looping purpose until you hit STOP and then PLAY again.  So as long as Loop is checked, it should obey the selection as soon as it exists.
+--If you open a bunch of files together from the command line, only the first file gets opened.  Should be able to open a bunch with wildcard on the command line, or listing a bunch.  I think wildcards get passed in as multiple arguments to the c program (the shell expands the wildcard).
 
+--There's something weird where if you create a new file with 3 channels, and then paste a 1-channel file in there, it instantly changes the new file to 1 channel.  Also, the sample rate specified in the new file changes to match the pasted data.  Meanwhile, pasting into an existing file seems to do the right thing (dropping channels if the source has more than the dest, or duplicating channels if the dest has more than the source).  The dest structure is always preserved.  It's only new (empty) files that aren't working to preserve the structure.
 
---For some reason, when I tried opening an 8kHz test file, the playhead moves in a jerky fashion.  It moves very smoothly in the 44.1 files that I've tested.  Look at GLASS.WAV in this folder as an example.
+--Switching tabs stops playback.  Instead, it should instantly jump to playing from the cursor position in the file that you're switching to.  If loop is checked, it should switch to looping the selection in the new tab (or looping from the cursor position, if there's no selection).  The point of this is that someone can open 15 files on the command line, hit PLAY, and then jump from file to file, listening to them all in turn (like if opening a folder of samples).
 
-
-Otherwise, things are looking great in terms of functionality.
-
-
-So then, the final big feature:
-
---We should be able to open multiple files, simultaneously, as tabs that appear at the top of the screen, below the menus.
-
---We should be able to copy-paste between files.
-
---"New" should be able to specify how many tracks, and what sample rate, and what sample format (24 bit, 16 bit, 8 bit, 32-bit float, etc... whatever WAV supports).
-
---Since you could, potentially, paste stuff taken from different files, the pasted samples will just be interpreted at the destination sample rate (no need for rate conversion when pasting).  And I guess... if there's a sample format conversion that needs to happen during paste, it should just happen.
-
---Of course, each open file should have its own marks, undo chain, pre-rendered waveform views, etc.
-
---Switching tabs should be instant.
-
-
-
-
-
-
-
-
-
+--Keyboard shortcuts for switching tabs... left and right arrows, with wrap-around if you reach the end.  Up to jump to first tab, down to jump to last tab.

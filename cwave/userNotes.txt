@@ -1,30 +1,17 @@
 Nice work!
 
-The marks are working GREAT, and very useful.
+The improvements are growing!
 
 
 Notes:
 
 
---The edit time on long files (like fade out of a small portion) does seem to be slightly faster than it used to be, but it's still slower than the same operation on a short file.  Not sure what's going on here, so take a look.
+--Some of the hues for the marks are too close to the blue waveform.  Avoid anthing anywhere near cyan.  Yellow, green, magenta, red, orange are good ones to use.  And then use darker versions of those (tan, dark green, purple , maroon, brown).  That will give you 10 colors to work with.
 
+--I keep forgetting, but there should be a "clear marks in selection" command (so you can just drag a selection, and then delete the marks in that selection, without selecting them individually).
 
---And YES, all operations (including copy-paste, delete, etc) should be the same speed regardless of file length.  Actually, I'm not sure this is possible, because you do have to shift more data (potentially).  But the wave-form calculation shouldn't be the slow part.  For example, pasting 1 second of audio at the end of a file should be the same speed, regardless of file size.  And it's currently slow.  I get that pasting audio at the beginning of a long file might be inherently slow... though it should be as fast as the memmove, right?  Let's see how fast that can be.  If that's still slow, we can talk later about ways to speed that up.
+--Pasting at the end of a long file is still slower than I would like it to be.  Even deleting from the end of a long file is slower than it should be.  Of course, we don't want to waste memory by keeping a long buffer with tons of empty room (to make room for expected future pasting).  Is there a way that you could... keep a list of buffers... like an array of pointers to buffers.  That starts with only one thing in it, when you open the file.  But when stuff gets pasted at the end (or beginning), you just malloc a new buffer and insert it in the right spot in the list.  Also, these "pointers" could have a length too, so that cutting something off the end is free, and so is cutting something off the beginning (just change the start pointer).  This also makes pasting into the middle cheap, because you actually don't need to re-alloc anything... you just create pointers to the before portion, the end portion (which have new starts and ends), and the insert the new portion in between.  During playback, you walk through the buffers in order, and jump to the next one when the previous one runs out of samples.  And during saving, you just concatonate the samples from all the buffers.  Same for waveform generation.  YES, there would be some memory hanging around after trimming stuff, but this is okay, since it would never be more than the whole file that was originally opened.  No need to realloc, just leave the "now unplayable" samples there.  Of course, keep track of the full alloced regions, so you can free them when the program closes.
 
-
---There need to be a "jump to end" button, just like there's currently a jump to start.  It's very hard to move the cursor to the end of the file (without setting a mark there first with a selection, or zooming way out first).
-
-
---The selected region in the overview scroll area is too hard to see... I think that's because it doesn't have end-lines around it, and it's true that end-lines would make it more cluttered.  So make it a little bit more solid of a yellow than the selection in the main view, or something...  It's actually a bit dimmer than the yellow used in the main view, currently.
-
-
---Can you have a set of nice, distinct colors, and then cycle through those when setting marks, so that each pair of marks (or each lone mark) has a different color?  Would help us to remember which marks belong together.  Maybe like.. 8 distinct colors?
-
-
---There should be some small representation of the marks in the scroll overview... maybe just as tiny carets only.
-
-
---If we're currently playing audio (like looping a selection), then audio should continue playing after an operation.  Currently it stops.  Maybe it needs to stop during the operation, and then resume when done, but it would be great if it just kept playing the whole time.
 
 
 

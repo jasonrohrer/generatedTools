@@ -8,7 +8,21 @@ Notes:
 
 --Some of the hues for the marks are too close to the blue waveform.  Avoid anthing anywhere near cyan.  Yellow, green, magenta, red, orange are good ones to use.  And then use darker versions of those (tan, dark green, purple , maroon, brown).  That will give you 10 colors to work with.
 
+
 --I keep forgetting, but there should be a "clear marks in selection" command (so you can just drag a selection, and then delete the marks in that selection, without selecting them individually).
+
+
+--Pasting should leave marks where the paste happened (good, currently!), but it should NOT auto-select the pasted thing.  Instead, it should advance the cursor to the end of the pasted region, so that repeated pastes are possible, right in a row, like train cars, paste-paste-paste.  Also, the vew scroll should jump to contain the newly-pasted stuff, if the pasted stuff moves off the end of the current view (for example, if pasting at the end of the file, the scroll should keep scrolling to the new end with each paste).
+
+
+--If there is nothing selected, the current cursor position (yellow line) should appear in the scroll view.
+
+
+--The current green play position should appear in the scroll view.
+
+
+--There should probably be a small bit of "before" and "after" room in the scroll view, so you can scroll to make the very first sample and very last sample clearly visible, without having it smashed against the edge of the window.  You can color this "before" and "after" region black, to make it clear that it is beyond the edge of the data.  Not sure how much there should be... I guess it's not a certain time amount, but rather, a certain amount of screen space, regardless of zoom.  So... make it like... 20 pixels wide (and it only scrolls into view if you scroll to the very start or end).  This will tell you visually that you've reach the start/end of the file.  So maybe this doesn't need to appear in the scroll view at all, but only in the waveform view when you scroll all the way to the end (though it should appear gradually as you inch your way closer to the end... to avoid a sudden jump).  It's like.. regardless of your zoom level, there's a 20-pixel wide black area beyond the start/end that you can scroll to see.
+
 
 --Pasting at the end of a long file is still slower than I would like it to be.  Even deleting from the end of a long file is slower than it should be.  Of course, we don't want to waste memory by keeping a long buffer with tons of empty room (to make room for expected future pasting).  Is there a way that you could... keep a list of buffers... like an array of pointers to buffers.  That starts with only one thing in it, when you open the file.  But when stuff gets pasted at the end (or beginning), you just malloc a new buffer and insert it in the right spot in the list.  Also, these "pointers" could have a length too, so that cutting something off the end is free, and so is cutting something off the beginning (just change the start pointer).  This also makes pasting into the middle cheap, because you actually don't need to re-alloc anything... you just create pointers to the before portion, the end portion (which have new starts and ends), and the insert the new portion in between.  During playback, you walk through the buffers in order, and jump to the next one when the previous one runs out of samples.  And during saving, you just concatonate the samples from all the buffers.  Same for waveform generation.  YES, there would be some memory hanging around after trimming stuff, but this is okay, since it would never be more than the whole file that was originally opened.  No need to realloc, just leave the "now unplayable" samples there.  Of course, keep track of the full alloced regions, so you can free them when the program closes.
 

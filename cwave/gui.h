@@ -23,6 +23,12 @@ void gui_render( void );
 
 int  gui_want_capture_mouse( void );
 int  gui_want_capture_keyboard( void );
+/* True if the mouse is over ANY ImGui window (menu bar, its open dropdown,
+ * a dialog, or the transport panel).  Used to decide whether a click belongs
+ * to the raw-GL waveform / overview: a click that merely closes an open menu
+ * (over empty wave space) is NOT over a window, so we can act on it the same
+ * frame instead of swallowing it. */
+int  gui_any_window_hovered( void );
 
 /* ---- main menu bar ---- */
 int   gui_begin_main_menu_bar( void );
@@ -36,6 +42,11 @@ void  gui_separator( void );
 /* ---- windows / layout ---- */
 void gui_set_next_window_pos( float x, float y );
 void gui_set_next_window_size( float w, float h );
+/* Set the next window's size only when it (re)appears, so the user can then
+ * resize it and the manual size sticks for the rest of the session. */
+void gui_set_next_window_size_appearing( float w, float h );
+/* Read the current window's on-screen size (call between begin/end). */
+void gui_get_window_size( float *w, float *h );
 /* flags: 0 default; 1 = no-title/no-resize/no-move fixed panel */
 int  gui_begin( const char *name, int fixedPanel );
 void gui_end( void );
@@ -61,6 +72,9 @@ void gui_progress_bar( float fraction, const char *overlay );
 /* ---- popups / modals ---- */
 void gui_open_popup( const char *id );
 int  gui_begin_popup_modal( const char *id );
+/* Like gui_begin_popup_modal but the window is user-resizable (no auto-fit),
+ * for dialogs whose size the user may want to change (e.g. the file browser). */
+int  gui_begin_popup_modal_resizable( const char *id );
 void gui_end_popup( void );
 void gui_close_current_popup( void );
 

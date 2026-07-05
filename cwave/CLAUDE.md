@@ -122,17 +122,26 @@ self-reversing *splice*: it stores only the frames at `[at,at+oldLen)` before
 the edit (`oldData`) and `[at,at+newLen)` after (`newData`). So undo cost
 scales with the *edit size*, not the file length — the whole point, since the
 old whole-clip snapshot made every edit O(numFrames) (the real cause of "edits
-are slow on long files"). Edit actions bracket the mutation with
-`beginEdit(at,oldLen)` (snapshot the span about to change) … `commitEdit(newLen)`
-(snapshot the new span, push the record). `doUndo`/`doRedo` just call
-`audio_splice` with the record's data and move the record between the undo/redo
-stacks — no re-copy. **Invariant: `beginEdit`'s `[at,oldLen)` must exactly cover
+are slow on long files"). A record ALSO snapshots the *editor* state (selection
++ a malloc'd copy of the whole mark table) as it stood **before** and **after**
+the edit, so undo/redo restore not just the audio but exactly what was selected
+and which marks existed — undoing a cut brings its selection back, undoing a
+paste removes the seam marks it created (`selBefore*/selAfter*`, `marksBefore/
+marksAfter`, freed in `undoRecFree`). Edit actions bracket the mutation with
+`beginEdit(at,oldLen)` (called FIRST — snapshots the span about to change AND the
+pre-edit selection/marks) … `commitEdit(newLen)` (called LAST, after the action
+has set the final selection/marks — snapshots the new span AND the post-edit
+selection/marks, then pushes the record). **Invariant: `commitEdit` must be the
+last thing an edit action does, after selection and marks are in their final
+state**, or the redo snapshot will be stale. `doUndo`/`doRedo` call
+`audio_splice` with the record's data, move the record between the undo/redo
+stacks (no re-copy), then restore the before/after selection + marks via
+`restoreMarks`. **Invariant: `beginEdit`'s `[at,oldLen)` must exactly cover
 every frame the edit changes, and `commitEdit`'s `newLen` the resulting span.**
 Length-preserving edits (`oldLen==newLen`) undo via `waveUpdateRange`; length-
 changing ones via `waveReplaceTail(r.at)` (the splice leaves `[0,r.at)`
 untouched). Trim is the one inherently-O(n) case (its record holds the whole
-pre-trim clip, and it `bumpWave`s a full rebuild). Marks are NOT in the record — only clamped back
-into range after undo/redo (`marksClampToClip`). `clearUndoRedo()` on load/new.
+pre-trim clip, and it `bumpWave`s a full rebuild). `clearUndoRedo()` on load/new.
 
 **`audio_splice`** (in `audio.c`) is the single primitive behind delete
 (`insLen=0`), insert (`removeLen=0`), in-place overwrite (`removeLen==insLen`,

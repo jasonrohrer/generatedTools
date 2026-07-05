@@ -70,6 +70,10 @@ int gui_want_capture_keyboard( void )
 {
     return ImGui::GetIO().WantCaptureKeyboard ? 1 : 0;
 }
+int gui_any_window_hovered( void )
+{
+    return ImGui::IsWindowHovered( ImGuiHoveredFlags_AnyWindow ) ? 1 : 0;
+}
 
 /* ---- main menu bar ---- */
 int  gui_begin_main_menu_bar( void ) { return ImGui::BeginMainMenuBar() ? 1 : 0; }
@@ -98,6 +102,16 @@ void gui_set_next_window_pos( float x, float y )
 void gui_set_next_window_size( float w, float h )
 {
     ImGui::SetNextWindowSize( ImVec2( w, h ) );
+}
+void gui_set_next_window_size_appearing( float w, float h )
+{
+    ImGui::SetNextWindowSize( ImVec2( w, h ), ImGuiCond_Appearing );
+}
+void gui_get_window_size( float *w, float *h )
+{
+    ImVec2 s = ImGui::GetWindowSize();
+    if( w ) *w = s.x;
+    if( h ) *h = s.y;
 }
 
 int gui_begin( const char *name, int fixedPanel )
@@ -173,10 +187,33 @@ void gui_progress_bar( float fraction, const char *overlay )
 /* ---- popups ---- */
 void gui_open_popup( const char *id ) { ImGui::OpenPopup( id ); }
 
+/* Close the current popup when Escape is pressed while it is focused.  Skip
+ * when a widget inside it is active (e.g. a text field being edited) so that
+ * Escape first cancels the edit rather than the whole dialog.  ImGui does not
+ * reliably close popups on Escape without keyboard-nav enabled, so we do it. */
+static void popup_escape_to_close( void )
+{
+    if( ImGui::IsWindowFocused( ImGuiFocusedFlags_RootAndChildWindows ) &&
+        !ImGui::IsAnyItemActive() &&
+        ImGui::IsKeyPressed( ImGuiKey_Escape ) )
+        ImGui::CloseCurrentPopup();
+}
+
 int gui_begin_popup_modal( const char *id )
 {
-    return ImGui::BeginPopupModal( id, NULL,
-                ImGuiWindowFlags_AlwaysAutoResize ) ? 1 : 0;
+    if( ImGui::BeginPopupModal( id, NULL, ImGuiWindowFlags_AlwaysAutoResize ) ) {
+        popup_escape_to_close();
+        return 1;
+    }
+    return 0;
+}
+int gui_begin_popup_modal_resizable( const char *id )
+{
+    if( ImGui::BeginPopupModal( id, NULL, 0 ) ) {
+        popup_escape_to_close();
+        return 1;
+    }
+    return 0;
 }
 void gui_end_popup( void ) { ImGui::EndPopup(); }
 void gui_close_current_popup( void ) { ImGui::CloseCurrentPopup(); }

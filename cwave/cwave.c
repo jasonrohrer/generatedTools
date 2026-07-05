@@ -491,6 +491,14 @@ typedef struct {
  * the size of the edit -- NOT a full-clip snapshot as before.  (A length-
  * changing structural edit, e.g. trim, still stores the affected spans,
  * which for trim is the whole clip -- that case is inherently O(n).) */
+/* Besides the sample delta, a record also snapshots the *editor* state
+ * (selection + marks) as it was before and after the edit, so undo/redo
+ * restore not just the audio but also what was selected and which marks
+ * existed.  This makes undoing a cut restore the deleted selection, and
+ * undoing a paste remove the marks the paste created -- rather than leaving
+ * stale carets and an empty cursor behind.  The mark snapshots are exact
+ * copies (malloc'd), so no fragile per-edit mark bookkeeping is needed to
+ * reverse them. */
 typedef struct {
     long   at;
     long   oldLen;
@@ -498,6 +506,13 @@ typedef struct {
     int    numChannels;
     float *oldData[AUDIO_MAX_CHANNELS];  /* oldLen frames/ch, NULL if 0 */
     float *newData[AUDIO_MAX_CHANNELS];  /* newLen frames/ch, NULL if 0 */
+
+    long   selBeforeS, selBeforeE;       /* selection before / after the edit */
+    long   selAfterS,  selAfterE;
+    Mark  *marksBefore;                  /* malloc'd copies of the mark table  */
+    Mark  *marksAfter;
+    int    numMarksBefore, numMarksAfter;
+    int    colorNextBefore, colorNextAfter;
 } UndoRec;
 
 typedef struct {
@@ -549,6 +564,7 @@ typedef struct {
     int  browserSave;             /* 0 = open, 1 = save                  */
     char browserDir[PATH_MAX_LEN];
     char browserFile[PATH_MAX_LEN];
+    float browserW, browserH;     /* remembered dialog size this session */
 } App;
 
 static App app;
@@ -755,18 +771,6 @@ static void marksAdjustDelete( long s, long e )
     }
 }
 
-/* clamp all marks into [0,clipLen]; used after undo/redo where the exact
- * pre-edit geometry is not tracked */
-static void marksClampToClip( void )
-{
-    int i = 0;
-    long n = clipLen();
-    while( i < app.numMarks ) {
-        if( app.marks[i].frame > n ) app.marks[i].frame = n;
-        i++;
-    }
-}
-
 /* stop playback safely (under audio lock) */
 static void stopPlayback( void )
 {
@@ -813,7 +817,31 @@ static void undoRecFree( UndoRec *r )
         if( r->newData[ch] ) free( r->newData[ch] );
         r->oldData[ch] = r->newData[ch] = NULL;
     }
+    if( r->marksBefore ) { free( r->marksBefore ); r->marksBefore = NULL; }
+    if( r->marksAfter )  { free( r->marksAfter );  r->marksAfter  = NULL; }
     r->oldLen = r->newLen = 0;
+}
+
+/* malloc a copy of the current mark table (NULL if empty); caller frees */
+static Mark *dupMarks( int *countOut )
+{
+    Mark *m = NULL;
+    *countOut = app.numMarks;
+    if( app.numMarks > 0 ) {
+        m = (Mark *)malloc( (size_t)app.numMarks * sizeof(Mark) );
+        if( m ) memcpy( m, app.marks, (size_t)app.numMarks * sizeof(Mark) );
+        else    *countOut = 0;
+    }
+    return m;
+}
+
+/* replace the live mark table with a snapshot (does not take ownership) */
+static void restoreMarks( const Mark *m, int count, int colorNext )
+{
+    if( count > MAX_MARKS ) count = MAX_MARKS;
+    if( count > 0 && m ) memcpy( app.marks, m, (size_t)count * sizeof(Mark) );
+    app.numMarks      = count;
+    app.markColorNext = colorNext;
 }
 
 static void clearUndoRedo( void )
@@ -842,8 +870,11 @@ static void captureRange( float *dst[AUDIO_MAX_CHANNELS], long start, long len )
 /* Record in progress between beginEdit() and commitEdit(). */
 static UndoRec pendingUndo;
 
-/* Snapshot the frames [at, at+oldLen) that are about to be replaced.  Call
- * BEFORE mutating the clip; pair with commitEdit() AFTER the mutation. */
+/* Snapshot the frames [at, at+oldLen) that are about to be replaced, plus the
+ * editor state (selection + marks) as it stands right now -- BEFORE the edit
+ * action touches the selection or drops any seam marks.  Call at the very start
+ * of an edit action; pair with commitEdit() at the very end (after selection /
+ * marks have been updated to their final post-edit values). */
 static void beginEdit( long at, long oldLen )
 {
     memset( &pendingUndo, 0, sizeof(pendingUndo) );
@@ -851,15 +882,27 @@ static void beginEdit( long at, long oldLen )
     pendingUndo.oldLen      = oldLen;
     pendingUndo.numChannels = app.clip.numChannels;
     captureRange( pendingUndo.oldData, at, oldLen );
+
+    pendingUndo.selBeforeS     = app.selStart;
+    pendingUndo.selBeforeE     = app.selEnd;
+    pendingUndo.marksBefore    = dupMarks( &pendingUndo.numMarksBefore );
+    pendingUndo.colorNextBefore = app.markColorNext;
 }
 
-/* Snapshot the newLen frames now at [at, newLen) and push the completed
- * record onto the undo stack (clearing redo, dropping the oldest at depth). */
+/* Snapshot the newLen frames now at [at, newLen) and the final editor state,
+ * then push the completed record onto the undo stack (clearing redo, dropping
+ * the oldest at depth).  Call AFTER the clip, selection and marks are all in
+ * their post-edit state. */
 static void commitEdit( long newLen )
 {
     int i;
     pendingUndo.newLen = newLen;
     captureRange( pendingUndo.newData, pendingUndo.at, newLen );
+
+    pendingUndo.selAfterS      = app.selStart;
+    pendingUndo.selAfterE      = app.selEnd;
+    pendingUndo.marksAfter     = dupMarks( &pendingUndo.numMarksAfter );
+    pendingUndo.colorNextAfter = app.markColorNext;
 
     for( i = 0; i < app.redoCount; i++ ) undoRecFree( &app.redo[i] );
     app.redoCount = 0;
@@ -904,9 +947,11 @@ static void doUndo( void )
     if( lenChanged ) waveReplaceTail( r.at );
     else             waveUpdateRange( r.at, r.at + r.oldLen );
 
-    if( app.selStart > clipLen() ) app.selStart = clipLen();
-    if( app.selEnd   > clipLen() ) app.selEnd   = clipLen();
-    marksClampToClip();
+    /* restore the exact selection + marks that existed before the edit, so
+     * a cut's selection comes back and a paste's seam marks disappear */
+    app.selStart = r.selBeforeS;
+    app.selEnd   = r.selBeforeE;
+    restoreMarks( r.marksBefore, r.numMarksBefore, r.colorNextBefore );
     clampView();
     refreshPlayback();
     setStatus( "Undo" );
@@ -936,9 +981,10 @@ static void doRedo( void )
     if( lenChanged ) waveReplaceTail( r.at );
     else             waveUpdateRange( r.at, r.at + r.newLen );
 
-    if( app.selStart > clipLen() ) app.selStart = clipLen();
-    if( app.selEnd   > clipLen() ) app.selEnd   = clipLen();
-    marksClampToClip();
+    /* restore the selection + marks as they were just after the edit */
+    app.selStart = r.selAfterS;
+    app.selEnd   = r.selAfterE;
+    restoreMarks( r.marksAfter, r.numMarksAfter, r.colorNextAfter );
     clampView();
     refreshPlayback();
     setStatus( "Redo" );
@@ -1124,11 +1170,11 @@ static void actDelete( void )
     audio_lock();
     audio_delete_range( &app.clip, s, e );
     audio_unlock();
-    commitEdit( 0 );
     waveReplaceTail( s );             /* only frames from s changed */
     marksAdjustDelete( s, e );
     addMark( s, newMarkColor() );     /* mark the seam left behind */
     app.selEnd = app.selStart = s;
+    commitEdit( 0 );                  /* record final selection + marks */
     clampView();
     refreshPlayback();
     setStatus( "Deleted selection" );
@@ -1140,6 +1186,13 @@ static void actCopy( void )
     if( !hasSelection() ) { setStatus( "No selection to copy" ); return; }
     s = app.selStart; e = app.selEnd;
     audio_copy_range( &app.clipboard, &app.clip, s, e );
+    /* mark the copied region's edges so you can see / return to what was
+     * grabbed (copy is not an undoable edit, so these are plain annotations) */
+    {
+        int c = newMarkColor();
+        addMark( s, c );
+        addMark( e, c );
+    }
     setStatus( "Copied selection" );
 }
 
@@ -1153,11 +1206,11 @@ static void actCut( void )
     audio_lock();
     audio_delete_range( &app.clip, s, e );
     audio_unlock();
-    commitEdit( 0 );
     waveReplaceTail( s );             /* only frames from s changed */
     marksAdjustDelete( s, e );
     addMark( s, newMarkColor() );     /* mark the seam left behind */
     app.selEnd = app.selStart = s;
+    commitEdit( 0 );                  /* record final selection + marks */
     clampView();
     refreshPlayback();
     setStatus( "Cut selection" );
@@ -1179,7 +1232,6 @@ static void actPaste( void )
     if( hadSel ) audio_delete_range( &app.clip, selS, selE );
     audio_insert( &app.clip, at, &app.clipboard );
     audio_unlock();
-    commitEdit( insN );
     waveReplaceTail( at );            /* frames [0,at) unchanged; tail rewritten */
     if( hadSel ) marksAdjustDelete( selS, selE );
     marksAdjustInsert( at, insN );
@@ -1190,6 +1242,7 @@ static void actPaste( void )
      * run of pastes lays clips down end-to-end like train cars; scroll to keep
      * that advancing cursor on screen (following the end of a growing file) */
     app.selStart = app.selEnd = at + insN;
+    commitEdit( insN );              /* record final selection + marks */
     clampView();
     ensureFrameVisible( at + insN );
     refreshPlayback();
@@ -1207,7 +1260,6 @@ static void actTrim( void )
     audio_lock();
     audio_trim_to_range( &app.clip, s, e );
     audio_unlock();
-    commitEdit( clipLen() );
     bumpWave();
     /* remap marks into the kept range [s,e); drop any that fall outside */
     {
@@ -1220,6 +1272,7 @@ static void actTrim( void )
     }
     app.selStart = 0;
     app.selEnd   = clipLen();
+    commitEdit( clipLen() );          /* record final selection + marks */
     zoomFit();
     refreshPlayback();
     setStatus( "Trimmed to selection" );
@@ -1247,7 +1300,6 @@ static void applyEffect( int which )
         case 5: audio_reverse( &app.clip, s, e );                     break;
     }
     audio_unlock();
-    commitEdit( e - s );
     /* these effects preserve length, so patch only the edited span of the
      * overview pyramid rather than rebuilding the whole (possibly huge) file */
     waveUpdateRange( s, e );
@@ -1256,6 +1308,7 @@ static void applyEffect( int which )
         int c = newMarkColor();
         addMark( s, c ); addMark( e, c );
     }
+    commitEdit( e - s );             /* record final selection + marks */
     refreshPlayback();
     switch( which ) {
         case 0: setStatus( "Normalized" ); break;
@@ -1882,6 +1935,22 @@ static int nameCmp( const void *a, const void *b )
     return strcmp( *(const char * const *)a, *(const char * const *)b );
 }
 
+/* true if 'name' ends in a supported audio extension (.wav / .ogg, any case) */
+static int isAudioName( const char *name )
+{
+    size_t n = strlen( name );
+    char e[5];
+    int  i;
+    if( n < 4 || name[n - 4] != '.' ) return 0;
+    for( i = 0; i < 4; i++ ) {
+        char ch = name[n - 4 + i];
+        if( ch >= 'A' && ch <= 'Z' ) ch = (char)( ch - 'A' + 'a' );
+        e[i] = ch;
+    }
+    e[4] = '\0';
+    return strcmp( e, ".wav" ) == 0 || strcmp( e, ".ogg" ) == 0;
+}
+
 static void browserOpen( int save )
 {
     app.browserSave = save;
@@ -1894,6 +1963,17 @@ static void browserOpen( int save )
              sizeof(app.pendingPopup) - 1 );
 }
 
+/* navigate the browser into 'target', resolving it to a clean absolute path
+ * (so ".." collapses instead of piling up) when possible. */
+static void browserChdir( const char *target )
+{
+    char resolved[PATH_MAX_LEN];
+    if( realpath( target, resolved ) != NULL )
+        snprintf( app.browserDir, PATH_MAX_LEN, "%s", resolved );
+    else
+        snprintf( app.browserDir, PATH_MAX_LEN, "%s", target );
+}
+
 static void drawFileBrowser( const char *popupId )
 {
     DIR *d;
@@ -1901,15 +1981,28 @@ static void drawFileBrowser( const char *popupId )
     char *names[4096];
     int   count = 0;
     int   i;
+    float listH;
 
+    /* remember the dialog size for the rest of the session */
+    gui_get_window_size( &app.browserW, &app.browserH );
+
+    /* current path (editable, and updated as you navigate directories) */
     gui_input_text( "Dir", app.browserDir, PATH_MAX_LEN );
     gui_separator();
 
-    if( gui_begin_child( "files", 0.0f, 260.0f, 1 ) ) {
+    /* let the file list grow with the (resizable) dialog: take all the
+     * vertical room except a fixed reserve for the Name field + buttons */
+    listH = gui_content_avail_h() - 72.0f;
+    if( listH < 90.0f ) listH = 90.0f;
+
+    if( gui_begin_child( "files", 0.0f, listH, 1 ) ) {
         d = opendir( app.browserDir );
         if( d ) {
             while( ( ent = readdir( d ) ) != NULL && count < 4096 ) {
-                if( strcmp( ent->d_name, "." ) == 0 ) continue;
+                /* hide "." and every dotfile / dot-directory, but keep ".."
+                 * so the user can still walk back up the tree */
+                if( ent->d_name[0] == '.' &&
+                    strcmp( ent->d_name, ".." ) != 0 ) continue;
                 names[count] = (char *)malloc( strlen( ent->d_name ) + 2 );
                 strcpy( names[count], ent->d_name );
                 count++;
@@ -1919,24 +2012,21 @@ static void drawFileBrowser( const char *popupId )
             for( i = 0; i < count; i++ ) {
                 char label[PATH_MAX_LEN + 8];
                 char full[PATH_MAX_LEN];
-                struct dirent *dummy;
                 DIR *sub;
                 int isDir;
-                (void)dummy;
                 snprintf( full, sizeof(full), "%s/%s",
                           app.browserDir, names[i] );
                 sub = opendir( full );
                 isDir = ( sub != NULL );
                 if( sub ) closedir( sub );
+                /* only show directories and supported audio files */
+                if( !isDir && !isAudioName( names[i] ) ) continue;
                 snprintf( label, sizeof(label), "%s%s",
                           isDir ? "[DIR] " : "      ", names[i] );
                 if( gui_selectable( label, 0 ) ) {
-                    if( isDir ) {
-                        snprintf( app.browserDir, PATH_MAX_LEN, "%s", full );
-                    } else {
-                        snprintf( app.browserFile, PATH_MAX_LEN, "%s",
-                                  names[i] );
-                    }
+                    if( isDir ) browserChdir( full );
+                    else snprintf( app.browserFile, PATH_MAX_LEN, "%s",
+                                   names[i] );
                 }
             }
             for( i = 0; i < count; i++ ) free( names[i] );
@@ -2215,11 +2305,16 @@ static void buildDialogs( void )
         gui_end_popup();
     }
 
-    if( gui_begin_popup_modal( "Open File" ) ) {
+    /* the file browser is user-resizable; seed it with the last size used
+     * this session (SetNextWindowSize with Appearing-cond only applies when
+     * the popup opens, so manual resizing sticks) */
+    gui_set_next_window_size_appearing( app.browserW, app.browserH );
+    if( gui_begin_popup_modal_resizable( "Open File" ) ) {
         drawFileBrowser( "Open File" );
         gui_end_popup();
     }
-    if( gui_begin_popup_modal( "Save File" ) ) {
+    gui_set_next_window_size_appearing( app.browserW, app.browserH );
+    if( gui_begin_popup_modal_resizable( "Save File" ) ) {
         drawFileBrowser( "Save File" );
         gui_end_popup();
     }
@@ -2286,6 +2381,8 @@ int main( int argc, char **argv )
     app.samplesPerPixel = 1.0;
     app.dlgGain = 2.0f;
     app.dlgNormDb = -1.0f;
+    app.browserW = 640.0f;
+    app.browserH = 480.0f;
     audio_alloc( &app.clip, 1, 44100, 0 );
 
     if( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_AUDIO ) != 0 ) {
@@ -2329,12 +2426,17 @@ int main( int argc, char **argv )
     while( running ) {
         SDL_Event ev;
         int winW, winH;
-        int mouseCapture, keyCapture;
+        int overGui, keyCapture;
 
         while( SDL_PollEvent( &ev ) ) {
             gui_process_event( &ev );
-            mouseCapture = gui_want_capture_mouse();
-            keyCapture   = gui_want_capture_keyboard();
+            /* "over a GUI window" (menu bar, its dropdown, a dialog, or the
+             * transport) rather than "wants capture": a click on empty wave
+             * space that merely closes an open menu is NOT over any window, so
+             * we still act on it this frame instead of swallowing it -- fixing
+             * the old "first click just closes the menu" wart. */
+            overGui    = gui_any_window_hovered();
+            keyCapture = gui_want_capture_keyboard();
 
             switch( ev.type ) {
                 case SDL_QUIT: running = 0; break;
@@ -2345,7 +2447,7 @@ int main( int argc, char **argv )
                     }
                     break;
                 case SDL_MOUSEBUTTONDOWN:
-                    if( !mouseCapture && !loading &&
+                    if( !overGui && !loading &&
                         ev.button.button == SDL_BUTTON_LEFT ) {
                         int shift = ( SDL_GetModState() & KMOD_SHIFT ) ? 1 : 0;
                         if( inOverview( ev.button.x, ev.button.y ) )
@@ -2365,7 +2467,7 @@ int main( int argc, char **argv )
                     else if( dragging ) handleWaveMouseMove( ev.motion.x );
                     break;
                 case SDL_MOUSEWHEEL:
-                    if( !mouseCapture ) {
+                    if( !overGui ) {
                         int mx, my;
                         SDL_GetMouseState( &mx, &my );
                         handleWheel( mx, my, (float)ev.wheel.y );

@@ -5,28 +5,19 @@ The improvements are growing!
 
 Notes:
 
+--When executing a COPY operation, the current selection should get marked.
 
---Some of the hues for the marks are too close to the blue waveform.  Avoid anthing anywhere near cyan.  Yellow, green, magenta, red, orange are good ones to use.  And then use darker versions of those (tan, dark green, purple , maroon, brown).  That will give you 10 colors to work with.
+--When undoing an operation that created marks, the marks should disappear (currently pasting a bunch creates a bunch of marks, and undoing the paste leaves the marks behind, but they no longer mark any places with meaning).
 
+--When undoing an operation that deletes a selection (like a cut or delete), the selection should be restored.
 
---I keep forgetting, but there should be a "clear marks in selection" command (so you can just drag a selection, and then delete the marks in that selection, without selecting them individually).
+--Pasting a small chunk of audio into the middle of a long file gets slower the farther you are from the end of the file.  At the end, it's very quick, in the middle, it's slower, and at the beginning, it's even slower.  Same is true for deleting a small chunk.  These should all happen at the same speed.  I see that you didn't implement the list of chunks thing, but you really should.  This is taking way more than 1ms to past a small bit of audio at the start of the file, where pasting the same chunk at the end of the file is instant. It has to be the realloc/move causing it.  Thus, it's worth implementing the multi-chunk thing.  For what it's worth, deleting a small chunk of audio in Audacity is instant, and it takes the same amount of time no matter where you are in a 28-minute file.
 
+--When opening a file, the list should auto-filter out anything that's not a .wav (or .WAV) and not a .ogg (or .OGG).  Currently, it's showing all kinds of other files, which makes it hard to navigate.  For directories, it should hide anything that starts with . also.  And the path displayed at the top should change as you navigate around to diferent directories.  And that little dialog box should be resizable, and remember the size during the current session.
 
---Pasting should leave marks where the paste happened (good, currently!), but it should NOT auto-select the pasted thing.  Instead, it should advance the cursor to the end of the pasted region, so that repeated pastes are possible, right in a row, like train cars, paste-paste-paste.  Also, the vew scroll should jump to contain the newly-pasted stuff, if the pasted stuff moves off the end of the current view (for example, if pasting at the end of the file, the scroll should keep scrolling to the new end with each paste).
+--ESC key should close any open dialog box (cancel).
 
-
---If there is nothing selected, the current cursor position (yellow line) should appear in the scroll view.
-
-
---The current green play position should appear in the scroll view.
-
-
---There should probably be a small bit of "before" and "after" room in the scroll view, so you can scroll to make the very first sample and very last sample clearly visible, without having it smashed against the edge of the window.  You can color this "before" and "after" region black, to make it clear that it is beyond the edge of the data.  Not sure how much there should be... I guess it's not a certain time amount, but rather, a certain amount of screen space, regardless of zoom.  So... make it like... 20 pixels wide (and it only scrolls into view if you scroll to the very start or end).  This will tell you visually that you've reach the start/end of the file.  So maybe this doesn't need to appear in the scroll view at all, but only in the waveform view when you scroll all the way to the end (though it should appear gradually as you inch your way closer to the end... to avoid a sudden jump).  It's like.. regardless of your zoom level, there's a 20-pixel wide black area beyond the start/end that you can scroll to see.
-
-
---Pasting at the end of a long file is still slower than I would like it to be.  Even deleting from the end of a long file is slower than it should be.  Of course, we don't want to waste memory by keeping a long buffer with tons of empty room (to make room for expected future pasting).  Is there a way that you could... keep a list of buffers... like an array of pointers to buffers.  That starts with only one thing in it, when you open the file.  But when stuff gets pasted at the end (or beginning), you just malloc a new buffer and insert it in the right spot in the list.  Also, these "pointers" could have a length too, so that cutting something off the end is free, and so is cutting something off the beginning (just change the start pointer).  This also makes pasting into the middle cheap, because you actually don't need to re-alloc anything... you just create pointers to the before portion, the end portion (which have new starts and ends), and the insert the new portion in between.  During playback, you walk through the buffers in order, and jump to the next one when the previous one runs out of samples.  And during saving, you just concatonate the samples from all the buffers.  Same for waveform generation.  YES, there would be some memory hanging around after trimming stuff, but this is okay, since it would never be more than the whole file that was originally opened.  No need to realloc, just leave the "now unplayable" samples there.  Of course, keep track of the full alloced regions, so you can free them when the program closes.
-
-
+--When a menu is open, and you change your mind and click/drag on the waveform, the first click closes the menu, and then you have to click again to actually make a selection.  Same is true when starting to drag on the scroll area with a menu open.  First click closes the menu, and the scroll area doesn't respond to your drag.
 
 
 

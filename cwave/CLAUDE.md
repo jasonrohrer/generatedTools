@@ -92,14 +92,30 @@ so the pyramid isn't consulted and raw samples are scanned — keep that in mind
 when a change "looks right" on test.wav but you haven't exercised the cache.
 
 **Incremental pyramid update — the key perf invariant.** A full
-`waveCacheBuild` is O(numFrames) (~300 ms on the 28-min `glz.wav`). So
-length-preserving effects must NOT full-rebuild. `waveUpdateRange(s,e)` patches
-only the affected bins via `waveCacheUpdateRange` (~0.07 ms), and takes the
-fast path ONLY when `wave.valid && waveBuiltGen==waveGen && lengths match` —
-otherwise it defers to a full rebuild so **the overview can never drift out of
-sync with the samples**. Structural edits (cut/paste/delete/trim/undo/redo)
-use `bumpWave()` (deferred full rebuild in `renderWaveform`). If you add a new
-effect: length-preserving → `waveUpdateRange`; length-changing → `bumpWave`.
+`waveCacheBuild` is O(numFrames) (~300 ms on the 28-min `glz.wav`) — and that
+rebuild, NOT the buffer op, was the real cost of a paste/delete on a long file
+(the `realloc`+`memmove` measures ~1 ms; glibc `mremap` makes an append nearly
+free). So NO edit should full-rebuild if it can help it:
+
+- *Length-preserving* effects → `waveUpdateRange(s,e)`, patching only the
+  affected bins via `waveCacheUpdateRange` (~0.07 ms).
+- *Length-changing* structural edits whose change begins at `from` and runs to
+  the new end (insert/delete/cut/paste and their undo/redo) →
+  `waveReplaceTail(from)`, which recomputes only the level-0 bins from `from`
+  onward (realloc keeps the untouched `[0,from)` prefix) and then rebuilds the
+  cheap coarse levels via `waveCacheRebuildUpper`. An edit at the END of
+  `glz.wav` drops from ~300 ms to ~4 ms. Middle edits recompute the suffix from
+  `from` — still ≤ the full rebuild, never worse.
+
+Both fast paths take the fast path ONLY when `wave.valid && waveBuiltGen==
+waveGen` and channel counts match (plus lengths, for `waveUpdateRange`), else
+they defer to a full rebuild — so **the overview can never drift out of sync
+with the samples** (verified bit-exact vs. full rebuild by a standalone fuzz
+test). `bumpWave()` (deferred full rebuild in `renderWaveform`) remains for the
+inherently-whole-file cases: **trim** (drops a prefix, not a tail) and load/new.
+If you add a new edit: length-preserving → `waveUpdateRange`; length-changing
+tail edit → `waveReplaceTail(from)`; anything that reshuffles a prefix →
+`bumpWave`.
 
 **Undo/redo — delta records, NOT whole-clip copies.** Each `UndoRec` is a
 self-reversing *splice*: it stores only the frames at `[at,at+oldLen)` before
@@ -113,8 +129,9 @@ are slow on long files"). Edit actions bracket the mutation with
 stacks — no re-copy. **Invariant: `beginEdit`'s `[at,oldLen)` must exactly cover
 every frame the edit changes, and `commitEdit`'s `newLen` the resulting span.**
 Length-preserving edits (`oldLen==newLen`) undo via `waveUpdateRange`; length-
-changing ones via `bumpWave`. Trim is the one inherently-O(n) case (its record
-holds the whole pre-trim clip). Marks are NOT in the record — only clamped back
+changing ones via `waveReplaceTail(r.at)` (the splice leaves `[0,r.at)`
+untouched). Trim is the one inherently-O(n) case (its record holds the whole
+pre-trim clip, and it `bumpWave`s a full rebuild). Marks are NOT in the record — only clamped back
 into range after undo/redo (`marksClampToClip`). `clearUndoRedo()` on load/new.
 
 **`audio_splice`** (in `audio.c`) is the single primitive behind delete

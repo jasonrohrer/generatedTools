@@ -1,23 +1,16 @@
 Nice work!
 
-The improvements are growing!
+Edits are very fast now, even in large files!  I tested it with a 114 minute file, and pasting audio was instant!
 
 
 Notes:
 
---When executing a COPY operation, the current selection should get marked.
+--When Loop is checked, and you start playing without anything selected, the whole file loops from the cursor point onward (correct) but then while it's playing, if you make a selection, it is ignored for looping purpose until you hit STOP and then PLAY again.  So as long as Loop is checked, it should obey the selection as soon as it exists.
 
---When undoing an operation that created marks, the marks should disappear (currently pasting a bunch creates a bunch of marks, and undoing the paste leaves the marks behind, but they no longer mark any places with meaning).
 
---When undoing an operation that deletes a selection (like a cut or delete), the selection should be restored.
+--For some reason, when I tried opening an 8kHz test file, the playhead moves in a jerky fashion.  It moves very smoothly in the 44.1 files that I've tested.  Look at GLASS.WAV in this folder as an example.
 
---Pasting a small chunk of audio into the middle of a long file gets slower the farther you are from the end of the file.  At the end, it's very quick, in the middle, it's slower, and at the beginning, it's even slower.  Same is true for deleting a small chunk.  These should all happen at the same speed.  I see that you didn't implement the list of chunks thing, but you really should.  This is taking way more than 1ms to past a small bit of audio at the start of the file, where pasting the same chunk at the end of the file is instant. It has to be the realloc/move causing it.  Thus, it's worth implementing the multi-chunk thing.  For what it's worth, deleting a small chunk of audio in Audacity is instant, and it takes the same amount of time no matter where you are in a 28-minute file.
 
---When opening a file, the list should auto-filter out anything that's not a .wav (or .WAV) and not a .ogg (or .OGG).  Currently, it's showing all kinds of other files, which makes it hard to navigate.  For directories, it should hide anything that starts with . also.  And the path displayed at the top should change as you navigate around to diferent directories.  And that little dialog box should be resizable, and remember the size during the current session.
-
---ESC key should close any open dialog box (cancel).
-
---When a menu is open, and you change your mind and click/drag on the waveform, the first click closes the menu, and then you have to click again to actually make a selection.  Same is true when starting to drag on the scroll area with a menu open.  First click closes the menu, and the scroll area doesn't respond to your drag.
 
 
 

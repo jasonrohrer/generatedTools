@@ -62,9 +62,10 @@ splitting/coalescing). Do both.
 
 ## File map
 
-- `cwave.c` — everything UI/app: state (`App app`), block-list rendering,
-  playback (SDL audio callback), editing actions, effects dispatch, marks,
-  file browser, ImGui panels, main loop. Big file, well-sectioned by banners.
+- `cwave.c` — everything UI/app: per-document state (`Doc`, see Tabs below),
+  block-list rendering, playback (SDL audio callback), editing actions, effects
+  dispatch, marks, file browser, ImGui panels, main loop. Big file, well-
+  sectioned by banners.
 - `audio.c` / `audio.h` — `AudioClip` (planar float32 per channel, `[-1,1]`, a
   *contiguous* leaf buffer), the in-place DSP primitives (normalize, amplify,
   fade, silence, reverse, peak), WAV/OGG load, WAV save — AND the `Sequence`
@@ -73,6 +74,44 @@ splitting/coalescing). Do both.
 - `Makefile`, `shot.sh`, `shot2.sh`, `README.md`, `userNotes.txt`.
 
 ## Architecture notes & invariants
+
+**Tabs — multiple open documents.** The app holds an array `Doc g_docs[MAX_TABS]`
+with `g_numDocs` / `g_curDoc`; each `Doc` is one open file/tab and owns *all*
+per-document state — its `Sequence clip`, marks, selection, view (viewStart /
+samplesPerPixel), undo/redo chains, `path`, `dirty`, and `fmt` (its WAV save
+format). The huge body of editing/rendering code is unchanged because it still
+writes `app.foo`, but `app` is now a **macro**: `#define app (g_docs[g_curDoc])`.
+So "the current document" is just an array index; **switching tabs is O(1)** —
+nothing is rebuilt (each Doc already carries its own block-summary bins, undo
+chain, etc.). Anything genuinely *global* (not per-document) lives in the `ui`
+struct — most importantly the **clipboard** (shared, so copy/paste crosses
+tabs), plus dialog scratch, the file browser, and the New-file params.
+`buildTabBar()` draws the ImGui tab strip (`gui_begin_tab_bar`/`gui_tab_item`)
+in a fixed panel of height `TABBAR_H` between the menu bar and the overview
+(renderWaveform reserves the same room). Selecting a tab → `switchTab`; the
+per-tab close button / Ctrl+W → `closeDoc`. **Invariants:** (1) any edit still
+goes through `app` and is bracketed by the audio lock; (2) `switchTab`/`closeDoc`
+call `stopPlayback()` first, because `player.clip` points at a specific `Doc`'s
+`&clip` and `closeDoc` shifts the `Doc` array (struct-copy, which moves the heap
+pointers with it) — playback must not be reading a doc that is about to move or
+be freed; (3) there is always ≥1 doc (closing the last replaces it with a fresh
+empty one). Opening/creating a file **reuses a blank current tab** (untitled +
+clean + empty, `isDocBlank`) instead of piling on another empty tab, else it
+appends a new one. `openFile()` creates/focuses the target tab immediately
+(showing the filename) and the async loader fills it in `finishLoad`, targeting
+`loadTargetDoc` so a mid-load tab switch still lands the audio in the right tab.
+
+**New dialog & save formats.** "New" opens a dialog (channels / sample-rate
+preset / sample format) → `createNewDoc`. Internally audio is always float32;
+`Doc.fmt` (`FMT_PCM16/24/8/F32`) is only a *save* preference, defaulted from the
+loaded file's bit depth (`audio_load_progress` now reports `outBits`/`outFloat`)
+and overridable in the Save-As dialog's Format combo. `seq_save_wav_fmt`
+(8-bit unsigned, 16/24/32-int signed LE, or 32-float) does the encoding;
+`seq_save_wav` is now just the 16-bit wrapper. Cross-format / cross-rate paste
+needs no conversion: `seq_insert_clip` keeps the destination's channel count &
+rate and maps clipboard channels (extra dest channels duplicate source ch0), so
+pasting between differently-formatted tabs "just works"; pasting into an *empty*
+doc makes it adopt the clipboard's geometry.
 
 **Audio clip.** `AudioClip` is planar: one `float*` per channel, `numFrames`
 samples each, values in `[-1,1]`. It is now the *leaf buffer* type — used for

@@ -29,6 +29,8 @@
 /* -------------------------------------------------------------------- */
 
 #define TRANSPORT_H   96.0f     /* height of bottom transport panel      */
+#define TABBAR_H      34.0f     /* height of the open-files tab strip     */
+#define MAX_TABS      16        /* how many files can be open at once     */
 #define OVERVIEW_H    56.0f     /* height of the top overview / scroll bar */
 #define MARK_STRIP_H  16.0f     /* caret strip along the top of the wave  */
 #define UNDO_LEVELS   32
@@ -233,9 +235,17 @@ typedef struct {
     int    colorNextBefore, colorNextAfter;
 } UndoRec;
 
+/* Sample formats a document can be saved as (index also drives the New /
+ * Save-As format combos).  Internally all audio is float32; this is purely a
+ * "how to encode on save to WAV" preference, defaulted from the loaded file. */
+enum { FMT_PCM16 = 0, FMT_PCM24 = 1, FMT_PCM8 = 2, FMT_F32 = 3 };
+
+/* A Doc is one open file / tab.  Everything here is per-document: its audio,
+ * marks, selection, view, undo chain, path and save format.  The clipboard is
+ * NOT here -- it is shared (see 'ui' below) so audio can be pasted between
+ * tabs.  Switching tabs is just changing g_curDoc; nothing is rebuilt. */
 typedef struct {
     Sequence  clip;          /* block-list document (owns per-block summaries) */
-    AudioClip clipboard;     /* copy/cut buffer stays a flat contiguous clip   */
 
     /* marks (see Mark) */
     Mark marks[MAX_MARKS];
@@ -265,6 +275,27 @@ typedef struct {
 
     char path[PATH_MAX_LEN];
     int  dirty;
+    int  fmt;                /* FMT_* save format for this document      */
+} Doc;
+
+/* The open documents (tabs).  There is always at least one; the current one
+ * is g_docs[g_curDoc].  All the per-document code refers to it through the
+ * 'app' macro, so the vast body of editing/rendering logic is unchanged from
+ * the single-document version -- it now just operates on whichever tab is
+ * current. */
+static Doc g_docs[MAX_TABS];
+static int g_numDocs = 1;
+static int g_curDoc  = 0;
+
+#define app ( g_docs[g_curDoc] )
+
+/* When >= 0, force this tab selected in the tab bar next frame (used to focus
+ * a freshly created / opened / newly-current document). */
+static int g_forceSelectDoc = -1;
+
+/* Shared, application-global (NOT per-document) UI state. */
+static struct {
+    AudioClip clipboard;     /* copy/cut buffer -- shared across tabs        */
 
     /* pending dialog to open (handled next frame): name or "" */
     char  pendingPopup[64];
@@ -278,9 +309,24 @@ typedef struct {
     char browserDir[PATH_MAX_LEN];
     char browserFile[PATH_MAX_LEN];
     float browserW, browserH;     /* remembered dialog size this session */
-} App;
 
-static App app;
+    /* New-file dialog scratch */
+    int  newChans;                /* 1..AUDIO_MAX_CHANNELS               */
+    int  newRateIdx;              /* index into rate presets             */
+    int  newFmt;                  /* FMT_*                               */
+} ui;
+
+/* common sample-rate presets offered by the New dialog */
+static const int   g_ratePresets[]  = { 8000, 11025, 16000, 22050,
+                                        32000, 44100, 48000, 96000 };
+static const char *g_rateLabels[]   = { "8000", "11025", "16000", "22050",
+                                        "32000", "44100", "48000", "96000" };
+#define NUM_RATE_PRESETS ( (int)( sizeof(g_ratePresets) / sizeof(g_ratePresets[0]) ) )
+
+/* labels for the format combos, indexed by FMT_* */
+static const char *g_fmtLabels[] = { "16-bit PCM", "24-bit PCM",
+                                     "8-bit PCM", "32-bit float" };
+#define NUM_FMTS 4
 
 /* -------------------------------------------------------------------- */
 /* asynchronous file loading (worker thread + progress bar)             */
@@ -295,6 +341,8 @@ typedef struct {
     volatile int done;       /* set by the worker when finished            */
     int          error;
     char         err[256];
+    int          srcBits;    /* source file's bit depth (for save default) */
+    int          srcFloat;   /* source was IEEE float                       */
 } LoadJob;
 
 static LoadJob   loadJob;
@@ -308,8 +356,10 @@ static void *loadWorker( void *arg )
     seq_init( &j->seq );
     j->phase = 0;
     j->progress = 0;
+    j->srcBits = 16;
+    j->srcFloat = 0;
     if( audio_load_progress( &j->clip, j->path, j->err, sizeof(j->err),
-                             &j->progress ) ) {
+                             &j->progress, &j->srcBits, &j->srcFloat ) ) {
         j->error = 1;
         j->done  = 1;
         return NULL;
@@ -347,8 +397,8 @@ static void effectRange( long *s, long *e )
 
 static void setStatus( const char *msg )
 {
-    strncpy( app.statusMsg, msg, sizeof(app.statusMsg) - 1 );
-    app.statusMsg[sizeof(app.statusMsg) - 1] = '\0';
+    strncpy( ui.statusMsg, msg, sizeof(ui.statusMsg) - 1 );
+    ui.statusMsg[sizeof(ui.statusMsg) - 1] = '\0';
 }
 
 /* -------------------------------------------------------------------- */
@@ -518,13 +568,15 @@ static void restoreMarks( const Mark *m, int count, int colorNext )
     app.markColorNext = colorNext;
 }
 
-static void clearUndoRedo( void )
+static void clearUndoRedoDoc( Doc *d )
 {
     int i;
-    for( i = 0; i < app.undoCount; i++ ) undoRecFree( &app.undo[i] );
-    for( i = 0; i < app.redoCount; i++ ) undoRecFree( &app.redo[i] );
-    app.undoCount = app.redoCount = 0;
+    for( i = 0; i < d->undoCount; i++ ) undoRecFree( &d->undo[i] );
+    for( i = 0; i < d->redoCount; i++ ) undoRecFree( &d->redo[i] );
+    d->undoCount = d->redoCount = 0;
 }
+
+static void clearUndoRedo( void ) { clearUndoRedoDoc( &app ); }
 
 /* Copy len frames of the current clip starting at 'start' into freshly
  * malloc'd per-channel arrays (dst[ch]).  dst pointers are NULL when len==0. */
@@ -856,7 +908,7 @@ static void actCopy( void )
     long s, e;
     if( !hasSelection() ) { setStatus( "No selection to copy" ); return; }
     s = app.selStart; e = app.selEnd;
-    seq_read_range( &app.clipboard, &app.clip, s, e );
+    seq_read_range( &ui.clipboard, &app.clip, s, e );
     /* mark the copied region's edges so you can see / return to what was
      * grabbed (copy is not an undoable edit, so these are plain annotations) */
     {
@@ -872,7 +924,7 @@ static void actCut( void )
     long s, e;
     if( !hasSelection() ) { setStatus( "No selection to cut" ); return; }
     s = app.selStart; e = app.selEnd;
-    seq_read_range( &app.clipboard, &app.clip, s, e );
+    seq_read_range( &ui.clipboard, &app.clip, s, e );
     beginEdit( s, e - s );
     audio_lock();
     seq_delete_range( &app.clip, s, e );
@@ -890,8 +942,8 @@ static void actPaste( void )
 {
     long at, insN, selS, selE;
     int  hadSel, c;
-    if( app.clipboard.numFrames == 0 ) { setStatus( "Clipboard is empty" ); return; }
-    insN   = app.clipboard.numFrames;
+    if( ui.clipboard.numFrames == 0 ) { setStatus( "Clipboard is empty" ); return; }
+    insN   = ui.clipboard.numFrames;
     hadSel = hasSelection();
     selS   = app.selStart;
     selE   = app.selEnd;
@@ -900,7 +952,7 @@ static void actPaste( void )
     beginEdit( at, hadSel ? ( selE - selS ) : 0 );
     audio_lock();
     if( hadSel ) seq_delete_range( &app.clip, selS, selE );
-    seq_insert_clip( &app.clip, at, &app.clipboard );
+    seq_insert_clip( &app.clip, at, &ui.clipboard );
     audio_unlock();
     if( hadSel ) marksAdjustDelete( selS, selE );
     marksAdjustInsert( at, insN );
@@ -960,11 +1012,11 @@ static void applyEffect( int which )
     switch( which ) {
         case 0: {
             /* normalize target is specified in dBFS */
-            float peak = (float)pow( 10.0, (double)app.dlgNormDb / 20.0 );
+            float peak = (float)pow( 10.0, (double)ui.dlgNormDb / 20.0 );
             seq_normalize( &app.clip, s, e, peak );
             break;
         }
-        case 1: seq_amplify( &app.clip, s, e, app.dlgGain );          break;
+        case 1: seq_amplify( &app.clip, s, e, ui.dlgGain );          break;
         case 2: seq_fade_in( &app.clip, s, e );                       break;
         case 3: seq_fade_out( &app.clip, s, e );                      break;
         case 4: seq_silence( &app.clip, s, e );                       break;
@@ -994,27 +1046,120 @@ static void applyEffect( int which )
 /* file operations                                                      */
 /* -------------------------------------------------------------------- */
 
-static void newFile( void )
+/* which doc index a load / new targets, so finishLoad installs into the right
+ * tab even if the user switched tabs while it was decoding.  -1 = none. */
+static int loadTargetDoc = -1;
+
+/* (re)initialize a document to an empty clip with the given geometry, freeing
+ * any audio / undo / marks it held.  Safe on a freshly zeroed slot. */
+static void docMakeEmpty( Doc *d, int chans, int rate, int fmt )
 {
-    stopPlayback();
-    audio_lock();
-    seq_set_empty( &app.clip, 1, 44100 );
-    audio_unlock();
-    clearUndoRedo();       /* stale deltas would splice into the empty clip */
-    app.numMarks = 0;
-    app.markColorNext = 0;
-    app.selStart = app.selEnd = 0;
-    app.path[0] = '\0';
-    app.dirty = 0;
-    zoomFit();
-    setStatus( "New empty file" );
+    clearUndoRedoDoc( d );
+    seq_free( &d->clip );
+    seq_init( &d->clip );
+    seq_set_empty( &d->clip, chans, rate );
+    d->numMarks        = 0;
+    d->markColorNext   = 0;
+    d->selStart = d->selEnd = 0;
+    d->viewStart       = 0.0;
+    d->samplesPerPixel = 1.0;
+    d->path[0]         = '\0';
+    d->dirty           = 0;
+    d->fmt             = fmt;
 }
 
-/* Kick off a background load.  The main loop shows a progress bar and
- * calls finishLoad() when the worker signals done. */
-static void startLoad( const char *path )
+/* a "blank" doc is an untitled, unedited, empty tab -- New / Open reuse it
+ * instead of piling on another empty tab. */
+static int isDocBlank( const Doc *d )
 {
-    if( loading ) return;   /* one load at a time */
+    return d->clip.numFrames == 0 && !d->dirty &&
+           d->path[0] == '\0' && d->undoCount == 0;
+}
+
+/* map a loaded file's sample format to our FMT_* save default */
+static int fmtFromSource( int bits, int isFloat )
+{
+    if( isFloat )     return FMT_F32;
+    if( bits == 8 )   return FMT_PCM8;
+    if( bits == 24 )  return FMT_PCM24;
+    return FMT_PCM16;             /* 16- and 32-bit int fold to 16-bit save */
+}
+
+/* switch the current tab (stops playback, which may reference the old doc) */
+static void switchTab( int idx )
+{
+    if( idx < 0 || idx >= g_numDocs || idx == g_curDoc ) return;
+    stopPlayback();
+    g_curDoc = idx;
+    open_audio( app.clip.sampleRate );
+}
+
+/* close tab 'idx', shifting the rest down.  Never leaves zero tabs: closing
+ * the last one replaces it with a fresh empty document. */
+static void closeDoc( int idx )
+{
+    int i;
+    if( idx < 0 || idx >= g_numDocs ) return;
+    stopPlayback();                       /* player may point into this doc  */
+    clearUndoRedoDoc( &g_docs[idx] );
+    seq_free( &g_docs[idx].clip );
+    for( i = idx; i < g_numDocs - 1; i++ )
+        g_docs[i] = g_docs[i + 1];        /* struct copy moves heap pointers */
+    g_numDocs--;
+    memset( &g_docs[g_numDocs], 0, sizeof(Doc) );
+    seq_init( &g_docs[g_numDocs].clip );
+
+    if( g_numDocs == 0 ) {                 /* keep at least one document      */
+        g_numDocs = 1;
+        docMakeEmpty( &g_docs[0], 1, 44100, FMT_PCM16 );
+        g_curDoc = 0;
+    } else if( g_curDoc > idx ) {
+        g_curDoc--;                        /* current shifted left            */
+    } else if( g_curDoc >= g_numDocs ) {
+        g_curDoc = g_numDocs - 1;          /* closed the last, current tab    */
+    }
+    g_forceSelectDoc = g_curDoc;
+    open_audio( app.clip.sampleRate );
+    setStatus( "Closed tab" );
+}
+
+/* create a new empty document (its own tab) with the chosen geometry; reuse a
+ * blank current tab rather than stacking another empty one. */
+static void createNewDoc( int chans, int rate, int fmt )
+{
+    int target;
+    if( chans < 1 ) chans = 1;
+    if( chans > AUDIO_MAX_CHANNELS ) chans = AUDIO_MAX_CHANNELS;
+    if( rate  < 1 ) rate = 44100;
+    stopPlayback();
+    if( isDocBlank( &app ) ) {
+        target = g_curDoc;
+    } else if( g_numDocs < MAX_TABS ) {
+        target = g_numDocs++;
+    } else {
+        setStatus( "Too many tabs open" );
+        strncpy( ui.pendingPopup, "Error", sizeof(ui.pendingPopup) - 1 );
+        return;
+    }
+    docMakeEmpty( &g_docs[target], chans, rate, fmt );
+    g_curDoc = target;
+    g_forceSelectDoc = target;
+    open_audio( rate );
+    zoomFit();
+    setStatus( "New file" );
+}
+
+/* open the New-file dialog (populated with the last-used geometry) */
+static void newFile( void )
+{
+    strncpy( ui.pendingPopup, "New", sizeof(ui.pendingPopup) - 1 );
+}
+
+/* Kick off a background load into document slot 'target'.  The main loop shows
+ * a progress bar and calls finishLoad() when the worker signals done. */
+static void startLoad( const char *path, int target )
+{
+    if( loading ) { setStatus( "Busy loading another file" ); return; }
     stopPlayback();
     memset( &loadJob, 0, sizeof(loadJob) );
     strncpy( loadJob.path, path, PATH_MAX_LEN - 1 );
@@ -1023,41 +1168,77 @@ static void startLoad( const char *path )
         setStatus( "Could not start loader thread" );
         return;
     }
+    loadTargetDoc = target;
     loading = 1;
     setStatus( "Loading..." );
+}
+
+/* Open a file in a tab: reuse a blank current tab, else spawn a new one.  The
+ * tab is created (and focused, showing the filename) immediately; its audio
+ * fills in when the background decode finishes in finishLoad(). */
+static void openFile( const char *path )
+{
+    int target;
+    if( loading ) { setStatus( "Busy loading another file" ); return; }
+    if( isDocBlank( &app ) ) {
+        target = g_curDoc;
+    } else if( g_numDocs < MAX_TABS ) {
+        target = g_numDocs++;
+        docMakeEmpty( &g_docs[target], 1, 44100, FMT_PCM16 );
+    } else {
+        setStatus( "Too many tabs open" );
+        strncpy( ui.pendingPopup, "Error", sizeof(ui.pendingPopup) - 1 );
+        return;
+    }
+    /* show the filename on the (possibly new) tab while it decodes */
+    strncpy( g_docs[target].path, path, PATH_MAX_LEN - 1 );
+    g_docs[target].path[PATH_MAX_LEN - 1] = '\0';
+    g_curDoc = target;
+    g_forceSelectDoc = target;
+    startLoad( path, target );
 }
 
 /* Called on the main thread once the worker has finished. */
 static void finishLoad( void )
 {
+    int target = loadTargetDoc;
     pthread_join( loadThread, NULL );
     loading = 0;
+    loadTargetDoc = -1;
+
+    if( target < 0 || target >= g_numDocs ) target = g_curDoc;
 
     if( loadJob.error ) {
         audio_free( &loadJob.clip );
         seq_free( &loadJob.seq );
         setStatus( loadJob.err );
-        strncpy( app.pendingPopup, "Error", sizeof(app.pendingPopup) - 1 );
+        strncpy( ui.pendingPopup, "Error", sizeof(ui.pendingPopup) - 1 );
+        /* the tab we opened for this load never got audio: drop it if it was
+         * freshly created, or reset it if it was a reused blank tab */
+        if( g_numDocs > 1 ) closeDoc( target );
+        else                docMakeEmpty( &g_docs[target], 1, 44100, FMT_PCM16 );
         return;
     }
 
-    /* swap the freshly decoded block-list document into place (its per-block
-     * summaries are already built, so the overview is ready with no rebuild) */
+    /* install the freshly decoded block-list document into its tab (its
+     * per-block summaries are already built -- overview ready, no rebuild) */
+    g_curDoc = target;
     audio_lock();
     seq_free( &app.clip );
     app.clip = loadJob.seq;
     audio_unlock();
     seq_init( &loadJob.seq );
 
+    app.fmt = fmtFromSource( loadJob.srcBits, loadJob.srcFloat );
     open_audio( app.clip.sampleRate );
 
     app.numMarks = 0;
     app.markColorNext = 0;
     app.selStart = app.selEnd = 0;
-    strncpy( app.path, loadJob.path, PATH_MAX_LEN - 1 );
-    app.path[PATH_MAX_LEN - 1] = '\0';
+    snprintf( app.path, PATH_MAX_LEN, "%s", loadJob.path );
     app.dirty = 0;
     clearUndoRedo();
+    g_forceSelectDoc = target;
     zoomFit();
     setStatus( "Loaded file" );
 }
@@ -1078,13 +1259,22 @@ static void saveFile( const char *path )
     int rc;
     if( endsWithOgg( path ) ) {
         setStatus( "OGG export not supported (decode only) - save as WAV" );
-        strncpy( app.pendingPopup, "Error", sizeof(app.pendingPopup) - 1 );
+        strncpy( ui.pendingPopup, "Error", sizeof(ui.pendingPopup) - 1 );
         return;
     }
-    rc = seq_save_wav( &app.clip, path, err, sizeof(err) );
+    {
+        int bits = 16, isFloat = 0;
+        switch( app.fmt ) {
+            case FMT_PCM8:  bits = 8;  isFloat = 0; break;
+            case FMT_PCM24: bits = 24; isFloat = 0; break;
+            case FMT_F32:   bits = 32; isFloat = 1; break;
+            default:        bits = 16; isFloat = 0; break;
+        }
+        rc = seq_save_wav_fmt( &app.clip, path, bits, isFloat, err, sizeof(err) );
+    }
     if( rc ) {
         setStatus( err );
-        strncpy( app.pendingPopup, "Error", sizeof(app.pendingPopup) - 1 );
+        strncpy( ui.pendingPopup, "Error", sizeof(ui.pendingPopup) - 1 );
         return;
     }
     strncpy( app.path, path, PATH_MAX_LEN - 1 );
@@ -1284,7 +1474,8 @@ static void renderMarks( void )
 static void renderWaveform( int winW, int winH )
 {
     float menuH  = gui_main_menu_bar_height();
-    float top    = menuH + OVERVIEW_H;
+    float tabsTop = menuH + TABBAR_H;      /* overview sits below the tab strip */
+    float top    = tabsTop + OVERVIEW_H;
     float bottom = (float)winH - TRANSPORT_H;
     int   nch    = app.clip.numChannels;
     int   ch;
@@ -1295,7 +1486,7 @@ static void renderWaveform( int winW, int winH )
     long  wi0 = 0, wi1 = 0;
 
     app.ovX = 0.0f;
-    app.ovY = menuH;
+    app.ovY = tabsTop;
     app.ovW = (float)winW;
     app.ovH = OVERVIEW_H;
 
@@ -1619,14 +1810,14 @@ static int isAudioName( const char *name )
 
 static void browserOpen( int save )
 {
-    app.browserSave = save;
-    if( app.browserDir[0] == '\0' ) {
-        if( getcwd( app.browserDir, PATH_MAX_LEN ) == NULL )
-            strcpy( app.browserDir, "." );
+    ui.browserSave = save;
+    if( ui.browserDir[0] == '\0' ) {
+        if( getcwd( ui.browserDir, PATH_MAX_LEN ) == NULL )
+            strcpy( ui.browserDir, "." );
     }
-    app.browserFile[0] = '\0';
-    strncpy( app.pendingPopup, save ? "Save File" : "Open File",
-             sizeof(app.pendingPopup) - 1 );
+    ui.browserFile[0] = '\0';
+    strncpy( ui.pendingPopup, save ? "Save File" : "Open File",
+             sizeof(ui.pendingPopup) - 1 );
 }
 
 /* navigate the browser into 'target', resolving it to a clean absolute path
@@ -1635,9 +1826,9 @@ static void browserChdir( const char *target )
 {
     char resolved[PATH_MAX_LEN];
     if( realpath( target, resolved ) != NULL )
-        snprintf( app.browserDir, PATH_MAX_LEN, "%s", resolved );
+        snprintf( ui.browserDir, PATH_MAX_LEN, "%s", resolved );
     else
-        snprintf( app.browserDir, PATH_MAX_LEN, "%s", target );
+        snprintf( ui.browserDir, PATH_MAX_LEN, "%s", target );
 }
 
 static void drawFileBrowser( const char *popupId )
@@ -1650,10 +1841,10 @@ static void drawFileBrowser( const char *popupId )
     float listH;
 
     /* remember the dialog size for the rest of the session */
-    gui_get_window_size( &app.browserW, &app.browserH );
+    gui_get_window_size( &ui.browserW, &ui.browserH );
 
     /* current path (editable, and updated as you navigate directories) */
-    gui_input_text( "Dir", app.browserDir, PATH_MAX_LEN );
+    gui_input_text( "Dir", ui.browserDir, PATH_MAX_LEN );
     gui_separator();
 
     /* let the file list grow with the (resizable) dialog: take all the
@@ -1662,7 +1853,7 @@ static void drawFileBrowser( const char *popupId )
     if( listH < 90.0f ) listH = 90.0f;
 
     if( gui_begin_child( "files", 0.0f, listH, 1 ) ) {
-        d = opendir( app.browserDir );
+        d = opendir( ui.browserDir );
         if( d ) {
             while( ( ent = readdir( d ) ) != NULL && count < 4096 ) {
                 /* hide "." and every dotfile / dot-directory, but keep ".."
@@ -1681,7 +1872,7 @@ static void drawFileBrowser( const char *popupId )
                 DIR *sub;
                 int isDir;
                 snprintf( full, sizeof(full), "%s/%s",
-                          app.browserDir, names[i] );
+                          ui.browserDir, names[i] );
                 sub = opendir( full );
                 isDir = ( sub != NULL );
                 if( sub ) closedir( sub );
@@ -1691,7 +1882,7 @@ static void drawFileBrowser( const char *popupId )
                           isDir ? "[DIR] " : "      ", names[i] );
                 if( gui_selectable( label, 0 ) ) {
                     if( isDir ) browserChdir( full );
-                    else snprintf( app.browserFile, PATH_MAX_LEN, "%s",
+                    else snprintf( ui.browserFile, PATH_MAX_LEN, "%s",
                                    names[i] );
                 }
             }
@@ -1703,21 +1894,75 @@ static void drawFileBrowser( const char *popupId )
     gui_end_child();
 
     gui_separator();
-    gui_input_text( "Name", app.browserFile, PATH_MAX_LEN );
+    gui_input_text( "Name", ui.browserFile, PATH_MAX_LEN );
 
-    if( gui_button( app.browserSave ? "Save" : "Open" ) ) {
+    /* when saving, let the user pick the WAV sample format; it is bound to the
+     * current document so the choice persists and drives seq_save_wav_fmt */
+    if( ui.browserSave )
+        gui_combo( "Format", &app.fmt, g_fmtLabels, NUM_FMTS );
+
+    if( gui_button( ui.browserSave ? "Save" : "Open" ) ) {
         char full[PATH_MAX_LEN];
-        if( app.browserFile[0] ) {
+        if( ui.browserFile[0] ) {
             snprintf( full, sizeof(full), "%s/%s",
-                      app.browserDir, app.browserFile );
+                      ui.browserDir, ui.browserFile );
             gui_close_current_popup();
-            if( app.browserSave ) saveFile( full );
-            else                  startLoad( full );
+            if( ui.browserSave ) saveFile( full );
+            else                  openFile( full );
         }
     }
     gui_same_line();
     if( gui_button( "Cancel" ) ) gui_close_current_popup();
     (void)popupId;
+}
+
+/* -------------------------------------------------------------------- */
+/* GUI: tab bar (open documents)                                        */
+/* -------------------------------------------------------------------- */
+
+/* the short display name for a document's tab: the file's base name, or
+ * "untitled" for a never-saved document */
+static const char *docTitle( const Doc *d )
+{
+    const char *slash = strrchr( d->path, '/' );
+    const char *base  = slash ? slash + 1 : d->path;
+    return base[0] ? base : "untitled";
+}
+
+/* the strip of open-file tabs directly below the menu bar.  Selecting a tab
+ * switches the current document; the little close button on a tab closes it.
+ * Layout is one row in a fixed panel of height TABBAR_H (renderWaveform
+ * reserves the same room for it). */
+static void buildTabBar( int winW, float menuH )
+{
+    int i;
+    int newCur   = g_curDoc;
+    int closeReq = -1;
+
+    gui_set_next_window_pos( 0.0f, menuH );
+    gui_set_next_window_size( (float)winW, TABBAR_H );
+    if( gui_begin( "##tabs", 1 ) ) {
+        if( gui_begin_tab_bar( "##doctabs" ) ) {
+            for( i = 0; i < g_numDocs; i++ ) {
+                char label[PATH_MAX_LEN + 32];
+                int  open   = 1;
+                int  forced = ( g_forceSelectDoc == i ) ? 1 : 0;
+                /* "name *###tabN": text before ### is shown, the id after it
+                 * is stable so a name/dirty change doesn't recreate the tab */
+                snprintf( label, sizeof(label), "%s%s###tab%d",
+                          docTitle( &g_docs[i] ),
+                          g_docs[i].dirty ? " *" : "", i );
+                if( gui_tab_item( label, &open, forced ) ) newCur = i;
+                if( !open ) closeReq = i;
+            }
+            gui_end_tab_bar();
+        }
+    }
+    gui_end();
+
+    g_forceSelectDoc = -1;
+    if( newCur != g_curDoc ) switchTab( newCur );
+    if( closeReq >= 0 )      closeDoc( closeReq );
 }
 
 /* -------------------------------------------------------------------- */
@@ -1736,6 +1981,8 @@ static void buildMenuBar( void )
         if( gui_menu_item( "Save As...", NULL, clipLen() > 0 ) )
             browserOpen( 1 );
         gui_separator();
+        if( gui_menu_item( "Close Tab", "Ctrl+W", 1 ) )
+            closeDoc( g_curDoc );
         if( gui_menu_item( "Quit", "Ctrl+Q", 1 ) ) {
             SDL_Event q; q.type = SDL_QUIT; SDL_PushEvent( &q );
         }
@@ -1749,7 +1996,7 @@ static void buildMenuBar( void )
         if( gui_menu_item( "Cut", "Ctrl+X", hasSelection() ) ) actCut();
         if( gui_menu_item( "Copy", "Ctrl+C", hasSelection() ) ) actCopy();
         if( gui_menu_item( "Paste", "Ctrl+V",
-                           app.clipboard.numFrames > 0 ) ) actPaste();
+                           ui.clipboard.numFrames > 0 ) ) actPaste();
         if( gui_menu_item( "Delete", "Del", hasSelection() ) ) actDelete();
         if( gui_menu_item( "Trim to Selection", NULL, hasSelection() ) )
             actTrim();
@@ -1764,9 +2011,9 @@ static void buildMenuBar( void )
     if( gui_begin_menu( "Effect" ) ) {
         int have = clipLen() > 0;
         if( gui_menu_item( "Normalize...", NULL, have ) )
-            strncpy( app.pendingPopup, "Normalize", sizeof(app.pendingPopup)-1 );
+            strncpy( ui.pendingPopup, "Normalize", sizeof(ui.pendingPopup)-1 );
         if( gui_menu_item( "Amplify...", NULL, have ) )
-            strncpy( app.pendingPopup, "Amplify", sizeof(app.pendingPopup)-1 );
+            strncpy( ui.pendingPopup, "Amplify", sizeof(ui.pendingPopup)-1 );
         gui_separator();
         if( gui_menu_item( "Fade In", NULL, have ) ) applyEffect( 2 );
         if( gui_menu_item( "Fade Out", NULL, have ) ) applyEffect( 3 );
@@ -1809,7 +2056,7 @@ static void buildMenuBar( void )
 
     if( gui_begin_menu( "Help" ) ) {
         if( gui_menu_item( "About cwave", NULL, 1 ) )
-            strncpy( app.pendingPopup, "About", sizeof(app.pendingPopup)-1 );
+            strncpy( ui.pendingPopup, "About", sizeof(ui.pendingPopup)-1 );
         gui_end_menu();
     }
 
@@ -1873,7 +2120,7 @@ static void buildTransport( int winW, int winH )
         snprintf( buf, sizeof(buf), "%s%s   %s",
                   app.path[0] ? app.path : "(untitled)",
                   app.dirty ? " *" : "",
-                  app.statusMsg );
+                  ui.statusMsg );
         gui_text_colored( 0.7f, 0.85f, 1.0f, buf );
     }
     gui_end();
@@ -1916,20 +2163,20 @@ static void buildLoadingOverlay( int winW, int winH )
 static void buildDialogs( void )
 {
     /* open any pending popup */
-    if( app.pendingPopup[0] ) {
-        gui_open_popup( app.pendingPopup );
-        app.pendingPopup[0] = '\0';
+    if( ui.pendingPopup[0] ) {
+        gui_open_popup( ui.pendingPopup );
+        ui.pendingPopup[0] = '\0';
     }
 
     if( gui_begin_popup_modal( "Normalize" ) ) {
         char lbl[64];
         float lin;
         gui_text( "Peak normalize to target level (dBFS):" );
-        gui_slider_float( "dB", &app.dlgNormDb, -60.0f, 0.0f, "%.1f dB" );
-        gui_input_float( "Exact dB", &app.dlgNormDb );
-        if( app.dlgNormDb >  0.0f ) app.dlgNormDb =  0.0f;
-        if( app.dlgNormDb < -60.0f ) app.dlgNormDb = -60.0f;
-        lin = (float)pow( 10.0, (double)app.dlgNormDb / 20.0 );
+        gui_slider_float( "dB", &ui.dlgNormDb, -60.0f, 0.0f, "%.1f dB" );
+        gui_input_float( "Exact dB", &ui.dlgNormDb );
+        if( ui.dlgNormDb >  0.0f ) ui.dlgNormDb =  0.0f;
+        if( ui.dlgNormDb < -60.0f ) ui.dlgNormDb = -60.0f;
+        lin = (float)pow( 10.0, (double)ui.dlgNormDb / 20.0 );
         snprintf( lbl, sizeof(lbl), "= %.4f peak amplitude", lin );
         gui_text( lbl );
         gui_spacing();
@@ -1941,9 +2188,29 @@ static void buildDialogs( void )
 
     if( gui_begin_popup_modal( "Amplify" ) ) {
         gui_text( "Gain multiplier:" );
-        gui_slider_float( "Gain", &app.dlgGain, 0.0f, 8.0f, "%.3f" );
-        gui_input_float( "Exact", &app.dlgGain );
+        gui_slider_float( "Gain", &ui.dlgGain, 0.0f, 8.0f, "%.3f" );
+        gui_input_float( "Exact", &ui.dlgGain );
         if( gui_button( "Apply" ) ) { applyEffect( 1 ); gui_close_current_popup(); }
+        gui_same_line();
+        if( gui_button( "Cancel" ) ) gui_close_current_popup();
+        gui_end_popup();
+    }
+
+    if( gui_begin_popup_modal( "New" ) ) {
+        gui_text( "Create a new empty file:" );
+        gui_spacing();
+        gui_input_int( "Channels", &ui.newChans );
+        if( ui.newChans < 1 ) ui.newChans = 1;
+        if( ui.newChans > AUDIO_MAX_CHANNELS ) ui.newChans = AUDIO_MAX_CHANNELS;
+        if( ui.newRateIdx < 0 ) ui.newRateIdx = 0;
+        if( ui.newRateIdx >= NUM_RATE_PRESETS ) ui.newRateIdx = NUM_RATE_PRESETS - 1;
+        gui_combo( "Sample rate", &ui.newRateIdx, g_rateLabels, NUM_RATE_PRESETS );
+        gui_combo( "Format", &ui.newFmt, g_fmtLabels, NUM_FMTS );
+        gui_spacing();
+        if( gui_button( "Create" ) ) {
+            createNewDoc( ui.newChans, g_ratePresets[ui.newRateIdx], ui.newFmt );
+            gui_close_current_popup();
+        }
         gui_same_line();
         if( gui_button( "Cancel" ) ) gui_close_current_popup();
         gui_end_popup();
@@ -1965,7 +2232,7 @@ static void buildDialogs( void )
     }
 
     if( gui_begin_popup_modal( "Error" ) ) {
-        gui_text_colored( 1.0f, 0.5f, 0.5f, app.statusMsg );
+        gui_text_colored( 1.0f, 0.5f, 0.5f, ui.statusMsg );
         gui_spacing();
         if( gui_button( "OK" ) ) gui_close_current_popup();
         gui_end_popup();
@@ -1974,12 +2241,12 @@ static void buildDialogs( void )
     /* the file browser is user-resizable; seed it with the last size used
      * this session (SetNextWindowSize with Appearing-cond only applies when
      * the popup opens, so manual resizing sticks) */
-    gui_set_next_window_size_appearing( app.browserW, app.browserH );
+    gui_set_next_window_size_appearing( ui.browserW, ui.browserH );
     if( gui_begin_popup_modal_resizable( "Open File" ) ) {
         drawFileBrowser( "Open File" );
         gui_end_popup();
     }
-    gui_set_next_window_size_appearing( app.browserW, app.browserH );
+    gui_set_next_window_size_appearing( ui.browserW, ui.browserH );
     if( gui_begin_popup_modal_resizable( "Save File" ) ) {
         drawFileBrowser( "Save File" );
         gui_end_popup();
@@ -2006,6 +2273,7 @@ static void handleKey( SDL_Keycode key, int ctrl )
             case SDLK_c: actCopy(); break;
             case SDLK_v: actPaste(); break;
             case SDLK_a: actSelectAll(); break;
+            case SDLK_w: closeDoc( g_curDoc ); break;
             case SDLK_q: { SDL_Event q; q.type = SDL_QUIT;
                            SDL_PushEvent( &q ); } break;
             default: break;
@@ -2040,17 +2308,22 @@ int main( int argc, char **argv )
     SDL_GLContext glctx;
     int running = 1;
 
-    memset( &app, 0, sizeof(app) );
+    memset( g_docs, 0, sizeof(g_docs) );
+    memset( &ui, 0, sizeof(ui) );
     memset( &player, 0, sizeof(player) );
+    g_numDocs = 1;
+    g_curDoc  = 0;
+    docMakeEmpty( &g_docs[0], 1, 44100, FMT_PCM16 );
+
     player.volume = 1.0f;
     player.loop   = 0;
-    app.samplesPerPixel = 1.0;
-    app.dlgGain = 2.0f;
-    app.dlgNormDb = -1.0f;
-    app.browserW = 640.0f;
-    app.browserH = 480.0f;
-    seq_init( &app.clip );
-    seq_set_empty( &app.clip, 1, 44100 );
+    ui.dlgGain    = 2.0f;
+    ui.dlgNormDb  = -1.0f;
+    ui.browserW   = 640.0f;
+    ui.browserH   = 480.0f;
+    ui.newChans   = 1;
+    ui.newRateIdx = 5;            /* 44100 in g_ratePresets */
+    ui.newFmt     = FMT_PCM16;
 
     if( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_AUDIO ) != 0 ) {
         fprintf( stderr, "SDL_Init failed: %s\n", SDL_GetError() );
@@ -2087,7 +2360,7 @@ int main( int argc, char **argv )
 
     open_audio( 44100 );
 
-    if( argc > 1 ) startLoad( argv[1] );
+    if( argc > 1 ) openFile( argv[1] );
     else           setStatus( "Open a WAV or OGG file to begin" );
 
     while( running ) {
@@ -2174,6 +2447,7 @@ int main( int argc, char **argv )
         /* --- build and render the GUI --- */
         gui_new_frame( window );
         buildMenuBar();
+        buildTabBar( winW, gui_main_menu_bar_height() );
         buildTransport( winW, winH );
         buildDialogs();
         if( loading ) buildLoadingOverlay( winW, winH );
@@ -2188,7 +2462,14 @@ int main( int argc, char **argv )
                     seq_free( &loadJob.seq ); }
 
     stopPlayback();
-    seq_free( &app.clip );
+    {
+        int i;
+        for( i = 0; i < g_numDocs; i++ ) {
+            clearUndoRedoDoc( &g_docs[i] );
+            seq_free( &g_docs[i].clip );
+        }
+    }
+    audio_free( &ui.clipboard );
     if( audioDev ) SDL_CloseAudioDevice( audioDev );
     gui_shutdown();
     SDL_GL_DeleteContext( glctx );

@@ -63,11 +63,27 @@ void gui_spacing( void );
 int  gui_slider_float( const char *label, float *v, float mn, float mx,
                        const char *fmt );
 int  gui_input_float( const char *label, float *v );
+int  gui_input_int( const char *label, int *v );
+/* Dropdown over 'count' string items; *idx is the selected item.  Returns 1
+ * if the selection changed this frame. */
+int  gui_combo( const char *label, int *idx,
+                const char *const items[], int count );
 int  gui_input_text( const char *label, char *buf, int buflen );
 int  gui_checkbox( const char *label, int *v );
 int  gui_selectable( const char *label, int selected );
 float gui_content_avail_h( void );
 void gui_progress_bar( float fraction, const char *overlay );
+
+/* ---- tab bar (open documents) ---- */
+/* Begin a tab bar with the given str id.  Returns 1 if it is visible (call
+ * gui_end_tab_bar only when this returned 1). */
+int  gui_begin_tab_bar( const char *id );
+void gui_end_tab_bar( void );
+/* One tab.  Returns 1 when this tab is the active (selected) one this frame.
+ * If p_open is non-NULL a small close button is shown and *p_open is set to 0
+ * when the user clicks it.  setSelected!=0 forces this tab selected this frame
+ * (used to focus a newly created / opened document). */
+int  gui_tab_item( const char *label, int *p_open, int setSelected );
 
 /* ---- popups / modals ---- */
 void gui_open_popup( const char *id );

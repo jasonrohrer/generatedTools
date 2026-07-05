@@ -155,6 +155,17 @@ int gui_input_float( const char *label, float *v )
     return ImGui::InputFloat( label, v ) ? 1 : 0;
 }
 
+int gui_input_int( const char *label, int *v )
+{
+    return ImGui::InputInt( label, v ) ? 1 : 0;
+}
+
+int gui_combo( const char *label, int *idx,
+               const char *const items[], int count )
+{
+    return ImGui::Combo( label, idx, items, count ) ? 1 : 0;
+}
+
 int gui_input_text( const char *label, char *buf, int buflen )
 {
     return ImGui::InputText( label, buf, (size_t)buflen,
@@ -182,6 +193,29 @@ float gui_content_avail_h( void )
 void gui_progress_bar( float fraction, const char *overlay )
 {
     ImGui::ProgressBar( fraction, ImVec2( -1.0f, 0.0f ), overlay );
+}
+
+/* ---- tab bar ---- */
+int gui_begin_tab_bar( const char *id )
+{
+    ImGuiTabBarFlags flags = ImGuiTabBarFlags_Reorderable |
+                             ImGuiTabBarFlags_FittingPolicyScroll |
+                             ImGuiTabBarFlags_TabListPopupButton;
+    return ImGui::BeginTabBar( id, flags ) ? 1 : 0;
+}
+void gui_end_tab_bar( void ) { ImGui::EndTabBar(); }
+
+int gui_tab_item( const char *label, int *p_open, int setSelected )
+{
+    ImGuiTabItemFlags flags = setSelected ? ImGuiTabItemFlags_SetSelected : 0;
+    bool  open = true;
+    bool *po   = NULL;
+    bool  active;
+    if( p_open ) { open = ( *p_open != 0 ); po = &open; }
+    active = ImGui::BeginTabItem( label, po, flags );
+    if( active ) ImGui::EndTabItem();
+    if( p_open ) *p_open = open ? 1 : 0;
+    return active ? 1 : 0;
 }
 
 /* ---- popups ---- */

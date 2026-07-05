@@ -134,7 +134,7 @@ static void seterr( char *buf, int len, const char *msg )
 }
 
 static int load_wav( AudioClip *c, const char *path, char *err, int errLen,
-                     volatile int *progress )
+                     volatile int *progress, int *outBits, int *outFloat )
 {
     FILE *f;
     unsigned char hdr[12];
@@ -206,6 +206,9 @@ static int load_wav( AudioClip *c, const char *path, char *err, int errLen,
         seterr( err, errLen, "Unsupported bit depth" );
         fclose( f ); return 1;
     }
+
+    if( outBits )  *outBits  = bitsPerSample;
+    if( outFloat ) *outFloat = ( audioFormat == 3 );
 
     bytesPerSample = bitsPerSample / 8;
     frames = dataBytes / ( bytesPerSample * numCh );
@@ -335,17 +338,21 @@ static int has_ext( const char *path, const char *ext )
 }
 
 int audio_load_progress( AudioClip *c, const char *path, char *err, int errLen,
-                         volatile int *progress )
+                         volatile int *progress, int *outBits, int *outFloat )
 {
-    if( has_ext( path, ".ogg" ) )
+    if( has_ext( path, ".ogg" ) ) {
+        /* OGG decodes to 16-bit-equivalent samples; default save to 16-bit PCM */
+        if( outBits )  *outBits  = 16;
+        if( outFloat ) *outFloat = 0;
         return load_ogg( c, path, err, errLen, progress );
+    }
     /* default to WAV */
-    return load_wav( c, path, err, errLen, progress );
+    return load_wav( c, path, err, errLen, progress, outBits, outFloat );
 }
 
 int audio_load( AudioClip *c, const char *path, char *err, int errLen )
 {
-    return audio_load_progress( c, path, err, errLen, NULL );
+    return audio_load_progress( c, path, err, errLen, NULL, NULL, NULL );
 }
 
 /* -------------------------------------------------------------------- */
@@ -1230,15 +1237,72 @@ void seq_reverse( Sequence *s, long start, long end )
 
 /* ---- save ---- */
 
-int seq_save_wav( const Sequence *s, const char *path, char *err, int errLen )
+/* Encode one float sample [-1,1] into 'out' (byteWidth bytes) in the given
+ * WAV format.  8-bit is unsigned (bias 128); 16/24/32-int are signed LE;
+ * 32-float is raw IEEE. */
+static void encode_sample( unsigned char *out, float v, int bits, int isFloat )
+{
+    if( isFloat ) {
+        memcpy( out, &v, 4 );
+        return;
+    }
+    v = clampf( v );
+    switch( bits ) {
+        case 8: {
+            int s = (int)( v * 127.0f + ( v >= 0.0f ? 0.5f : -0.5f ) ) + 128;
+            if( s > 255 ) s = 255;
+            if( s < 0 )   s = 0;
+            out[0] = (unsigned char)s;
+            break;
+        }
+        case 24: {
+            long s = (long)( v * 8388607.0 + ( v >= 0.0f ? 0.5 : -0.5 ) );
+            if( s >  8388607L ) s =  8388607L;
+            if( s < -8388608L ) s = -8388608L;
+            out[0] = (unsigned char)(  s        & 0xFF );
+            out[1] = (unsigned char)( (s >> 8)  & 0xFF );
+            out[2] = (unsigned char)( (s >> 16) & 0xFF );
+            break;
+        }
+        case 32: {
+            double d = (double)v * 2147483647.0;
+            long s;
+            if( d >  2147483647.0 ) d =  2147483647.0;
+            if( d < -2147483648.0 ) d = -2147483648.0;
+            s = (long)( d + ( v >= 0.0f ? 0.5 : -0.5 ) );
+            out[0] = (unsigned char)(  s        & 0xFF );
+            out[1] = (unsigned char)( (s >> 8)  & 0xFF );
+            out[2] = (unsigned char)( (s >> 16) & 0xFF );
+            out[3] = (unsigned char)( (s >> 24) & 0xFF );
+            break;
+        }
+        default: {   /* 16 */
+            int s = (int)( v * 32767.0f + ( v >= 0.0f ? 0.5f : -0.5f ) );
+            if( s >  32767 ) s =  32767;
+            if( s < -32768 ) s = -32768;
+            out[0] = (unsigned char)(  s       & 0xFF );
+            out[1] = (unsigned char)( (s >> 8) & 0xFF );
+            break;
+        }
+    }
+}
+
+int seq_save_wav_fmt( const Sequence *s, const char *path,
+                      int bits, int isFloat, char *err, int errLen )
 {
     FILE *f;
     int   i, ch;
-    long  dataBytes = s->numFrames * s->numChannels * 2;
+    int   byteWidth;
+    long  dataBytes;
+
+    if( isFloat ) bits = 32;
+    if( bits != 8 && bits != 16 && bits != 24 && bits != 32 ) bits = 16;
+    byteWidth = bits / 8;
+    dataBytes = s->numFrames * s->numChannels * byteWidth;
 
     f = fopen( path, "wb" );
     if( !f ) { seterr( err, errLen, "Cannot create file" ); return 1; }
-    if( write_wav_header( f, s->numChannels, s->sampleRate, 16, 0,
+    if( write_wav_header( f, s->numChannels, s->sampleRate, bits, isFloat,
                           dataBytes ) ) {
         seterr( err, errLen, "Write error" ); fclose( f ); return 1;
     }
@@ -1247,16 +1311,17 @@ int seq_save_wav( const Sequence *s, const char *path, char *err, int errLen )
         long   fr, nf = b->buf.numFrames;
         for( fr = 0; fr < nf; fr++ ) {
             for( ch = 0; ch < s->numChannels; ch++ ) {
-                unsigned char bb[2];
-                float v = clampf( b->buf.channel[ch][fr] );
-                int   sv = (int)( v * 32767.0f + ( v >= 0.0f ? 0.5f : -0.5f ) );
-                if( sv >  32767 ) sv =  32767;
-                if( sv < -32768 ) sv = -32768;
-                wr_u16( bb, (unsigned int)( sv & 0xFFFF ) );
-                fwrite( bb, 1, 2, f );
+                unsigned char bb[4];
+                encode_sample( bb, b->buf.channel[ch][fr], bits, isFloat );
+                fwrite( bb, 1, (size_t)byteWidth, f );
             }
         }
     }
     fclose( f );
     return 0;
+}
+
+int seq_save_wav( const Sequence *s, const char *path, char *err, int errLen )
+{
+    return seq_save_wav_fmt( s, path, 16, 0, err, errLen );
 }

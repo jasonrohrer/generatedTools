@@ -46,10 +46,13 @@ int  audio_load( AudioClip *c, const char *path,
 /* Same as audio_load, but if 'progress' is non-NULL it is updated with a
  * 0..1000 completion value as the file is read (for a progress bar in a
  * worker thread).  Safe to read 'progress' concurrently from another
- * thread while this runs. */
+ * thread while this runs.  If 'outBits'/'outFloat' are non-NULL they receive
+ * the source file's sample format (bits-per-sample and 1 if IEEE float), so a
+ * loaded document can default its save format to match what it came from. */
 int  audio_load_progress( AudioClip *c, const char *path,
                           char *errBuf, int errBufLen,
-                          volatile int *progress );
+                          volatile int *progress,
+                          int *outBits, int *outFloat );
 
 /* Save the clip to a WAV file (16-bit PCM).  Returns 0 on success. */
 int  audio_save_wav( const AudioClip *c, const char *path,
@@ -183,5 +186,13 @@ void  seq_reverse( Sequence *s, long start, long end );
 /* Save the whole sequence to a 16-bit PCM WAV. */
 int   seq_save_wav( const Sequence *s, const char *path,
                     char *errBuf, int errBufLen );
+
+/* Save the whole sequence to a WAV in the requested sample format:
+ * bits is 8, 16, 24 or 32; isFloat!=0 means 32-bit IEEE float (bits must be
+ * 32).  8-bit is written as unsigned PCM (WAV convention), 16/24/32 as signed
+ * little-endian PCM.  Returns 0 on success. */
+int   seq_save_wav_fmt( const Sequence *s, const char *path,
+                        int bits, int isFloat,
+                        char *errBuf, int errBufLen );
 
 #endif /* CWAVE_AUDIO_H */

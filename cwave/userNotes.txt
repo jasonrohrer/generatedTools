@@ -1,14 +1,7 @@
 Nice work!
 
-Multiple files is working!
-
 
 Notes:
 
---If you open a bunch of files together from the command line, only the first file gets opened.  Should be able to open a bunch with wildcard on the command line, or listing a bunch.  I think wildcards get passed in as multiple arguments to the c program (the shell expands the wildcard).
+--For some reason, if you open a lot of files on the command line at once, some are skipped.  I've added a folder here called lotsOfFiles to test with.  If I do ./cwave lotsOfFiles/*.wav, only some of them get opened.  Is there a hard limit on the number of files that cane be open at one time?  Seems like the limit might be sixteen.  There should be no limit.  How would the little drop-down menu handle way more files?
 
---There's something weird where if you create a new file with 3 channels, and then paste a 1-channel file in there, it instantly changes the new file to 1 channel.  Also, the sample rate specified in the new file changes to match the pasted data.  Meanwhile, pasting into an existing file seems to do the right thing (dropping channels if the source has more than the dest, or duplicating channels if the dest has more than the source).  The dest structure is always preserved.  It's only new (empty) files that aren't working to preserve the structure.
-
---Switching tabs stops playback.  Instead, it should instantly jump to playing from the cursor position in the file that you're switching to.  If loop is checked, it should switch to looping the selection in the new tab (or looping from the cursor position, if there's no selection).  The point of this is that someone can open 15 files on the command line, hit PLAY, and then jump from file to file, listening to them all in turn (like if opening a folder of samples).
-
---Keyboard shortcuts for switching tabs... left and right arrows, with wrap-around if you reach the end.  Up to jump to first tab, down to jump to last tab.

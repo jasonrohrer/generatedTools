@@ -89,17 +89,31 @@ tabs), plus dialog scratch, the file browser, and the New-file params.
 `buildTabBar()` draws the ImGui tab strip (`gui_begin_tab_bar`/`gui_tab_item`)
 in a fixed panel of height `TABBAR_H` between the menu bar and the overview
 (renderWaveform reserves the same room). Selecting a tab → `switchTab`; the
-per-tab close button / Ctrl+W → `closeDoc`. **Invariants:** (1) any edit still
-goes through `app` and is bracketed by the audio lock; (2) `switchTab`/`closeDoc`
-call `stopPlayback()` first, because `player.clip` points at a specific `Doc`'s
-`&clip` and `closeDoc` shifts the `Doc` array (struct-copy, which moves the heap
-pointers with it) — playback must not be reading a doc that is about to move or
-be freed; (3) there is always ≥1 doc (closing the last replaces it with a fresh
-empty one). Opening/creating a file **reuses a blank current tab** (untitled +
-clean + empty, `isDocBlank`) instead of piling on another empty tab, else it
-appends a new one. `openFile()` creates/focuses the target tab immediately
-(showing the filename) and the async loader fills it in `finishLoad`, targeting
-`loadTargetDoc` so a mid-load tab switch still lands the audio in the right tab.
+per-tab close button / Ctrl+W → `closeDoc`. Keyboard tab nav: **left/right**
+cycle with wrap-around, **up/down** jump to the first/last tab (all via
+`switchTab`). **Invariants:** (1) any edit still goes through `app` and is
+bracketed by the audio lock; (2) `switchTab`/`closeDoc` `stopPlayback()` first,
+because `player.clip` points at a specific `Doc`'s `&clip` and `closeDoc` shifts
+the `Doc` array (struct-copy, which moves the heap pointers with it) — playback
+must not be reading a doc that is about to move or be freed; (3) there is always
+≥1 doc (closing the last replaces it with a fresh empty one). **`switchTab`
+keeps transport live:** if playback was running it stops the callback (so it
+never reads the old doc), switches, then *restarts* in the new tab from its
+cursor/selection (looping the selection if one exists, `player.loop` carries
+over) — so a user can open a folder of samples, hit Play once, and arrow through
+them all in turn. Opening/creating a file **reuses a blank current tab**
+(untitled + clean + empty, `isDocBlank`) instead of piling on another empty tab,
+else it appends a new one. `openFile()` creates/focuses the target tab
+immediately (showing the filename) and the async loader fills it in
+`finishLoad`, targeting `loadTargetDoc` so a mid-load tab switch still lands the
+audio in the right tab. **Command-line files open into separate tabs:** every
+argv path (a shell wildcard expands to many) is queued in `g_pendingOpen[]`, and
+`pumpPendingOpens()` (called each main-loop iteration) feeds them one at a time
+to the single-flight async loader; once the whole batch is in, focus lands on
+tab 0. Programmatic tab focus uses `g_forceSelectDoc`, and `buildTabBar` lets
+that force **win over the previously-selected tab's stale "active" return** (an
+ImGui `SetSelected` only takes effect next frame) so a scripted switch isn't
+immediately dragged back.
 
 **New dialog & save formats.** "New" opens a dialog (channels / sample-rate
 preset / sample format) → `createNewDoc`. Internally audio is always float32;
@@ -110,8 +124,15 @@ and overridable in the Save-As dialog's Format combo. `seq_save_wav_fmt`
 `seq_save_wav` is now just the 16-bit wrapper. Cross-format / cross-rate paste
 needs no conversion: `seq_insert_clip` keeps the destination's channel count &
 rate and maps clipboard channels (extra dest channels duplicate source ch0), so
-pasting between differently-formatted tabs "just works"; pasting into an *empty*
-doc makes it adopt the clipboard's geometry.
+pasting between differently-formatted tabs "just works". **Geometry adoption is
+opt-in per doc via `Doc.adoptGeom`:** only a *throwaway blank* tab (startup /
+after-close, `adoptGeom=1`) takes on the clipboard's channels+rate on paste; a
+New-dialog doc (`createNewDoc` clears the flag) or a loaded file (`finishLoad`
+clears it) **preserves** its chosen geometry and channel-maps the source into it
+instead. `actPaste` does the adoption (calls `seq_set_empty` + `open_audio` when
+`clipLen()==0 && adoptGeom` and the geometry differs). `seq_insert_clip` itself
+now only auto-adopts when the sequence has *no* geometry at all
+(`numChannels==0`), so an empty-but-configured doc is never clobbered.
 
 **Audio clip.** `AudioClip` is planar: one `float*` per channel, `numFrames`
 samples each, values in `[-1,1]`. It is now the *leaf buffer* type — used for

@@ -276,6 +276,9 @@ typedef struct {
     char path[PATH_MAX_LEN];
     int  dirty;
     int  fmt;                /* FMT_* save format for this document      */
+    int  adoptGeom;          /* empty throwaway tab: paste adopts src     */
+                             /* channels/rate; cleared once a real file   */
+                             /* loads or the user picks New-dialog geom   */
 } Doc;
 
 /* The open documents (tabs).  There is always at least one; the current one
@@ -943,6 +946,21 @@ static void actPaste( void )
     long at, insN, selS, selE;
     int  hadSel, c;
     if( ui.clipboard.numFrames == 0 ) { setStatus( "Clipboard is empty" ); return; }
+    /* A throwaway blank tab (startup/after-close, no user-chosen geometry and
+     * nothing loaded yet) takes on the clipboard's channel count and rate, so
+     * copying a stereo clip into a fresh tab "just works".  A New-dialog doc or
+     * a loaded file has adoptGeom cleared, so its geometry is preserved and the
+     * clipboard is channel-mapped into it instead. */
+    if( clipLen() == 0 && app.adoptGeom &&
+        ( app.clip.numChannels != ui.clipboard.numChannels ||
+          app.clip.sampleRate  != ui.clipboard.sampleRate ) ) {
+        audio_lock();
+        seq_set_empty( &app.clip, ui.clipboard.numChannels,
+                       ui.clipboard.sampleRate );
+        audio_unlock();
+        open_audio( app.clip.sampleRate );
+    }
+    app.adoptGeom = 0;     /* has real content now */
     insN   = ui.clipboard.numFrames;
     hadSel = hasSelection();
     selS   = app.selStart;
@@ -1050,6 +1068,15 @@ static void applyEffect( int which )
  * tab even if the user switched tabs while it was decoding.  -1 = none. */
 static int loadTargetDoc = -1;
 
+/* Command-line files open one at a time (each load is async and single-flight):
+ * they queue here and pumpPendingOpens() kicks off the next once the previous
+ * finishes.  A shell wildcard expands to many argv entries, so `cwave *.wav`
+ * lands them all as separate tabs. */
+static char g_pendingOpen[MAX_TABS][PATH_MAX_LEN];
+static int  g_pendingCount   = 0;
+static int  g_pendingIdx     = 0;
+static int  g_pendingFocused = 0;   /* focused tab 0 once the batch finished */
+
 /* (re)initialize a document to an empty clip with the given geometry, freeing
  * any audio / undo / marks it held.  Safe on a freshly zeroed slot. */
 static void docMakeEmpty( Doc *d, int chans, int rate, int fmt )
@@ -1066,6 +1093,7 @@ static void docMakeEmpty( Doc *d, int chans, int rate, int fmt )
     d->path[0]         = '\0';
     d->dirty           = 0;
     d->fmt             = fmt;
+    d->adoptGeom       = 1;   /* throwaway blank: paste may adopt src geom */
 }
 
 /* a "blank" doc is an untitled, unedited, empty tab -- New / Open reuse it
@@ -1085,13 +1113,33 @@ static int fmtFromSource( int bits, int isFloat )
     return FMT_PCM16;             /* 16- and 32-bit int fold to 16-bit save */
 }
 
-/* switch the current tab (stops playback, which may reference the old doc) */
+/* Switch the current tab.  If transport was live, keep it live in the tab we
+ * jump to -- playing from that tab's cursor/selection -- so a user who opened a
+ * folder of samples can hit Play once and flip through them all in turn.  We
+ * must stop the callback touching the OLD doc first: player.clip points at a
+ * specific Doc's &clip, and this focus change (and any later closeDoc that
+ * shifts the array) would otherwise leave it reading moved/freed blocks. */
 static void switchTab( int idx )
 {
+    int wasPlaying;
     if( idx < 0 || idx >= g_numDocs || idx == g_curDoc ) return;
+    wasPlaying = player.playing;
     stopPlayback();
     g_curDoc = idx;
+    g_forceSelectDoc = idx;   /* keep the tab strip in sync (keyboard switch) */
     open_audio( app.clip.sampleRate );
+    if( wasPlaying && clipLen() > 0 ) {
+        /* mirror togglePlay: loop a selection (tracking its edges), else play
+         * from the cursor to the end.  player.loop is untouched by stop/play,
+         * so a checked Loop carries over to the new tab automatically. */
+        if( hasSelection() ) {
+            playFrom( app.selStart, app.selEnd );
+            player.followSel = 1;
+        } else {
+            playFrom( app.selStart, clipLen() );
+            player.followSel = 0;
+        }
+    }
 }
 
 /* close tab 'idx', shifting the rest down.  Never leaves zero tabs: closing
@@ -1142,6 +1190,7 @@ static void createNewDoc( int chans, int rate, int fmt )
         return;
     }
     docMakeEmpty( &g_docs[target], chans, rate, fmt );
+    g_docs[target].adoptGeom = 0;  /* user chose this geometry -- keep it */
     g_curDoc = target;
     g_forceSelectDoc = target;
     open_audio( rate );
@@ -1198,6 +1247,25 @@ static void openFile( const char *path )
     startLoad( path, target );
 }
 
+/* If command-line files remain queued and no load is in flight, start the next
+ * one.  Called each main-loop iteration (and after each load finishes), so a
+ * multi-file `cwave a.wav b.wav c.ogg` opens them into successive tabs. */
+static void pumpPendingOpens( void )
+{
+    if( loading ) return;
+    if( g_pendingIdx < g_pendingCount ) {
+        openFile( g_pendingOpen[g_pendingIdx++] );
+        return;
+    }
+    /* Whole batch loaded: land focus on the first file so the user starts at
+     * the top of the list they opened (each openFile focused its own tab, so
+     * without this we'd sit on the last one). */
+    if( g_pendingCount > 1 && !g_pendingFocused ) {
+        g_pendingFocused = 1;
+        switchTab( 0 );
+    }
+}
+
 /* Called on the main thread once the worker has finished. */
 static void finishLoad( void )
 {
@@ -1237,6 +1305,7 @@ static void finishLoad( void )
     app.selStart = app.selEnd = 0;
     snprintf( app.path, PATH_MAX_LEN, "%s", loadJob.path );
     app.dirty = 0;
+    app.adoptGeom = 0;          /* real file geometry -- do not adopt on paste */
     clearUndoRedo();
     g_forceSelectDoc = target;
     zoomFit();
@@ -1960,6 +2029,13 @@ static void buildTabBar( int winW, float menuH )
     }
     gui_end();
 
+    /* A forced SetSelected only takes visual effect next frame, so the
+     * previously-selected tab still reports "active" THIS frame and would drag
+     * g_curDoc back to it (an issue when we programmatically switch tabs, e.g.
+     * focusing tab 0 after a command-line batch loads).  Let the force win over
+     * that stale active-tab return, regardless of loop order. */
+    if( g_forceSelectDoc >= 0 && g_forceSelectDoc < g_numDocs )
+        newCur = g_forceSelectDoc;
     g_forceSelectDoc = -1;
     if( newCur != g_curDoc ) switchTab( newCur );
     if( closeReq >= 0 )      closeDoc( closeReq );
@@ -2294,6 +2370,14 @@ static void handleKey( SDL_Keycode key, int ctrl )
         case SDLK_PLUS:   app.samplesPerPixel *= 0.5; clampView(); break;
         case SDLK_MINUS:  app.samplesPerPixel *= 2.0; clampView(); break;
         case SDLK_ESCAPE: actSelectNone(); break;
+        /* tab navigation: left/right cycle with wrap-around, up/down jump to
+         * the first/last tab.  Transport carries over (switchTab keeps it live)
+         * so you can flip through a folder of samples while Play stays on. */
+        case SDLK_LEFT:   switchTab( ( g_curDoc - 1 + g_numDocs ) % g_numDocs );
+                          break;
+        case SDLK_RIGHT:  switchTab( ( g_curDoc + 1 ) % g_numDocs ); break;
+        case SDLK_UP:     switchTab( 0 ); break;
+        case SDLK_DOWN:   switchTab( g_numDocs - 1 ); break;
         default: break;
     }
 }
@@ -2360,8 +2444,19 @@ int main( int argc, char **argv )
 
     open_audio( 44100 );
 
-    if( argc > 1 ) openFile( argv[1] );
-    else           setStatus( "Open a WAV or OGG file to begin" );
+    /* Queue every command-line path (a shell wildcard expands to many argv
+     * entries); pumpPendingOpens() feeds them to the single-flight async loader
+     * one at a time, each into its own tab. */
+    if( argc > 1 ) {
+        int a;
+        for( a = 1; a < argc && g_pendingCount < MAX_TABS; a++ ) {
+            strncpy( g_pendingOpen[g_pendingCount], argv[a], PATH_MAX_LEN - 1 );
+            g_pendingOpen[g_pendingCount][PATH_MAX_LEN - 1] = '\0';
+            g_pendingCount++;
+        }
+    } else {
+        setStatus( "Open a WAV or OGG file to begin" );
+    }
 
     while( running ) {
         SDL_Event ev;
@@ -2419,6 +2514,9 @@ int main( int argc, char **argv )
 
         /* a background load just finished: swap in the result */
         if( loading && loadJob.done ) finishLoad();
+
+        /* feed the next command-line file to the loader when it's free */
+        pumpPendingOpens();
 
         /* live loop: while playing a selection, track edits to its edges.
            Also, when Loop is on, obey a selection made *after* playback

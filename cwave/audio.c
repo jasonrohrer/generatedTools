@@ -1076,7 +1076,12 @@ int seq_insert_clip( Sequence *s, long at, const AudioClip *ins )
     Block **nb;
 
     if( len <= 0 ) return 0;
-    if( s->numFrames == 0 && s->numBlocks == 0 ) {
+    /* Only a sequence that has never had a geometry (numChannels == 0) adopts
+     * the inserted clip's channel count / rate.  An empty-but-configured
+     * sequence (e.g. a New-dialog 3ch/48k doc, or one whose audio was all
+     * deleted) keeps its own geometry and channel-maps the source instead --
+     * the caller decides adoption for a throwaway blank tab. */
+    if( s->numChannels == 0 ) {
         s->numChannels = ins->numChannels;
         s->sampleRate  = ins->sampleRate;
     }

@@ -31,8 +31,9 @@ existing Linux editors are slow/bloated/crashy and this is the antidote.
 ## Build & run
 
 ```
-make                 # builds ./cwave ; *.o and cwave are gitignored
+make                    # builds ./cwave ; *.o and cwave are gitignored
 ./cwave [file.wav|file.ogg]
+CWAVE_PROFILE=1 ./cwave  # print a per-phase startup timing breakdown to stderr
 ```
 
 Committed to `main` directly (personal local repo, linear history). Commit
@@ -173,7 +174,18 @@ save). If you add a length-preserving effect, do it per-block and call
 `block_bins()` on each touched block (or go read→`audio_*`→write via
 `seq_write_range`, which refreshes bins for you).
 
-**Playback.** One SDL audio callback thread mixes all channels → stereo with a
+**Playback.** **Audio is opened lazily** — `SDL_Init` requests VIDEO only, and
+neither the SDL audio subsystem nor a device exists until the *first* playback.
+`playFrom` calls `ensureAudio(rate)` (→ `SDL_InitSubSystem(AUDIO)` once, then
+`open_audio`); a blank editor never pays the sound-server (PulseAudio/PipeWire)
+connect cost — that was a big avoidable chunk of the "launch instantly" budget.
+Everything else that used to `open_audio` eagerly (`switchTab`, `closeDoc`,
+`createNewDoc`, `actPaste` geom-adopt, `finishLoad`) now does so **only if
+`audioSubsysReady`** — i.e. it *reconfigures* an already-open device to the new
+rate but never spins audio up; the next `playFrom` opens it if needed. Editing
+works fully with no audio device at all. (Startup is profileable:
+`CWAVE_PROFILE=1 ./cwave` prints a per-phase stderr breakdown.)
+One SDL audio callback thread mixes all channels → stereo with a
 volume. Because the clip is a block list, the callback keeps a **cursor** —
 `seq_locate(playhead)` once per callback (cheap binary search, ~once/1024
 frames) then advances (block idx + local offset), crossing block boundaries and

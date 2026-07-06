@@ -79,6 +79,7 @@ typedef struct {
 static Player       player;
 static SDL_AudioDeviceID audioDev = 0;
 static int          audioDevRate  = 0;
+static int          audioSubsysReady = 0;  /* SDL audio subsystem inited yet? */
 
 static float clamp1( float v )
 {
@@ -187,6 +188,24 @@ static void open_audio( int rate )
         audioDevRate = rate;
         SDL_PauseAudioDevice( audioDev, 0 );
     }
+}
+
+/* Lazily bring audio up on first playback.  We deliberately do NOT init the
+ * SDL audio subsystem or open a device at launch: a blank editor has nothing to
+ * play, and connecting to the system sound server (PulseAudio / PipeWire) can
+ * cost hundreds of ms -- pure waste on the "launch instantly" path.  The first
+ * time something actually plays (playFrom), we init the subsystem and open the
+ * device at the doc's sample rate.  Editing works fine with no audio at all. */
+static void ensureAudio( int rate )
+{
+    if( !audioSubsysReady ) {
+        if( SDL_InitSubSystem( SDL_INIT_AUDIO ) != 0 ) {
+            fprintf( stderr, "Audio unavailable: %s\n", SDL_GetError() );
+            return;                  /* editing still works without a device */
+        }
+        audioSubsysReady = 1;
+    }
+    open_audio( rate );
 }
 
 /* -------------------------------------------------------------------- */
@@ -824,7 +843,7 @@ static long snapFrameToMark( long f )
 
 static void playFrom( long from, long to )
 {
-    open_audio( app.clip.sampleRate );
+    ensureAudio( app.clip.sampleRate );   /* first play brings audio up */
     if( clipLen() == 0 ) return;
     if( from < 0 ) from = 0;
     if( to > clipLen() ) to = clipLen();
@@ -960,7 +979,7 @@ static void actPaste( void )
         seq_set_empty( &app.clip, ui.clipboard.numChannels,
                        ui.clipboard.sampleRate );
         audio_unlock();
-        open_audio( app.clip.sampleRate );
+        if( audioSubsysReady ) open_audio( app.clip.sampleRate );
     }
     app.adoptGeom = 0;     /* has real content now */
     insN   = ui.clipboard.numFrames;
@@ -1158,7 +1177,10 @@ static void switchTab( int idx )
     stopPlayback();
     g_curDoc = idx;
     g_forceSelectDoc = idx;   /* keep the tab strip in sync (keyboard switch) */
-    open_audio( app.clip.sampleRate );
+    /* only re-point an already-open device at the new doc's rate; don't spin
+     * audio up just for a tab switch -- playFrom (below) brings it up if we
+     * actually resume playback. */
+    if( audioSubsysReady ) open_audio( app.clip.sampleRate );
     if( wasPlaying && clipLen() > 0 ) {
         /* mirror togglePlay: loop a selection (tracking its edges), else play
          * from the cursor to the end.  player.loop is untouched by stop/play,
@@ -1198,7 +1220,7 @@ static void closeDoc( int idx )
         g_curDoc = g_numDocs - 1;          /* closed the last, current tab    */
     }
     g_forceSelectDoc = g_curDoc;
-    open_audio( app.clip.sampleRate );
+    if( audioSubsysReady ) open_audio( app.clip.sampleRate );
     setStatus( "Closed tab" );
 }
 
@@ -1224,7 +1246,7 @@ static void createNewDoc( int chans, int rate, int fmt )
     g_docs[target].adoptGeom = 0;  /* user chose this geometry -- keep it */
     g_curDoc = target;
     g_forceSelectDoc = target;
-    open_audio( rate );
+    if( audioSubsysReady ) open_audio( rate );
     zoomFit();
     setStatus( "New file" );
 }
@@ -1329,7 +1351,7 @@ static void finishLoad( void )
     seq_init( &loadJob.seq );
 
     app.fmt = fmtFromSource( loadJob.srcBits, loadJob.srcFloat );
-    open_audio( app.clip.sampleRate );
+    if( audioSubsysReady ) open_audio( app.clip.sampleRate );
 
     app.numMarks = 0;
     app.markColorNext = 0;
@@ -2423,6 +2445,20 @@ int main( int argc, char **argv )
     SDL_GLContext glctx;
     int running = 1;
 
+    /* Startup profiler: run `CWAVE_PROFILE=1 ./cwave` to print a per-phase
+     * timing breakdown to stderr (SDL_Init / window+GL / gui_init / first few
+     * frames).  Zero cost when the env var is unset.  Kept in because "launch
+     * instantly" is the prime directive -- this is how you find a regression. */
+    int   prof   = getenv( "CWAVE_PROFILE" ) != NULL;
+    int   profFrames = 0;
+    Uint64 pf    = SDL_GetPerformanceFrequency();
+    Uint64 pt0   = SDL_GetPerformanceCounter();
+    Uint64 ptl   = pt0;
+#define MARK(lbl) do { if( prof ) { Uint64 n = SDL_GetPerformanceCounter(); \
+    fprintf( stderr, "PROF %-16s +%6.1f ms  (t=%6.1f ms)\n", (lbl), \
+        1000.0*(double)(n-ptl)/(double)pf, 1000.0*(double)(n-pt0)/(double)pf ); \
+    ptl = n; } } while(0)
+
     memset( &ui, 0, sizeof(ui) );
     memset( &player, 0, sizeof(player) );
     g_numDocs = 1;
@@ -2443,10 +2479,15 @@ int main( int argc, char **argv )
     ui.newRateIdx = 5;            /* 44100 in g_ratePresets */
     ui.newFmt     = FMT_PCM16;
 
-    if( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_AUDIO ) != 0 ) {
+    MARK( "pre-SDL_Init" );
+    /* Video only at launch.  Audio is brought up lazily on first playback
+     * (ensureAudio) so we never pay the sound-server connect cost just to
+     * show a blank editor -- see the "launch instantly" prime directive. */
+    if( SDL_Init( SDL_INIT_VIDEO ) != 0 ) {
         fprintf( stderr, "SDL_Init failed: %s\n", SDL_GetError() );
         return 1;
     }
+    MARK( "SDL_Init" );
 
     SDL_GL_SetAttribute( SDL_GL_DOUBLEBUFFER, 1 );
     SDL_GL_SetAttribute( SDL_GL_DEPTH_SIZE, 0 );
@@ -2468,15 +2509,17 @@ int main( int argc, char **argv )
         SDL_Quit();
         return 1;
     }
+    MARK( "CreateWindow+GL" );
     SDL_GL_MakeCurrent( window, glctx );
     SDL_GL_SetSwapInterval( 1 ); /* vsync */
+    MARK( "MakeCurrent+vsync" );
 
     if( gui_init( window, glctx ) ) {
         fprintf( stderr, "GUI init failed\n" );
         return 1;
     }
 
-    open_audio( 44100 );
+    MARK( "gui_init" );
 
     /* Queue every command-line path (a shell wildcard expands to many argv
      * entries); pumpPendingOpens() feeds them to the single-flight async loader
@@ -2590,6 +2633,14 @@ int main( int argc, char **argv )
         gui_render();
 
         SDL_GL_SwapWindow( window );
+
+        if( prof && profFrames < 5 ) {
+            char lbl[24];
+            profFrames++;
+            sprintf( lbl, "frame %d swapped", profFrames );
+            MARK( lbl );
+            if( profFrames == 5 ) { fprintf( stderr, "PROF done.\n" ); }
+        }
     }
 
     /* if a load is still running at quit, wait for it so we can free */

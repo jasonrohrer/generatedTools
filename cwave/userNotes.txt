@@ -5,3 +5,10 @@ Notes:
 
 --For some reason, if you open a lot of files on the command line at once, some are skipped.  I've added a folder here called lotsOfFiles to test with.  If I do ./cwave lotsOfFiles/*.wav, only some of them get opened.  Is there a hard limit on the number of files that cane be open at one time?  Seems like the limit might be sixteen.  There should be no limit.  How would the little drop-down menu handle way more files?
 
+  [FIXED] There was a hard limit of 16 (a fixed MAX_TABS array) that silently
+  dropped the rest.  The open-documents array (g_docs) and the command-line
+  queue (g_pendingOpen) are now heap-grown on demand -- no limit.  Verified all
+  34 files in lotsOfFiles/ open as tabs.  The tab strip's little drop-down
+  (the triangle at its far left) already lists EVERY open tab in a scrollable
+  menu, so it handles hundreds of files fine -- confirmed it shows all 34.
+

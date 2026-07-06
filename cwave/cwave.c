@@ -30,7 +30,8 @@
 
 #define TRANSPORT_H   96.0f     /* height of bottom transport panel      */
 #define TABBAR_H      34.0f     /* height of the open-files tab strip     */
-#define MAX_TABS      16        /* how many files can be open at once     */
+#define TAB_CHUNK     16        /* g_docs grows in chunks of this -- there */
+                                /* is NO hard limit on open files          */
 #define OVERVIEW_H    56.0f     /* height of the top overview / scroll bar */
 #define MARK_STRIP_H  16.0f     /* caret strip along the top of the wave  */
 #define UNDO_LEVELS   32
@@ -286,7 +287,8 @@ typedef struct {
  * 'app' macro, so the vast body of editing/rendering logic is unchanged from
  * the single-document version -- it now just operates on whichever tab is
  * current. */
-static Doc g_docs[MAX_TABS];
+static Doc *g_docs    = NULL;   /* heap array, grown on demand (ensureDocCap) */
+static int  g_docsCap = 0;      /* slots allocated in g_docs                  */
 static int g_numDocs = 1;
 static int g_curDoc  = 0;
 
@@ -1072,10 +1074,39 @@ static int loadTargetDoc = -1;
  * they queue here and pumpPendingOpens() kicks off the next once the previous
  * finishes.  A shell wildcard expands to many argv entries, so `cwave *.wav`
  * lands them all as separate tabs. */
-static char g_pendingOpen[MAX_TABS][PATH_MAX_LEN];
+static char (*g_pendingOpen)[PATH_MAX_LEN] = NULL;  /* malloc'd, sized to argc */
 static int  g_pendingCount   = 0;
 static int  g_pendingIdx     = 0;
 static int  g_pendingFocused = 0;   /* focused tab 0 once the batch finished */
+
+/* Ensure the open-documents array can hold at least 'need' docs, doubling it in
+ * chunks.  There is NO fixed limit on how many files can be open -- g_docs lives
+ * on the heap and grows as needed.  Returns 0 only on out-of-memory.
+ *
+ * realloc may move (and free) the old buffer, and the audio callback holds a
+ * pointer into it (player.clip -> &g_docs[g_curDoc].clip), so the move happens
+ * under the audio lock and re-points player.clip into the new array.  Freshly
+ * grown slots are zeroed; callers docMakeEmpty() them before use, matching how a
+ * memset-0 slot is treated everywhere else (docMakeEmpty seq_free/seq_init's). */
+static int ensureDocCap( int need )
+{
+    Doc *nd;
+    int  newCap;
+    if( need <= g_docsCap ) return 1;
+    newCap = g_docsCap ? g_docsCap : TAB_CHUNK;
+    while( newCap < need ) newCap *= 2;
+    audio_lock();
+    nd = (Doc *)realloc( g_docs, (size_t)newCap * sizeof(Doc) );
+    if( nd ) {
+        memset( nd + g_docsCap, 0,
+                (size_t)( newCap - g_docsCap ) * sizeof(Doc) );
+        g_docs = nd;
+        if( player.clip ) player.clip = &g_docs[g_curDoc].clip;
+        g_docsCap = newCap;
+    }
+    audio_unlock();
+    return nd != NULL;
+}
 
 /* (re)initialize a document to an empty clip with the given geometry, freeing
  * any audio / undo / marks it held.  Safe on a freshly zeroed slot. */
@@ -1182,10 +1213,10 @@ static void createNewDoc( int chans, int rate, int fmt )
     stopPlayback();
     if( isDocBlank( &app ) ) {
         target = g_curDoc;
-    } else if( g_numDocs < MAX_TABS ) {
+    } else if( ensureDocCap( g_numDocs + 1 ) ) {
         target = g_numDocs++;
     } else {
-        setStatus( "Too many tabs open" );
+        setStatus( "Out of memory opening a new tab" );
         strncpy( ui.pendingPopup, "Error", sizeof(ui.pendingPopup) - 1 );
         return;
     }
@@ -1231,11 +1262,11 @@ static void openFile( const char *path )
     if( loading ) { setStatus( "Busy loading another file" ); return; }
     if( isDocBlank( &app ) ) {
         target = g_curDoc;
-    } else if( g_numDocs < MAX_TABS ) {
+    } else if( ensureDocCap( g_numDocs + 1 ) ) {
         target = g_numDocs++;
         docMakeEmpty( &g_docs[target], 1, 44100, FMT_PCM16 );
     } else {
-        setStatus( "Too many tabs open" );
+        setStatus( "Out of memory opening a new tab" );
         strncpy( ui.pendingPopup, "Error", sizeof(ui.pendingPopup) - 1 );
         return;
     }
@@ -2392,11 +2423,14 @@ int main( int argc, char **argv )
     SDL_GLContext glctx;
     int running = 1;
 
-    memset( g_docs, 0, sizeof(g_docs) );
     memset( &ui, 0, sizeof(ui) );
     memset( &player, 0, sizeof(player) );
     g_numDocs = 1;
     g_curDoc  = 0;
+    if( !ensureDocCap( 1 ) ) {
+        fprintf( stderr, "Out of memory\n" );
+        return 1;
+    }
     docMakeEmpty( &g_docs[0], 1, 44100, FMT_PCM16 );
 
     player.volume = 1.0f;
@@ -2449,7 +2483,11 @@ int main( int argc, char **argv )
      * one at a time, each into its own tab. */
     if( argc > 1 ) {
         int a;
-        for( a = 1; a < argc && g_pendingCount < MAX_TABS; a++ ) {
+        /* one row per command-line path -- no cap; a shell wildcard can expand
+         * to hundreds of argv entries and every one gets its own tab */
+        g_pendingOpen = (char (*)[PATH_MAX_LEN])
+                        malloc( (size_t)( argc - 1 ) * PATH_MAX_LEN );
+        for( a = 1; g_pendingOpen && a < argc; a++ ) {
             strncpy( g_pendingOpen[g_pendingCount], argv[a], PATH_MAX_LEN - 1 );
             g_pendingOpen[g_pendingCount][PATH_MAX_LEN - 1] = '\0';
             g_pendingCount++;
@@ -2567,6 +2605,8 @@ int main( int argc, char **argv )
             seq_free( &g_docs[i].clip );
         }
     }
+    free( g_docs );      g_docs = NULL;      g_docsCap = 0;
+    free( g_pendingOpen ); g_pendingOpen = NULL;
     audio_free( &ui.clipboard );
     if( audioDev ) SDL_CloseAudioDevice( audioDev );
     gui_shutdown();

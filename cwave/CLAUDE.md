@@ -75,8 +75,10 @@ splitting/coalescing). Do both.
 
 ## Architecture notes & invariants
 
-**Tabs — multiple open documents.** The app holds an array `Doc g_docs[MAX_TABS]`
-with `g_numDocs` / `g_curDoc`; each `Doc` is one open file/tab and owns *all*
+**Tabs — multiple open documents.** The app holds a **heap-grown** array
+`Doc *g_docs` (capacity `g_docsCap`, doubled on demand by `ensureDocCap` — there
+is **no hard limit** on open files) with `g_numDocs` / `g_curDoc`; each `Doc` is
+one open file/tab and owns *all*
 per-document state — its `Sequence clip`, marks, selection, view (viewStart /
 samplesPerPixel), undo/redo chains, `path`, `dirty`, and `fmt` (its WAV save
 format). The huge body of editing/rendering code is unchanged because it still
@@ -95,7 +97,10 @@ cycle with wrap-around, **up/down** jump to the first/last tab (all via
 bracketed by the audio lock; (2) `switchTab`/`closeDoc` `stopPlayback()` first,
 because `player.clip` points at a specific `Doc`'s `&clip` and `closeDoc` shifts
 the `Doc` array (struct-copy, which moves the heap pointers with it) — playback
-must not be reading a doc that is about to move or be freed; (3) there is always
+must not be reading a doc that is about to move or be freed; the same hazard
+applies to `ensureDocCap`'s `realloc` (it may move/free the whole array), so it
+moves the buffer **under the audio lock** and re-points `player.clip` at
+`&g_docs[g_curDoc].clip` in the new array; (3) there is always
 ≥1 doc (closing the last replaces it with a fresh empty one). **`switchTab`
 keeps transport live:** if playback was running it stops the callback (so it
 never reads the old doc), switches, then *restarts* in the new tab from its
@@ -107,7 +112,8 @@ else it appends a new one. `openFile()` creates/focuses the target tab
 immediately (showing the filename) and the async loader fills it in
 `finishLoad`, targeting `loadTargetDoc` so a mid-load tab switch still lands the
 audio in the right tab. **Command-line files open into separate tabs:** every
-argv path (a shell wildcard expands to many) is queued in `g_pendingOpen[]`, and
+argv path (a shell wildcard expands to many) is queued in `g_pendingOpen[]`
+(malloc'd to hold every argv entry — no cap), and
 `pumpPendingOpens()` (called each main-loop iteration) feeds them one at a time
 to the single-flight async loader; once the whole batch is in, focus lands on
 tab 0. Programmatic tab focus uses `g_forceSelectDoc`, and `buildTabBar` lets

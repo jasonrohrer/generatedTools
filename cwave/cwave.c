@@ -2451,6 +2451,11 @@ int main( int argc, char **argv )
      * instantly" is the prime directive -- this is how you find a regression. */
     int   prof   = getenv( "CWAVE_PROFILE" ) != NULL;
     int   profFrames = 0;
+    /* CWAVE_QUIT=N: auto-quit after N rendered frames (N<1 treated as 1), so
+     * `time CWAVE_QUIT=1 ./cwave` measures launch-to-first-frame.  0 = never. */
+    const char *quitEnv   = getenv( "CWAVE_QUIT" );
+    int         quitAfter = quitEnv ? ( atoi( quitEnv ) < 1 ? 1 : atoi( quitEnv ) ) : 0;
+    long        frameNum  = 0;
     Uint64 pf    = SDL_GetPerformanceFrequency();
     Uint64 pt0   = SDL_GetPerformanceCounter();
     Uint64 ptl   = pt0;
@@ -2641,6 +2646,9 @@ int main( int argc, char **argv )
             MARK( lbl );
             if( profFrames == 5 ) { fprintf( stderr, "PROF done.\n" ); }
         }
+
+        /* CWAVE_QUIT=N: exit once N frames have been presented (see above) */
+        if( quitAfter && ++frameNum >= quitAfter ) running = 0;
     }
 
     /* if a load is still running at quit, wait for it so we can free */

@@ -34,6 +34,8 @@ existing Linux editors are slow/bloated/crashy and this is the antidote.
 make                    # builds ./cwave ; *.o and cwave are gitignored
 ./cwave [file.wav|file.ogg]
 CWAVE_PROFILE=1 ./cwave  # print a per-phase startup timing breakdown to stderr
+CWAVE_QUIT=N ./cwave     # auto-quit after N presented frames (N<1 => 1), e.g.
+                         # `time CWAVE_QUIT=1 ./cwave` times launch-to-1st-frame
 ```
 
 Committed to `main` directly (personal local repo, linear history). Commit

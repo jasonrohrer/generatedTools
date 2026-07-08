@@ -1816,6 +1816,23 @@ static void handleWaveMouseDown( int mx, int my, int shift )
     } else {
         dragAnchor = f;
         app.selStart = app.selEnd = f;
+        /* Clicking (no shift) collapses the selection to a bare cursor.  If
+         * we're playing, insta-jump the transport there instead of ignoring
+         * the click: re-seek to f and play/loop from f to the end of the file,
+         * mirroring how no-selection transport behaves.  This makes clicking
+         * around during playback re-seek (great for exploring a file), and in
+         * loop mode it converts a now-invisible selection loop into a
+         * cursor->end loop.  A subsequent drag re-grows a selection and the
+         * main-loop sync block (loop / followSel) takes the loop back over --
+         * so live-drag looping over a fresh selection keeps working. */
+        if( player.playing ) {
+            audio_lock();
+            player.followSel = 0;
+            player.playStart = f;
+            player.playEnd   = clipLen();
+            player.playhead  = f;
+            audio_unlock();
+        }
     }
     dragging = 1;
 }

@@ -203,7 +203,15 @@ period ~constant (~20 ms) across sample rates — pow2 nearest `rate/50`, clampe
 selection:** the main-loop sync block re-points `playStart/End` at the current
 selection whenever a selection exists AND (`followSel` OR `player.loop`), so
 checking Loop and then selecting mid-playback redefines the loop region at once
-without a Stop/Play cycle.
+without a Stop/Play cycle. **Click re-seeks the transport:** a plain click in
+the waveform collapses the selection to a bare cursor, and `handleWaveMouseDown`
+insta-jumps the *live* transport there when playing — it sets
+`playStart=f`, `playEnd=clipLen()`, `playhead=f`, `followSel=0` under the audio
+lock, so clicking around during playback re-seeks (great for exploring), and in
+loop mode a now-invisible selection loop becomes a cursor→end loop. The click
+sets `dragging=1`, so a subsequent drag re-grows a selection and the sync block
+above (loop / followSel) takes the loop back over — live-drag looping over a
+fresh selection is preserved.
 
 **Async load.** Large files decode on a short-lived pthread (`loadWorker`) into
 a contiguous `AudioClip`, then `seq_adopt_clip` splits that into blocks +

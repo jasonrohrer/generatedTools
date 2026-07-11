@@ -1,0 +1,59 @@
+In this folder, you are going to make a brand new, clean-room pixel art creation tool.  Call it "obliqueVoxels"
+
+You may find this folder empty, in which case, you're just getting started.  On the other hand, you may find that someone before you has already made some progress.  If that's the case, pick up where they left off, analyze the current situation, and try to make some improvements.
+
+Also, as users test your audio editor, they will leave notes about any issues or problems in userNotes.txt  Please study that file and fix any reported issues.
+
+
+Here's a conversation describing the idea.
+
+https://chatgpt.com/share/6a52b960-c9d4-83ea-8c2d-82b0959751a2
+
+
+Essentially, this tool allows the user to create a voxel sculpture in a fully 3D view, and then render that sculpture as pure pixel art from an Oblique Top-Front projection as seen from a 45 degree angle (where a horizontal square on the top side remains square, and a vertical square on the front side remains square, with no squasing of the top or front).  This allows each voxel to map to at most two pixels (one pixel for the top of the voxel, one for the front face).
+
+Obviously, the voxel sculpture can only be rendered as perfect pixels from a view parallel to one of the main axes (directly from top, bottom, left, right, front, or back).  Start with only one view (that the user can pick and change), and maybe we'll show multiple simultaneous pixel views later.
+
+The main point of doing this is that the render can calculate shadows and shading for the voxel sculpture, and then use that to shade the pixels that represent the top and front faces of the voxels.
+
+There's also the option for changing the "scrunch" of either the top or front faces (to create some foreshortening, where squares become rectangles).  You can only do this in even ratios of whole pixels, however.  For example, voxels on the front face might be 2x2, where squares on the top face get squished to 2x1.  There should be controls to support setting voxel size in pixels (1x1, 2x2, 3x3), and then a foreshortening factor for either the top or front (or both!) faces.
+
+If multiple pixels represent the face of a voxel, then shading/shadows can take advantage of this for more gradiation across the face of a voxel in the pixel art.
+
+
+The view of the voxel sculpture should support normal 3D editing controls, to switch static views, free-rotate with the mouse, pan and move around, zoom in and out with the scroll wheel, etc.
+
+For now, there just need to be a pencil tool (to add a voxel that "sticks" to the face of an existing clicked voxel, or to the farthest intersected wall of the voxel volume, if there are no voxels clicked) and an erase tool that deletes a voxel.
+
+Ther also needs to be some way to add/remove and position light sources.
+
+
+A GPL color palette should be loadable (see examples in this folder), and those colors should be pickable when placing voxels, and for coloring the light source.
+
+There should be two shading modes.
+
+1.  Natural shading, where the faces of the voxels get shaded with calculated color values that can be off-palette.
+
+2.  Palette ramp shading, where the user selects a ramp on the palette (dragging a palette region) and that ramp "sticks" to the voxel and is indexed for shading, as needed.  (Voxels placed with only one color selected have a ramp of 1 color, and are flat-shaded in this mode, but still get natural shading in mode 1).
+
+This shading should be togglable in the 3D view when editing (b/c it will make the voxels easier to see and reason about).  I guess there should be voxel edges that can be toggled too.
+
+
+The user should be able to save/load the voxel scuplure from a bespoke file format... probably something simple and human readable, and not something really complex like JSON.... maybe one voxel per line of text or something, maybe with the GPL at the top, and the indices to ramp ranges for coloring each voxel, light source colors and positions.
+
+The user should be able to save the perfect pixel art renders as PNG files.
+
+
+
+
+The program will be written in pure C89 code, to be compiled with GCC.  The only linked library dependencies will be SDL 2 and OpenGL for creating a window and doing accellerated graphics.  No threads will be needed here.
+
+For graphical user interface stuff, you will compile in IMGui code, which you will find already in a sub-folder here.  For PNG output, there are two stb_image header files that you can use.  You may only need the _write one for now.
+
+
+This tool should be fast and stable.  It should launch almost instantly, etc.
+
+
+You can launch your editor and grab screen shots of it with scrot to see if it looks correct.  I think there's some way you can do this in some kind of x headless display without making a window appear on my screen and interfering with other work that I'm doing on this computer.
+
+After you work on this program, please commit your changes to the local git repo with a detailed commit message describing what you did.

@@ -1,0 +1,10 @@
+# build artifacts
+*.o
+obliqueVoxels
+
+# editor backups
+*~
+
+# local test output / screenshots (not part of the source)
+*.png
+*.ovox

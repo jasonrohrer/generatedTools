@@ -239,6 +239,52 @@ static void voxErase( int x, int y, int z )
 }
 
 /* ------------------------------------------------------------------ */
+/* smoothers -- translucent anti-stair-step markers living in empty    */
+/* cells; they average the voxel faces they touch into a uniform patch */
+/* ------------------------------------------------------------------ */
+
+typedef struct { int x, y, z; } Cell;
+static Cell *g_smooth = NULL;
+static int   g_smoothCount = 0, g_smoothCap = 0;
+
+static int smoothFind( int x, int y, int z )
+{
+    int i;
+    for( i = 0; i < g_smoothCount; i++ )
+        if( g_smooth[i].x==x && g_smooth[i].y==y && g_smooth[i].z==z ) return i;
+    return -1;
+}
+
+static void smoothAdd( int x, int y, int z )
+{
+    if( smoothFind( x, y, z ) >= 0 ) return;
+    if( g_smoothCount == g_smoothCap ) {
+        g_smoothCap = g_smoothCap ? g_smoothCap * 2 : 256;
+        g_smooth = (Cell*)realloc( g_smooth, (size_t)g_smoothCap*sizeof(Cell) );
+    }
+    g_smooth[g_smoothCount].x=x; g_smooth[g_smoothCount].y=y;
+    g_smooth[g_smoothCount].z=z; g_smoothCount++;
+}
+
+static void smoothRemoveAt( int x, int y, int z )
+{
+    int i = smoothFind( x, y, z );
+    if( i >= 0 ) g_smooth[i] = g_smooth[ --g_smoothCount ];
+}
+
+/* Drop any smoother that a voxel now occupies (a voxel covering a smoother
+ * makes it disappear permanently). */
+static void smoothPrune( void )
+{
+    int i = 0;
+    while( i < g_smoothCount ) {
+        if( voxAt( g_smooth[i].x, g_smooth[i].y, g_smooth[i].z ) )
+            g_smooth[i] = g_smooth[ --g_smoothCount ];
+        else i++;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* lights                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -289,9 +335,11 @@ static float cam_dist  = 22.0f;
 static float cam_tx = 0.0f, cam_ty = 2.0f, cam_tz = 0.0f;
 
 /* tool + current paint color/ramp */
-static int g_tool = 0;             /* 0 pencil,1 line,2 rect,3 box,4 select */
+static int g_tool = 0;             /* 0 pencil,1 line,2 rect,3 box,4 select,
+                                    * 5 scribble,6 cylinder,7 sphere,8 smoothers */
 static int g_mode = 0;             /* 0 draw, 1 erase */
-static int g_thickness = 1;        /* extrude depth for line/rect/box (>=1) */
+static int g_thickness = 1;        /* extrude depth for line/rect/box/cyl (>=1) */
+static int g_sphereDepth = 0;      /* voxels the sphere sinks into the surface */
 static int g_pick = 15;            /* current palette index */
 static int g_rampStart = 15;
 static int g_rampEnd   = 15;
@@ -749,6 +797,28 @@ static void drawScene3D( void )
         glEnd();
     }
 
+    /* smoothers: translucent little boxes, only while the tool is active */
+    if( g_tool == 8 && g_smoothCount > 0 ) {
+        glEnable( GL_BLEND );
+        glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+        glDepthMask( GL_FALSE );
+        glColor4f( 0.55f, 0.85f, 1.0f, 0.32f );
+        glBegin( GL_QUADS );
+        for( i = 0; i < g_smoothCount; i++ ) {
+            float x=(float)g_smooth[i].x+0.15f, y=(float)g_smooth[i].y+0.15f;
+            float z=(float)g_smooth[i].z+0.15f, s=0.7f;
+            /* +Y */ glVertex3f(x,y+s,z);   glVertex3f(x,y+s,z+s); glVertex3f(x+s,y+s,z+s); glVertex3f(x+s,y+s,z);
+            /* -Y */ glVertex3f(x,y,z);     glVertex3f(x+s,y,z);   glVertex3f(x+s,y,z+s);   glVertex3f(x,y,z+s);
+            /* +Z */ glVertex3f(x,y,z+s);   glVertex3f(x+s,y,z+s); glVertex3f(x+s,y+s,z+s); glVertex3f(x,y+s,z+s);
+            /* -Z */ glVertex3f(x,y,z);     glVertex3f(x,y+s,z);   glVertex3f(x+s,y+s,z);   glVertex3f(x+s,y,z);
+            /* +X */ glVertex3f(x+s,y,z);   glVertex3f(x+s,y,z+s); glVertex3f(x+s,y+s,z+s); glVertex3f(x+s,y+s,z);
+            /* -X */ glVertex3f(x,y,z);     glVertex3f(x,y+s,z);   glVertex3f(x,y+s,z+s);   glVertex3f(x,y,z+s);
+        }
+        glEnd();
+        glDepthMask( GL_TRUE );
+        glDisable( GL_BLEND );
+    }
+
     /* light markers */
     for( i = 0; i < g_numLights; i++ ) {
         float lx = g_lights[i].x, ly = g_lights[i].y, lz = g_lights[i].z;
@@ -945,6 +1015,12 @@ static int g_gAxis = 1;            /* plane normal axis */
 static int g_gDir  = 1;            /* extrude direction along plane axis */
 static int g_gHaveB = 0;           /* current cell is valid */
 
+/* ---- sphere gesture state ---- */
+static int    g_sphActive = 0;             /* 1 while a sphere drag is open */
+static double g_sphSx, g_sphSy, g_sphSz;   /* clicked surface point (world) */
+static double g_sphNx, g_sphNy, g_sphNz;   /* outward surface normal (unit) */
+static double g_sphR = 0.0;                /* current radius in voxels */
+
 /* selection marquee depth: how many layers to sweep below (into the solid) and
  * above (out of the surface) the clicked plane, like the Box tool's thickness
  * but two-sided.  Only used by the Select tool. */
@@ -957,6 +1033,7 @@ static int g_regLayerLo = 0, g_regLayerHi = 0;
 static void setRegionLayers( void )
 {
     if( g_tool == 4 ) { g_regLayerLo = -g_selBelow; g_regLayerHi = g_selAbove; }
+    else if( g_tool == 8 ) { g_regLayerLo = 0; g_regLayerHi = 0; } /* 1-thick */
     else              { g_regLayerLo = 0; g_regLayerHi = g_thickness - 1; }
 }
 
@@ -982,8 +1059,8 @@ static void regionForEach( int tool,
     for( k = g_regLayerLo; k <= g_regLayerHi; k++ ) {
         int layer = a[A] + k * g_gDir;
         c[A] = layer;
-        if( tool == 1 ) {
-            /* line: integer Bresenham in the (i0,i1) plane */
+        if( tool == 1 || tool == 8 ) {
+            /* line (or smoother line): integer Bresenham in the (i0,i1) plane */
             int x0 = a[i0], y0 = a[i1], x1 = b[i0], y1 = b[i1];
             int dx =  ( x1 > x0 ? x1-x0 : x0-x1 ), sx = x0 < x1 ? 1 : -1;
             int dy = -( y1 > y0 ? y1-y0 : y0-y1 ), sy = y0 < y1 ? 1 : -1;
@@ -998,11 +1075,18 @@ static void regionForEach( int tool,
                 if( e2 <= dx ) { err += dx; y0 += sy; }
             }
         } else {
+            /* filled rectangle span, with per-tool masks */
+            double cen0 = ( lo0 + hi0 ) * 0.5, cen1 = ( lo1 + hi1 ) * 0.5;
+            double ra = ( hi0 - lo0 ) * 0.5 + 0.5, rb = ( hi1 - lo1 ) * 0.5 + 0.5;
             for( p0 = lo0; p0 <= hi0; p0++ )
               for( p1 = lo1; p1 <= hi1; p1++ ) {
                 if( tool == 2 &&                       /* rect: outline only */
                     p0 != lo0 && p0 != hi0 &&
                     p1 != lo1 && p1 != hi1 ) continue;
+                if( tool == 6 ) {                      /* cylinder: ellipse */
+                    double dx0 = ( p0 - cen0 ) / ra, dy0 = ( p1 - cen1 ) / rb;
+                    if( dx0*dx0 + dy0*dy0 > 1.0 ) continue;
+                }
                 c[i0] = p0; c[i1] = p1;
                 cb( c[0], c[1], c[2], ud );
                 if( ++count > limit ) return;
@@ -1021,6 +1105,14 @@ static void cbSelect( int x, int y, int z, void *ud )
     (void)ud;
     if( v ) { v->sel = ( g_mode == 1 ) ? 0 : 1; g_regCount++; }
 }
+static void cbSmooth( int x, int y, int z, void *ud )
+{
+    (void)ud;
+    if( g_mode == 1 ) { smoothRemoveAt( x, y, z ); g_regCount++; }
+    else if( !voxAt( x, y, z ) ) {   /* can't place inside a voxel */
+        smoothAdd( x, y, z ); g_regCount++;
+    }
+}
 
 /* Commit the active region gesture into the model (or the selection). */
 static void regionCommit( void )
@@ -1033,6 +1125,11 @@ static void regionCommit( void )
         regionForEach( 3, cbSelect, NULL );   /* select: filled marquee */
         sprintf( msg, "%s %d voxels",
                  g_mode == 1 ? "Deselected" : "Selected", g_regCount );
+    } else if( g_tool == 8 ) {
+        regionForEach( 8, cbSmooth, NULL );   /* smoothers along a line */
+        sprintf( msg, "%s %d smoothers",
+                 g_mode == 1 ? "Removed" : "Placed", g_regCount );
+        g_renderDirty = 1;
     } else {
         groupBegin();
         regionForEach( g_tool, cbPut, NULL );
@@ -1099,6 +1196,106 @@ static void scribbleAt( int mx, int my )
         Voxel *v = voxAt( hx, hy, hz );
         if( v ) v->sel = ( g_mode == 1 ) ? 0 : 1;
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* sphere gesture (grow a ball on a surface)                           */
+/* ------------------------------------------------------------------ */
+
+/* Find the outward-facing surface point + unit normal under the cursor,
+ * independent of draw/erase mode.  Returns 1 on a hit. */
+static int pickSurface( int mx, int my, double *sx, double *sy, double *sz,
+                        double *nx, double *ny, double *nz )
+{
+    double ox, oy, oz, dx, dy, dz;
+    int hx, hy, hz, px, py, pz, ax;
+    mouseRay( mx, my, &ox, &oy, &oz, &dx, &dy, &dz );
+    if( rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz, &px, &py, &pz, &ax ) ) {
+        /* outward normal points from the hit cell to the empty neighbour */
+        double NX = px - hx, NY = py - hy, NZ = pz - hz;
+        *nx = NX; *ny = NY; *nz = NZ;
+        /* surface point = centre of the hit voxel + half a cell outward */
+        *sx = hx + 0.5 + NX*0.5;
+        *sy = hy + 0.5 + NY*0.5;
+        *sz = hz + 0.5 + NZ*0.5;
+        return 1;
+    }
+    /* missed all voxels: land on the ground plane y=0, normal up */
+    if( dy < -1e-6 ) {
+        double t = -oy / dy;
+        if( t > 0 ) {
+            double gx = ox + dx*t, gz = oz + dz*t;
+            if( gx > -512 && gx < 512 && gz > -512 && gz < 512 ) {
+                *sx = floor( gx ) + 0.5; *sy = 0.0; *sz = floor( gz ) + 0.5;
+                *nx = 0; *ny = 1; *nz = 0;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* The sphere centre sits along the surface normal, sunk g_sphereDepth voxels
+ * into the surface (same meaning in draw and erase). */
+static void sphereCenter( double *cx, double *cy, double *cz )
+{
+    double off = g_sphR - g_sphereDepth;
+    *cx = g_sphSx + g_sphNx * off;
+    *cy = g_sphSy + g_sphNy * off;
+    *cz = g_sphSz + g_sphNz * off;
+}
+
+/* Enumerate every cell whose centre lies within the current sphere. */
+static void sphereForEach( void (*cb)( int, int, int, void* ), void *ud )
+{
+    double cx, cy, cz;
+    int ix, iy, iz, lo, hi, r;
+    double r2;
+    if( g_sphR < 0.5 ) return;
+    sphereCenter( &cx, &cy, &cz );
+    r = (int)ceil( g_sphR ) + 1;
+    r2 = g_sphR * g_sphR;
+    for( ix = (int)floor(cx)-r; ix <= (int)floor(cx)+r; ix++ )
+    for( iy = (int)floor(cy)-r; iy <= (int)floor(cy)+r; iy++ )
+    for( iz = (int)floor(cz)-r; iz <= (int)floor(cz)+r; iz++ ) {
+        double dx = ix+0.5-cx, dy = iy+0.5-cy, dz = iz+0.5-cz;
+        if( dx*dx+dy*dy+dz*dz <= r2 ) cb( ix, iy, iz, ud );
+    }
+    (void)lo; (void)hi;
+}
+
+static void cbSpherePut( int x, int y, int z, void *ud )
+{ (void)ud; putCell( x, y, z ); g_regCount++; }
+
+static void sphereBegin( int mx, int my )
+{
+    g_sphActive = 0; g_sphR = 0.0;
+    if( !pickSurface( mx, my, &g_sphSx,&g_sphSy,&g_sphSz,
+                              &g_sphNx,&g_sphNy,&g_sphNz ) ) return;
+    g_sphActive = 1;
+}
+
+static void sphereUpdate( int mx, int my )
+{
+    int dpx, dpy;
+    if( !g_sphActive ) return;
+    dpx = mx - g_downX; dpy = my - g_downY;
+    /* radius grows with drag distance; ~12 px per voxel of radius */
+    g_sphR = sqrt( (double)dpx*dpx + (double)dpy*dpy ) / 12.0;
+    if( g_sphR > 96.0 ) g_sphR = 96.0;
+}
+
+static void sphereCommit( void )
+{
+    char msg[80];
+    if( !g_sphActive || g_sphR < 0.5 ) return;
+    g_regCount = 0;
+    groupBegin();
+    sphereForEach( cbSpherePut, NULL );
+    groupEnd();
+    sprintf( msg, "%s sphere r=%.1f (%d voxels)",
+             g_mode==1 ? "Carved" : "Placed", g_sphR, g_regCount );
+    setStatus( msg );
 }
 
 /* ------------------------------------------------------------------ */
@@ -1257,6 +1454,20 @@ static void cbGhost( int x, int y, int z, void *ud )
 static void drawGesturePreview( void )
 {
     int tool;
+    /* sphere gesture previews as a translucent ghost ball */
+    if( g_sphActive && g_sphR >= 0.5 ) {
+        glEnable( GL_BLEND );
+        glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+        glDepthMask( GL_FALSE );
+        if( g_mode == 1 ) glColor4f( 1.0f, 0.25f, 0.2f, 0.40f );
+        else              glColor4f( 0.3f, 1.0f, 0.45f, 0.40f );
+        glBegin( GL_QUADS );
+        sphereForEach( cbGhost, NULL );
+        glEnd();
+        glDepthMask( GL_TRUE );
+        glDisable( GL_BLEND );
+        return;
+    }
     if( !g_gActive || !g_gHaveB ) return;
     tool = ( g_tool == 4 ) ? 3 : g_tool;   /* select previews as a filled box */
     if( g_tool == 0 ) return;              /* pencil: nothing to preview */
@@ -1382,16 +1593,28 @@ static void shadeSample( double px, double py, double pz,
         out[1] = g_pal[ idx*3+1 ];
         out[2] = g_pal[ idx*3+2 ];
     } else {
-        /* natural shading: base color modulated by (possibly colored) light */
-        double br = g_pal[ v->color*3+0 ] / 255.0;
-        double bg = g_pal[ v->color*3+1 ] / 255.0;
-        double bb = g_pal[ v->color*3+2 ] / 255.0;
+        /* natural shading: base color modulated by (possibly colored) light.
+         * Use voxFlatColor so a ramp voxel picks a mid, non-black base (matching
+         * the Flat/Quick 3D previews) instead of a black ramp start. */
+        int bc = voxFlatColor( v );
+        double br = g_pal[ bc*3+0 ] / 255.0;
+        double bg = g_pal[ bc*3+1 ] / 255.0;
+        double bb = g_pal[ bc*3+2 ] / 255.0;
         out[0] = (unsigned char)clampi( (int)( br * accR * 255.0 + 0.5 ), 0, 255 );
         out[1] = (unsigned char)clampi( (int)( bg * accG * 255.0 + 0.5 ), 0, 255 );
         out[2] = (unsigned char)clampi( (int)( bb * accB * 255.0 + 0.5 ), 0, 255 );
     }
     out[3] = 255;
 }
+
+/* Smoother-blend helper (defined after shadeWorld); computes the averaged
+ * "uniform patch" colour for the faces touching the smoother at cell (sx,sy,sz),
+ * mapped into forV's ramp when in palette mode. */
+static void smootherBlend( int sx, int sy, int sz, const Voxel *forV,
+                           unsigned char *out );
+
+/* World-frame direction of the oblique "front" (+w) neighbour per orient. */
+static const int g_frontDir[4][3] = { {0,0,1}, {-1,0,0}, {0,0,-1}, {1,0,0} };
 
 /* Render the sculpture to the g_img RGBA buffer via the oblique projection. */
 static void renderOblique( void )
@@ -1475,6 +1698,14 @@ static void renderOblique( void )
             int fy0 = (int)( by - frontH ), fy1 = (int)by;
             /* visible only if nothing occupies the cell in front */
             int occFront = voxOccUVW( u, v, w + 1 );
+            /* smoother in the empty front neighbour -> uniform patch */
+            int fsm = smoothFind( vox->x + g_frontDir[g_orient&3][0],
+                                  vox->y + g_frontDir[g_orient&3][1],
+                                  vox->z + g_frontDir[g_orient&3][2] ) >= 0;
+            unsigned char fbl[4];
+            if( fsm ) smootherBlend( vox->x + g_frontDir[g_orient&3][0],
+                                     vox->y + g_frontDir[g_orient&3][1],
+                                     vox->z + g_frontDir[g_orient&3][2], vox, fbl );
             if( !occFront ) {
                 for( py = fy0; py < fy1; py++ ) {
                     if( py < 0 || py >= imgH ) continue;
@@ -1490,9 +1721,10 @@ static void renderOblique( void )
                         Pz = w + 1.0;                            /* front plane */
                         depth = (float)( ( v + (1.0-fyf) ) * topH + (w+1.0) * frontH );
                         if( depth > zbuf[ py*imgW + px ] ) {
+                            unsigned char *o = &g_img[ (py*imgW + px)*4 ];
                             zbuf[ py*imgW + px ] = depth;
-                            shadeSample( Px, Py, Pz, 0,0,1, vox,
-                                         &g_img[ (py*imgW + px)*4 ] );
+                            if( fsm ) { o[0]=fbl[0];o[1]=fbl[1];o[2]=fbl[2];o[3]=255; }
+                            else shadeSample( Px, Py, Pz, 0,0,1, vox, o );
                         }
                     }
                 }
@@ -1503,6 +1735,10 @@ static void renderOblique( void )
         {
             int ty1 = (int)( by - frontH ), ty0 = ty1 - topH;
             int occTop = voxOccUVW( u, v + 1, w );
+            /* smoother in the empty cell above -> uniform patch */
+            int tsm = smoothFind( vox->x, vox->y + 1, vox->z ) >= 0;
+            unsigned char tbl[4];
+            if( tsm ) smootherBlend( vox->x, vox->y + 1, vox->z, vox, tbl );
             if( !occTop ) {
                 for( py = ty0; py < ty1; py++ ) {
                     if( py < 0 || py >= imgH ) continue;
@@ -1518,9 +1754,10 @@ static void renderOblique( void )
                         Pz = w + fzf;
                         depth = (float)( ( v + 1.0 ) * topH + ( w + fzf ) * frontH );
                         if( depth > zbuf[ py*imgW + px ] ) {
+                            unsigned char *o = &g_img[ (py*imgW + px)*4 ];
                             zbuf[ py*imgW + px ] = depth;
-                            shadeSample( Px, Py, Pz, 0,1,0, vox,
-                                         &g_img[ (py*imgW + px)*4 ] );
+                            if( tsm ) { o[0]=tbl[0];o[1]=tbl[1];o[2]=tbl[2];o[3]=255; }
+                            else shadeSample( Px, Py, Pz, 0,1,0, vox, o );
                         }
                     }
                 }
@@ -1613,13 +1850,67 @@ static void shadeWorld( double px, double py, double pz,
         idx = clampi( v->rampStart + idx, 0, g_palCount - 1 );
         out[0] = g_pal[ idx*3+0 ]; out[1] = g_pal[ idx*3+1 ]; out[2] = g_pal[ idx*3+2 ];
     } else {
-        double br = g_pal[ v->color*3+0 ] / 255.0;
-        double bg = g_pal[ v->color*3+1 ] / 255.0;
-        double bb = g_pal[ v->color*3+2 ] / 255.0;
+        int bc = voxFlatColor( v );
+        double br = g_pal[ bc*3+0 ] / 255.0;
+        double bg = g_pal[ bc*3+1 ] / 255.0;
+        double bb = g_pal[ bc*3+2 ] / 255.0;
         out[0] = (unsigned char)clampi( (int)( br * accR * 255.0 + 0.5 ), 0, 255 );
         out[1] = (unsigned char)clampi( (int)( bg * accG * 255.0 + 0.5 ), 0, 255 );
         out[2] = (unsigned char)clampi( (int)( bb * accB * 255.0 + 0.5 ), 0, 255 );
     }
+}
+
+/* Average the shaded colours of the voxel faces touching the smoother at cell
+ * (sx,sy,sz) into a single uniform-patch colour.  In natural mode this is the
+ * plain RGB average; in palette-ramp mode it is snapped to the nearest colour
+ * in forV's ramp (ties broken toward the brighter colour). */
+static void smootherBlend( int sx, int sy, int sz, const Voxel *forV,
+                           unsigned char *out )
+{
+    static const int D[6][3] =
+        { {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1} };
+    double aR=0.0, aG=0.0, aB=0.0;
+    int n=0, k;
+    for( k=0; k<6; k++ ) {
+        int nx=sx+D[k][0], ny=sy+D[k][1], nz=sz+D[k][2];
+        Voxel *nb = voxAt( nx, ny, nz );
+        unsigned char c[4];
+        double NX=-D[k][0], NY=-D[k][1], NZ=-D[k][2];  /* face normal toward S */
+        double fcx, fcy, fcz;
+        if( !nb ) continue;
+        fcx = nx+0.5 + NX*0.5; fcy = ny+0.5 + NY*0.5; fcz = nz+0.5 + NZ*0.5;
+        shadeWorld( fcx, fcy, fcz, NX, NY, NZ, nb, c );
+        aR += c[0]; aG += c[1]; aB += c[2]; n++;
+    }
+    if( n == 0 ) {   /* touches nothing: fall back to forV's own face shade */
+        shadeWorld( forV->x+0.5, forV->y+0.5, forV->z+0.5, 0,1,0, forV, out );
+        return;
+    }
+    aR/=n; aG/=n; aB/=n;
+    if( g_shadingMode == 1 ) {
+        int rl = forV->rampLen<1 ? 1 : forV->rampLen;
+        int start = clampi( forV->rampStart, 0, g_palCount-1 );
+        int best = start, i;
+        double bestD = 1e30;
+        if( start+rl > g_palCount ) rl = g_palCount-start;
+        if( rl < 1 ) rl = 1;
+        for( i=0; i<rl; i++ ) {
+            int idx = start+i;
+            double dr=g_pal[idx*3]-aR, dg=g_pal[idx*3+1]-aG, db=g_pal[idx*3+2]-aB;
+            double d = dr*dr+dg*dg+db*db;
+            int lum = g_pal[idx*3]+g_pal[idx*3+1]+g_pal[idx*3+2];
+            int bl  = g_pal[best*3]+g_pal[best*3+1]+g_pal[best*3+2];
+            if( d < bestD - 1e-6 || ( d < bestD + 1e-6 && lum > bl ) ) {
+                bestD = d; best = idx;
+            }
+        }
+        out[0]=g_pal[best*3]; out[1]=g_pal[best*3+1]; out[2]=g_pal[best*3+2];
+    } else {
+        out[0]=(unsigned char)clampi((int)(aR+0.5),0,255);
+        out[1]=(unsigned char)clampi((int)(aG+0.5),0,255);
+        out[2]=(unsigned char)clampi((int)(aB+0.5),0,255);
+    }
+    out[3]=255;
 }
 
 /* Quick (shadowless) preview shade used for the 3D view's non-match modes. */
@@ -1668,7 +1959,10 @@ static void rebuildPreviewFaces( void )
                 double cxp = v->x + 0.5 + NR[f][0]*0.5;
                 double cyp = v->y + 0.5 + NR[f][1]*0.5;
                 double czp = v->z + 0.5 + NR[f][2]*0.5;
-                shadeWorld( cxp, cyp, czp, NR[f][0],NR[f][1],NR[f][2], v, c );
+                if( smoothFind( nx, ny, nz ) >= 0 )   /* smoothed patch */
+                    smootherBlend( nx, ny, nz, v, c );
+                else
+                    shadeWorld( cxp, cyp, czp, NR[f][0],NR[f][1],NR[f][2], v, c );
             } else {
                 shadeQuick( NR[f][0],NR[f][1],NR[f][2], v, c );
             }
@@ -1696,6 +1990,7 @@ static void uploadRenderTexture( void )
 static void ensureRender( void )
 {
     if( g_renderDirty ) {
+        smoothPrune();   /* voxels may now cover some smoothers */
         renderOblique();
         uploadRenderTexture();
         rebuildPreviewFaces();
@@ -1745,6 +2040,10 @@ static void saveSculpture( const char *path )
         fprintf( f, "V %d %d %d %d %d %d\n",
                  v->x, v->y, v->z, v->color, v->rampStart, v->rampLen );
     }
+    /* smoothers: one per line, S x y z */
+    for( i = 0; i < g_smoothCount; i++ )
+        fprintf( f, "S %d %d %d\n",
+                 g_smooth[i].x, g_smooth[i].y, g_smooth[i].z );
     fclose( f );
     { char msg[1400]; sprintf( msg, "Saved %d voxels -> %s", g_voxUsed, path );
       setStatus( msg ); }
@@ -1763,6 +2062,7 @@ static int loadSculpture( const char *path )
     voxClear();
     histClear();
     g_numLights = 0;
+    g_smoothCount = 0;
 
     while( fgets( line, sizeof line, f ) ) {
         if( line[0] == 'P' && line[1] == 'A' ) {
@@ -1803,6 +2103,10 @@ static int loadSculpture( const char *path )
             if( sscanf( line, "V %d %d %d %d %d %d",
                         &x,&y,&z,&col,&rs,&rl ) == 6 )
                 voxSet( x,y,z,col,rs,rl );
+        } else if( line[0] == 'S' && line[1] == ' ' ) {
+            int x,y,z;
+            if( sscanf( line, "S %d %d %d", &x,&y,&z ) == 3 )
+                smoothAdd( x,y,z );
         }
     }
     fclose( f );
@@ -1813,6 +2117,49 @@ static int loadSculpture( const char *path )
     g_rampEnd = clampi( g_rampEnd, g_rampStart, g_palCount-1 );
     g_renderDirty = 1;
     { char msg[1400]; sprintf( msg, "Loaded %d voxels from %s", g_voxUsed, path );
+      setStatus( msg ); }
+    return 1;
+}
+
+/* Read only the lighting (AMBIENT + L lines) from another .ovox file and use it
+ * to REPLACE the current scene's lighting.  Voxels/palette are left untouched,
+ * so lighting can be copied between sculptures (e.g. a matched chess set). */
+static int importLighting( const char *path )
+{
+    FILE *f = fopen( path, "r" );
+    char line[ 256 ];
+    Light tmp[ MAX_LIGHTS ];
+    int n = 0;
+    float amb = g_ambient;
+    int haveAmb = 0;
+    if( !f ) { setStatus( "Import failed: cannot open file" ); return 0; }
+    if( !fgets( line, sizeof line, f ) ||
+        strncmp( line, "OBLIQUEVOXELS", 13 ) != 0 ) {
+        fclose( f ); setStatus( "Import failed: not an .ovox file" ); return 0;
+    }
+    while( fgets( line, sizeof line, f ) ) {
+        if( line[0] == 'A' ) {
+            float a; if( sscanf( line, "AMBIENT %f", &a ) == 1 ) { amb=a; haveAmb=1; }
+        } else if( line[0] == 'L' && line[1] == ' ' ) {
+            float x,y,z,inten; int col,en,inf=0,got;
+            got = sscanf( line, "L %f %f %f %d %f %d %d",
+                          &x,&y,&z,&col,&inten,&en,&inf );
+            if( got >= 6 && n < MAX_LIGHTS ) {
+                tmp[n].x=x; tmp[n].y=y; tmp[n].z=z; tmp[n].color=col;
+                tmp[n].intensity=inten; tmp[n].enabled=en;
+                tmp[n].infinite = ( got >= 7 ) ? inf : 0;
+                n++;
+            }
+        }
+    }
+    fclose( f );
+    { int i; for( i = 0; i < n; i++ ) g_lights[i] = tmp[i]; }
+    g_numLights = n;
+    if( haveAmb ) g_ambient = amb;
+    g_selLight = ( n > 0 ) ? 0 : -1;
+    g_renderDirty = 1;
+    { char msg[1400];
+      sprintf( msg, "Imported %d light%s from %s", n, n==1?"":"s", path );
       setStatus( msg ); }
     return 1;
 }
@@ -1891,6 +2238,7 @@ static void openFileDialog( const char *id )
     if( g_fbDir[0] == 0 ) fs_cwd( g_fbDir, sizeof g_fbDir );
     if( strcmp( id, "PNG" ) == 0 )          { strcpy( g_fbExt, ".png" );  setFbFile( "render.png" ); }
     else if( strcmp( id, "Palette" ) == 0 ) { strcpy( g_fbExt, ".gpl" );  setFbFile( "" ); }
+    else if( strcmp( id, "ImportLight" ) == 0 ) { strcpy( g_fbExt, ".ovox" ); setFbFile( "" ); }
     else                                    { strcpy( g_fbExt, ".ovox" ); setFbFile( "sculpture.ovox" ); }
     fbRefresh();
 }
@@ -1900,11 +2248,14 @@ static void buildMenuBar( int *quit )
     if( !gui_begin_main_menu_bar() ) return;
     if( gui_begin_menu( "File" ) ) {
         if( gui_menu_item( "New", NULL, 1 ) ) {
-            voxClear(); g_numLights = 0; histClear(); g_renderDirty = 1;
+            voxClear(); g_numLights = 0; histClear();
+            g_smoothCount = 0; g_renderDirty = 1;
             setStatus( "New sculpture" );
         }
         if( gui_menu_item( "Open .ovox...", NULL, 1 ) ) openFileDialog( "Open" );
         if( gui_menu_item( "Save .ovox...", NULL, 1 ) ) openFileDialog( "Save" );
+        if( gui_menu_item( "Import lighting (.ovox)...", NULL, 1 ) )
+            openFileDialog( "ImportLight" );
         gui_separator();
         if( gui_menu_item( "Load palette (.gpl)...", NULL, 1 ) )
             openFileDialog( "Palette" );
@@ -1926,6 +2277,9 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Box",    "4", 1 ) ) g_tool = 3;
         if( gui_menu_item( "Select", "5", 1 ) ) g_tool = 4;
         if( gui_menu_item( "Scribble select", "6", 1 ) ) g_tool = 5;
+        if( gui_menu_item( "Cylinder", "7", 1 ) ) g_tool = 6;
+        if( gui_menu_item( "Sphere",   "8", 1 ) ) g_tool = 7;
+        if( gui_menu_item( "Smoothers","9", 1 ) ) g_tool = 8;
         gui_end_menu();
     }
     if( gui_begin_menu( "Select" ) ) {
@@ -1983,14 +2337,23 @@ static void buildLeftPanel( float top, float h )
     gui_radio_int( "Line",   &g_tool, 1 ); gui_same_line();
     gui_radio_int( "Rect",   &g_tool, 2 );
     gui_radio_int( "Box",    &g_tool, 3 ); gui_same_line();
-    gui_radio_int( "Select", &g_tool, 4 );
+    gui_radio_int( "Cylinder", &g_tool, 6 );
+    gui_radio_int( "Sphere", &g_tool, 7 ); gui_same_line();
+    gui_radio_int( "Smoothers", &g_tool, 8 );
+    gui_radio_int( "Select", &g_tool, 4 ); gui_same_line();
     gui_radio_int( "Scribble", &g_tool, 5 );
 
     gui_separator_text( "Mode" );
     gui_radio_int( "Draw",  &g_mode, 0 ); gui_same_line();
     gui_radio_int( "Erase", &g_mode, 1 );
-    if( g_tool >= 1 && g_tool <= 3 )
+    if( ( g_tool >= 1 && g_tool <= 3 ) || g_tool == 6 )
         gui_slider_int( "thickness", &g_thickness, 1, 32 );
+    if( g_tool == 7 ) {
+        gui_slider_int( "sphere depth", &g_sphereDepth, 0, 32 );
+        gui_text( "drag on a surface to grow the ball" );
+    }
+    if( g_tool == 8 )
+        gui_text( "drag a line to place smoothers;\nerase mode removes them" );
 
     if( g_tool == 4 || g_tool == 5 ) {
         int nsel;
@@ -2081,6 +2444,18 @@ static void buildLeftPanel( float top, float h )
         if( gui_slider_float( "x", &L->x, -40.0f, 40.0f, "%.1f" ) ) g_renderDirty=1;
         if( gui_slider_float( "y", &L->y, -40.0f, 40.0f, "%.1f" ) ) g_renderDirty=1;
         if( gui_slider_float( "z", &L->z, -40.0f, 40.0f, "%.1f" ) ) g_renderDirty=1;
+        /* y-axis orbit: rotate (x,z) about the vertical.  The angle is derived
+         * live from x,z each frame, so dragging x/z moves this slider too and
+         * dragging this slider spins x/z around the origin at fixed radius. */
+        { float rad = (float)sqrt( (double)L->x*L->x + (double)L->z*L->z );
+          float ang = (float)( atan2( (double)L->z, (double)L->x ) * 180.0/M_PI );
+          if( gui_slider_float( "y-angle", &ang, -180.0f, 180.0f, "%.0f deg" ) ) {
+              double a = ang * M_PI / 180.0;
+              L->x = (float)( rad * cos( a ) );
+              L->z = (float)( rad * sin( a ) );
+              g_renderDirty = 1;
+          }
+        }
         if( gui_slider_float( "intensity", &L->intensity, 0.0f, 3.0f, "%.2f" ) )
             g_renderDirty=1;
         if( gui_checkbox( "enabled", &L->enabled ) ) g_renderDirty=1;
@@ -2139,6 +2514,8 @@ static void fbDoAction( void )
         saveSculpture( full );
     } else if( strcmp( g_fbAction, "PNG" ) == 0 ) {
         savePNG( full );
+    } else if( strcmp( g_fbAction, "ImportLight" ) == 0 ) {
+        importLighting( full );
     } else if( strcmp( g_fbAction, "Palette" ) == 0 ) {
         if( paletteLoad( full ) ) {
             g_renderDirty = 1;
@@ -2162,6 +2539,7 @@ static void buildDialogs( void )
     act = g_fbAction ? g_fbAction : "Open";
     if( strcmp( act, "Save" ) == 0 )         { title = "Save sculpture (.ovox)";  actLabel = "Save"; }
     else if( strcmp( act, "PNG" ) == 0 )     { title = "Export render (.png)";    actLabel = "Export"; }
+    else if( strcmp( act, "ImportLight" ) == 0 ) { title = "Import lighting from (.ovox)"; actLabel = "Import"; }
     else if( strcmp( act, "Palette" ) == 0 ) { title = "Load palette (.gpl)";     actLabel = "Load"; }
     else                                     { title = "Open sculpture (.ovox)";  actLabel = "Open"; }
 
@@ -2330,6 +2708,9 @@ int main( int argc, char **argv )
                         else if( k == SDLK_4 ) g_tool = 3;
                         else if( k == SDLK_5 ) g_tool = 4;
                         else if( k == SDLK_6 ) g_tool = 5;
+                        else if( k == SDLK_7 ) g_tool = 6;
+                        else if( k == SDLK_8 ) g_tool = 7;
+                        else if( k == SDLK_9 ) g_tool = 8;
                         else if( k == SDLK_DELETE || k == SDLK_BACKSPACE ) selDelete();
                         else if( k == SDLK_ESCAPE ) { selClear(); setStatus("Selection cleared"); }
                     }
@@ -2357,7 +2738,9 @@ int main( int argc, char **argv )
                         if( g_dragBtn == SDL_BUTTON_LEFT && g_tool == 5 ) {
                             g_scribbling = 1;
                             scribbleAt( ev.button.x, ev.button.y );
-                        } else if( g_dragBtn == SDL_BUTTON_LEFT && g_tool != 0 )
+                        } else if( g_dragBtn == SDL_BUTTON_LEFT && g_tool == 7 )
+                            sphereBegin( ev.button.x, ev.button.y );
+                        else if( g_dragBtn == SDL_BUTTON_LEFT && g_tool != 0 )
                             gestureBegin( ev.button.x, ev.button.y );
                     }
                     break;
@@ -2366,6 +2749,7 @@ int main( int argc, char **argv )
                     if( g_dragBtn == ev.button.button ) {
                         if( g_dragBtn == SDL_BUTTON_LEFT ) {
                             if( g_gActive ) { regionCommit(); g_gActive = 0; }
+                            else if( g_sphActive ) { sphereCommit(); g_sphActive = 0; }
                             else if( g_scribbling ) {
                                 char m[64];
                                 sprintf( m, "%s (%d selected)",
@@ -2391,6 +2775,8 @@ int main( int argc, char **argv )
                             abs( ev.motion.y - g_downY ) > 3 ) g_moved = 1;
                         if( g_scribbling && g_dragBtn == SDL_BUTTON_LEFT )
                             scribbleAt( ev.motion.x, ev.motion.y );
+                        else if( g_sphActive && g_dragBtn == SDL_BUTTON_LEFT )
+                            sphereUpdate( ev.motion.x, ev.motion.y );
                         else if( g_gActive && g_dragBtn == SDL_BUTTON_LEFT )
                             gestureUpdate( ev.motion.x, ev.motion.y );
                         else if( g_dragBtn == SDL_BUTTON_LEFT ||

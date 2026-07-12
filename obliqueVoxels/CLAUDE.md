@@ -40,6 +40,8 @@ Lambert + point-light attenuation + a DDA shadow ray per light (in the rotated
 view frame).  Two modes:
 
 1. **Natural** — base color × accumulated (colored) light; may go off-palette.
+   The base color is the ramp's mid (non-black) sample via `voxFlatColor`, so a
+   ramp whose first index is black still renders lit, not black.
 2. **Palette ramp** — brightness indexes the voxel's contiguous palette ramp
    (dragged out on the palette grid).  Auto-oriented by luminance so the dark
    end always maps to the least-lit sample.  A 1-color ramp is flat.
@@ -77,11 +79,22 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   region gesture with a live ghost, committed as one undo step.
 * Tools **1** Pencil · **2** Line · **3** Rect · **4** Box · **5** Select ·
   **6** Scribble (paint a selection over whatever voxels the drag touches;
-  erase mode un-paints).
+  erase mode un-paints) · **7** Cylinder · **8** Sphere · **9** Smoothers.
 * Modes **B** draw · **E** erase — every tool obeys the mode (erase a whole
   line/box, marquee-deselect, etc.).
-* **thickness** slider extrudes Line/Rect/Box along the started face's normal,
-  so Box is a solid rectangular prism in one drag.
+* **thickness** slider extrudes Line/Rect/Box/Cylinder along the started face's
+  normal, so Box is a solid rectangular prism in one drag.  **Cylinder** is the
+  same drag but its footprint is the inscribed (jaggy) ellipse.
+* **Sphere** drags a perfect ball out of the clicked surface; a **sphere depth**
+  slider sinks the ball into the surface (dome at depth≈radius; erase digs a
+  crater).  The ball grows with drag distance.
+* **Smoothers** are translucent anti-stair-step markers placed like a 1-thick
+  Line into empty cells (skipping any voxel the line crosses; erase removes
+  them).  A smoother averages the voxel faces it touches into one uniform patch
+  (a mid-ramp color in palette mode, the brighter of two adjacent), killing the
+  bright-top/dark-front stripes on curved surfaces.  They only show while the
+  Smoothers tool is active, and vanish if a voxel later covers them.  The effect
+  appears in both the oblique render and the "match render" 3D preview.
 * Region tools lock to the plane of the started face (or ground y=0); a drag
   glides across that single layer.
 * Selection: marquee-drag adds voxels (erase mode removes), single-click
@@ -103,7 +116,9 @@ Human-readable, one record per line: a header, the embedded palette (`C r g b`),
 rampLen` per voxel.  A light line is `L x y z color intensity enabled [infinite]`
 — the trailing `infinite` flag (1 = directional "sun", parallel rays and no
 distance falloff, with x,y,z read as a direction) is optional so older files
-still load.
+still load.  Trailing `S x y z` lines record smoother cells.  **File ▸ Import
+lighting** reads just the `AMBIENT`/`L` lines from another `.ovox` and replaces
+the current scene's lighting (for lighting a matched set identically).
 
 ## Notes
 

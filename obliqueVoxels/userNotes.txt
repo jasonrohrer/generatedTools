@@ -1,3 +1,23 @@
-No notes yet.
+Great work!
 
+
+Some things to work on:
+
+--There's currently no way to see the pixel rendering from differnt views (front, back, left, right).
+
+--None of the saving, loading, or export functions seem to do anything, currently.
+
+--Boy is placing and removing blocks one at a time slow!   We definitely need a line tool, a rectangle tool, and a solid rectangular prism tool.
+
+--All of these other draw tools should work in both DRAW and ERASE mode, so you can erase a whole line, or a whole rectangle, etc.
+
+--Maybe the rectangular prisim tool will have to show you all 3 views to specify its faces or something, as a transparent ghost, and then you can apply it?  Maybe the same for the rectangle tool... you specify it's shape in one view and then slide its depth through a perpendicular view...  Not sure how else it could work, though maybe there's a way you can make these work just by draging in the 3d perspective view, without it being too confusing.
+
+--We need some way to select blocks with a marquee, and then the ability to delete them all, or change all the selected blocks colors or ramps, etc.
+
+--Maybe we could also have a "scribble select" tool, that adds every draged-over voxel to the slection, and then in erase mode, it would remove voxels from the selection
+
+--Probably some way to copy-paste selected blocks.  Not sure how this would work for positioning when pasting... maybe you need to specify reference points.  A lot of cad programs do this.  You specify arbitrary reference points in space, and then paste places a copy that amount from the origin of the selection.
+
+--Something weird about the 3D view... the shading should be probably mimic what is shown in the pixel view, at least surface-by-surface.   Currently it's a kind of preview shading.  But you're obviously computing the true light-sorced shading of each of those faces (to render the pixel version) so use it!
 

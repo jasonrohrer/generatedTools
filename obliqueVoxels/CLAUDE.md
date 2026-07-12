@@ -56,10 +56,12 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 
 ## Layout
 
-* `obliqueVoxels.c` — pure **C89**: voxel spatial hash, undo history, orbit
-  camera, fixed-function 3D preview, mouse→ray picking (Amanatides-Woo DDA),
-  the CPU oblique renderer, `.ovox` and PNG I/O, and all the ImGui panel logic
-  driven through the shim.
+* `obliqueVoxels.c` — pure **C89**: voxel spatial hash, grouped undo history,
+  orbit camera, fixed-function 3D preview (with a cached real-lit face list for
+  "match render" mode), mouse→ray picking (Amanatides-Woo DDA), plane-locked
+  region-gesture tools (line/rect/box) + marquee selection & clipboard, the CPU
+  oblique renderer, `.ovox` and PNG I/O, and all the ImGui panel logic driven
+  through the shim.
 * `gui.h` / `gui.cpp` — thin **C** API over Dear ImGui + SDL2/OpenGL2 backends
   (C++), so the app stays C89.  Adds a color-swatch and drag-to-select palette
   grid widget.
@@ -68,11 +70,23 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 
 ## Controls
 
-* **Left-drag** orbit · **Left-click** paint/erase · **Mid/Right-drag** pan ·
-  **Wheel** zoom.
-* **B** pencil · **E** erase · **Ctrl+Z / Ctrl+Y** undo / redo.
-* Pencil sticks a voxel to the clicked face, or drops onto the ground plane
-  (y=0) when the ray misses all voxels.
+* **Right-drag** orbit · **Mid-drag** pan · **Wheel** zoom.
+* **Left-click** (Pencil) place/erase · **Left-drag** (Line/Rect/Box/Select)
+  region gesture with a live ghost, committed as one undo step.
+* Tools **1** Pencil · **2** Line · **3** Rect · **4** Box · **5** Select.
+* Modes **B** draw · **E** erase — every tool obeys the mode (erase a whole
+  line/box, marquee-deselect, etc.).
+* **thickness** slider extrudes Line/Rect/Box along the started face's normal,
+  so Box is a solid rectangular prism in one drag.
+* Region tools lock to the plane of the started face (or ground y=0); a drag
+  glides across that single layer.
+* Selection: marquee-drag adds voxels (erase mode removes), single-click
+  toggles one. **Ctrl+A** all · **Esc** clear · **Del** delete · Copy/Recolor
+  and **Ctrl+C / Ctrl+V** paste (at an editable x,y,z offset).
+* **Ctrl+Z / Ctrl+Y** undo / redo (whole gesture at a time).
+* Clicks are gated on the real 3D-viewport rect + an immediate popup-open
+  check (not ImGui's one-frame-late hover), so nothing leaks between panels
+  and the view.
 
 ## File format `.ovox`
 

@@ -21,3 +21,48 @@ Some things to work on:
 
 --Something weird about the 3D view... the shading should be probably mimic what is shown in the pixel view, at least surface-by-surface.   Currently it's a kind of preview shading.  But you're obviously computing the true light-sorced shading of each of those faces (to render the pixel version) so use it!
 
+
+=====================================================================
+RESPONSE (2026-07-11) -- everything above addressed:
+
+- Different render views: the "view dir" combo in the Oblique Render panel
+  now reads Front / Right / Back / Left (was the cryptic 0/90/180/270).  The
+  top-front oblique projection can only look down one of the 4 horizontal
+  directions -- that combo IS the view switch.
+
+- Save / Load / Export were BROKEN: the menu opened its popups from inside
+  the menu's ImGui id-scope, so the modal (opened at root scope) never
+  matched and silently never appeared.  Now deferred to root scope; File >
+  Save/Open/Export/Load-palette all work.  (Also fixed a related bug where a
+  click landing the instant the cursor reached a side panel could leak a
+  stray voxel into the 3D view -- clicks are now gated on the actual viewport
+  rect, not ImGui's one-frame-late hover flag.)
+
+- New tools: Pencil / Line / Rect / Box / Select (keys 1-5).  Line/Rect/Box
+  are left-drag in the 3D view with a live translucent ghost, committed as a
+  single undo step.  They lock to the plane of whatever face (or the ground)
+  you started on.  A "thickness" slider extrudes them along the face normal,
+  so Box is a true solid rectangular prism in one drag.
+
+- Draw / Erase is now a separate mode (keys B / E) that ALL tools obey, so
+  you can erase a whole line/rect/box, or scribble-erase.
+
+- Selection: the Select tool marquee-drags to add voxels (erase mode removes
+  them); single-click toggles one voxel (a light "scribble" select).  The
+  Selection panel + Select menu do All / Clear / Delete / Recolor / Copy /
+  Paste.  Paste drops the clipboard at an editable (x,y,z) offset from the
+  current selection's min corner (Ctrl+C / Ctrl+V, Del, Ctrl+A, Esc).
+
+- 3D preview shading: Display menu now offers "match render", which shades
+  every 3D face with the exact same Lambert + colored-point-light + shadow
+  math the oblique renderer bakes, so preview and pixel art agree
+  surface-by-surface.  ("quick light" and "flat" remain for fast orbiting.)
+  The lit faces are cached and only recomputed on edits, so orbiting is snappy.
+
+Orbit is now right-drag (left-drag belongs to the region tools); middle-drag
+pans; wheel zooms.  Pencil still left-clicks to place / erase.
+
+Still open / possible future work: a dedicated drag-over "scribble select"
+(current select is marquee + single-click), and reference-point paste picking
+in the view rather than numeric offsets.
+

@@ -124,6 +124,7 @@ typedef struct {
     int color;              /* base palette index */
     int rampStart;          /* first palette index of shading ramp */
     int rampLen;            /* number of ramp colors (>=1) */
+    int sel;                /* 1 if part of the current selection */
 } Voxel;
 
 static Voxel *g_vox = NULL;
@@ -210,6 +211,7 @@ static void voxInsertRaw( int x, int y, int z, int color, int rs, int rl )
             g_vox[slot].color = color;
             g_vox[slot].rampStart = rs;
             g_vox[slot].rampLen = rl < 1 ? 1 : rl;
+            g_vox[slot].sel = 0;
             g_voxUsed++;
             return;
         }
@@ -283,14 +285,19 @@ static float cam_dist  = 22.0f;
 static float cam_tx = 0.0f, cam_ty = 2.0f, cam_tz = 0.0f;
 
 /* tool + current paint color/ramp */
-static int g_tool = 0;             /* 0 pencil, 1 erase */
+static int g_tool = 0;             /* 0 pencil,1 line,2 rect,3 box,4 select */
+static int g_mode = 0;             /* 0 draw, 1 erase */
+static int g_thickness = 1;        /* extrude depth for line/rect/box (>=1) */
 static int g_pick = 15;            /* current palette index */
 static int g_rampStart = 15;
 static int g_rampEnd   = 15;
 
 /* preview toggles */
-static int g_previewShade = 1;
+static int g_previewShade = 1;     /* 0 flat, 1 quick preview, 2 match render */
 static int g_previewEdges = 1;
+
+/* paste offset (voxels) applied by the "Paste" op */
+static int g_pasteDX = 2, g_pasteDY = 0, g_pasteDZ = 0;
 
 /* oblique render parameters */
 static int g_shadingMode  = 0;     /* 0 natural, 1 palette-ramp */
@@ -306,6 +313,16 @@ static unsigned char *g_img = NULL;
 static int   g_imgW = 0, g_imgH = 0;
 static GLuint g_imgTex = 0;
 static int   g_renderDirty = 1;
+
+/* cached, real-lit faces for the 3D preview (rebuilt only on edits, not per
+ * frame) so the preview can show the same shading the oblique render bakes */
+typedef struct {
+    float x, y, z;          /* cell corner */
+    float nx, ny, nz;       /* face normal */
+    unsigned char r, g, b;  /* shaded color */
+} PFace;
+static PFace *g_pface = NULL;
+static int    g_pfaceCount = 0, g_pfaceCap = 0;
 
 /* filenames for save/load dialogs */
 static char g_fileName[ 256 ] = "sculpture.ovox";
@@ -336,6 +353,7 @@ static void setStatus( const char *s )
 typedef struct {
     int   x, y, z;
     int   hadBefore, hadAfter;
+    int   group;            /* edits sharing a group id undo/redo together */
     Voxel before, after;    /* voxel contents when present */
 } Edit;
 
@@ -343,12 +361,20 @@ static Edit *g_hist = NULL;
 static int   g_histCap = 0;
 static int   g_histLen = 0;   /* number of recorded edits still live */
 static int   g_histPos = 0;   /* how many are currently applied */
+static int   g_groupSeq = 0;  /* monotonically increasing group id source */
+static int   g_curGroup = 0;  /* group id assigned to new edits */
+static int   g_inGroup  = 0;  /* 1 while a multi-edit gesture is open */
 
 static void histClear( void )
 {
     g_histLen = 0;
     g_histPos = 0;
 }
+
+/* Open/close an undo group so a whole gesture (line, box, delete-selection)
+ * undoes/redoes as a single step. */
+static void groupBegin( void ) { g_curGroup = ++g_groupSeq; g_inGroup = 1; }
+static void groupEnd( void )   { g_inGroup = 0; }
 
 static void histPush( Edit e )
 {
@@ -372,6 +398,9 @@ static void editVoxel( int x, int y, int z, int place,
     e.hadBefore = ex ? 1 : 0;
     if( ex ) e.before = *ex;
     if( place ) {
+        /* skip no-op: same contents already present */
+        if( ex && ex->color == color && ex->rampStart == rs &&
+            ex->rampLen == ( rl < 1 ? 1 : rl ) ) return;
         voxSet( x, y, z, color, rs, rl );
         e.hadAfter = 1;
         e.after = *voxAt( x, y, z );
@@ -380,32 +409,49 @@ static void editVoxel( int x, int y, int z, int place,
         voxErase( x, y, z );
         e.hadAfter = 0;
     }
+    if( !g_inGroup ) g_curGroup = ++g_groupSeq;
+    e.group = g_curGroup;
     histPush( e );
     g_renderDirty = 1;
 }
 
-static void histUndo( void )
+static void applyUndo( Edit *e )
 {
-    Edit *e;
-    if( g_histPos == 0 ) { setStatus( "Nothing to undo" ); return; }
-    e = &g_hist[ --g_histPos ];
     if( e->hadBefore ) voxSet( e->x, e->y, e->z, e->before.color,
                                e->before.rampStart, e->before.rampLen );
     else               voxErase( e->x, e->y, e->z );
+}
+static void applyRedo( Edit *e )
+{
+    if( e->hadAfter ) voxSet( e->x, e->y, e->z, e->after.color,
+                              e->after.rampStart, e->after.rampLen );
+    else              voxErase( e->x, e->y, e->z );
+}
+
+static void histUndo( void )
+{
+    int grp, n = 0;
+    if( g_histPos == 0 ) { setStatus( "Nothing to undo" ); return; }
+    grp = g_hist[ g_histPos - 1 ].group;
+    while( g_histPos > 0 && g_hist[ g_histPos - 1 ].group == grp ) {
+        applyUndo( &g_hist[ --g_histPos ] );
+        n++;
+    }
     g_renderDirty = 1;
-    setStatus( "Undo" );
+    { char m[64]; sprintf( m, "Undo (%d)", n ); setStatus( m ); }
 }
 
 static void histRedo( void )
 {
-    Edit *e;
+    int grp, n = 0;
     if( g_histPos >= g_histLen ) { setStatus( "Nothing to redo" ); return; }
-    e = &g_hist[ g_histPos++ ];
-    if( e->hadAfter ) voxSet( e->x, e->y, e->z, e->after.color,
-                              e->after.rampStart, e->after.rampLen );
-    else              voxErase( e->x, e->y, e->z );
+    grp = g_hist[ g_histPos ].group;
+    while( g_histPos < g_histLen && g_hist[ g_histPos ].group == grp ) {
+        applyRedo( &g_hist[ g_histPos++ ] );
+        n++;
+    }
     g_renderDirty = 1;
-    setStatus( "Redo" );
+    { char m[64]; sprintf( m, "Redo (%d)", n ); setStatus( m ); }
 }
 
 /* ------------------------------------------------------------------ */
@@ -544,6 +590,36 @@ static void drawGrid( void )
     glEnd();
 }
 
+/* forward decls for preview overlays defined later */
+static void drawGesturePreview( void );
+
+/* Emit one shaded unit-square face at cell (x,y,z) given its normal & color. */
+static void emitFace( float x, float y, float z,
+                      float nx, float ny, float nz,
+                      unsigned char r, unsigned char g, unsigned char b )
+{
+    glColor3ub( r, g, b );
+    if( ny > 0.5f ) {
+        glVertex3f( x,   y+1, z   ); glVertex3f( x,   y+1, z+1 );
+        glVertex3f( x+1, y+1, z+1 ); glVertex3f( x+1, y+1, z   );
+    } else if( ny < -0.5f ) {
+        glVertex3f( x,   y, z   ); glVertex3f( x+1, y, z   );
+        glVertex3f( x+1, y, z+1 ); glVertex3f( x,   y, z+1 );
+    } else if( nz > 0.5f ) {
+        glVertex3f( x,   y,   z+1 ); glVertex3f( x+1, y,   z+1 );
+        glVertex3f( x+1, y+1, z+1 ); glVertex3f( x,   y+1, z+1 );
+    } else if( nz < -0.5f ) {
+        glVertex3f( x,   y,   z ); glVertex3f( x,   y+1, z );
+        glVertex3f( x+1, y+1, z ); glVertex3f( x+1, y,   z );
+    } else if( nx > 0.5f ) {
+        glVertex3f( x+1, y,   z   ); glVertex3f( x+1, y,   z+1 );
+        glVertex3f( x+1, y+1, z+1 ); glVertex3f( x+1, y+1, z   );
+    } else {
+        glVertex3f( x, y,   z   ); glVertex3f( x, y+1, z   );
+        glVertex3f( x, y+1, z+1 ); glVertex3f( x, y,   z+1 );
+    }
+}
+
 static void drawScene3D( void )
 {
     int i;
@@ -553,24 +629,65 @@ static void drawScene3D( void )
 
     drawGrid();
 
-    /* solid faces */
-    glBegin( GL_QUADS );
-    for( i = 0; i < g_voxCap; i++ ) {
-        Voxel *v;
-        unsigned char r, g, b;
-        int x, y, z;
-        if( g_vox[i].used != 1 ) continue;
-        v = &g_vox[i];
-        x = v->x; y = v->y; z = v->z;
-        r = g_pal[ v->color*3+0 ]; g = g_pal[ v->color*3+1 ]; b = g_pal[ v->color*3+2 ];
-        if( !voxAt( x, y+1, z ) ) drawCubeFace( (float)x,(float)y,(float)z, 0,1,0, r,g,b );
-        if( !voxAt( x, y-1, z ) ) drawCubeFace( (float)x,(float)y,(float)z, 0,-1,0, r,g,b );
-        if( !voxAt( x, y, z+1 ) ) drawCubeFace( (float)x,(float)y,(float)z, 0,0,1, r,g,b );
-        if( !voxAt( x, y, z-1 ) ) drawCubeFace( (float)x,(float)y,(float)z, 0,0,-1, r,g,b );
-        if( !voxAt( x+1, y, z ) ) drawCubeFace( (float)x,(float)y,(float)z, 1,0,0, r,g,b );
-        if( !voxAt( x-1, y, z ) ) drawCubeFace( (float)x,(float)y,(float)z, -1,0,0, r,g,b );
+    /* solid faces: from the lit cache (matches the oblique render) when we
+     * have one, else fall back to cheap per-normal preview shading */
+    if( g_pfaceCount > 0 ) {
+        glBegin( GL_QUADS );
+        for( i = 0; i < g_pfaceCount; i++ ) {
+            PFace *p = &g_pface[i];
+            emitFace( p->x, p->y, p->z, p->nx, p->ny, p->nz, p->r, p->g, p->b );
+        }
+        glEnd();
+    } else {
+        glBegin( GL_QUADS );
+        for( i = 0; i < g_voxCap; i++ ) {
+            Voxel *v;
+            unsigned char r, g, b;
+            int x, y, z;
+            if( g_vox[i].used != 1 ) continue;
+            v = &g_vox[i];
+            x = v->x; y = v->y; z = v->z;
+            r = g_pal[ v->color*3+0 ]; g = g_pal[ v->color*3+1 ]; b = g_pal[ v->color*3+2 ];
+            if( !voxAt( x, y+1, z ) ) drawCubeFace( (float)x,(float)y,(float)z, 0,1,0, r,g,b );
+            if( !voxAt( x, y-1, z ) ) drawCubeFace( (float)x,(float)y,(float)z, 0,-1,0, r,g,b );
+            if( !voxAt( x, y, z+1 ) ) drawCubeFace( (float)x,(float)y,(float)z, 0,0,1, r,g,b );
+            if( !voxAt( x, y, z-1 ) ) drawCubeFace( (float)x,(float)y,(float)z, 0,0,-1, r,g,b );
+            if( !voxAt( x+1, y, z ) ) drawCubeFace( (float)x,(float)y,(float)z, 1,0,0, r,g,b );
+            if( !voxAt( x-1, y, z ) ) drawCubeFace( (float)x,(float)y,(float)z, -1,0,0, r,g,b );
+        }
+        glEnd();
     }
-    glEnd();
+
+    /* selection highlight: bright wire boxes around selected voxels */
+    { int any = 0;
+      for( i = 0; i < g_voxCap; i++ ) if( g_vox[i].used==1 && g_vox[i].sel ){any=1;break;}
+      if( any ) {
+        glLineWidth( 2.0f );
+        glColor3f( 1.0f, 0.9f, 0.15f );
+        glBegin( GL_LINES );
+        for( i = 0; i < g_voxCap; i++ ) {
+            float x, y, z;
+            if( g_vox[i].used != 1 || !g_vox[i].sel ) continue;
+            x=(float)g_vox[i].x; y=(float)g_vox[i].y; z=(float)g_vox[i].z;
+            glVertex3f(x,y,z);     glVertex3f(x+1,y,z);
+            glVertex3f(x,y,z+1);   glVertex3f(x+1,y,z+1);
+            glVertex3f(x,y+1,z);   glVertex3f(x+1,y+1,z);
+            glVertex3f(x,y+1,z+1); glVertex3f(x+1,y+1,z+1);
+            glVertex3f(x,y,z);     glVertex3f(x,y+1,z);
+            glVertex3f(x+1,y,z);   glVertex3f(x+1,y+1,z);
+            glVertex3f(x,y,z+1);   glVertex3f(x,y+1,z+1);
+            glVertex3f(x+1,y,z+1); glVertex3f(x+1,y+1,z+1);
+            glVertex3f(x,y,z);     glVertex3f(x,y,z+1);
+            glVertex3f(x+1,y,z);   glVertex3f(x+1,y,z+1);
+            glVertex3f(x,y+1,z);   glVertex3f(x,y+1,z+1);
+            glVertex3f(x+1,y+1,z); glVertex3f(x+1,y+1,z+1);
+        }
+        glEnd();
+        glLineWidth( 1.0f );
+      }
+    }
+
+    drawGesturePreview();
 
     /* voxel edges */
     if( g_previewEdges ) {
@@ -665,7 +782,7 @@ static void mouseRay( int mx, int my,
 static int rayVoxel( double ox, double oy, double oz,
                      double dx, double dy, double dz,
                      int *hx, int *hy, int *hz,
-                     int *px, int *py, int *pz )
+                     int *px, int *py, int *pz, int *axisOut )
 {
     int x = (int)floor( ox ), y = (int)floor( oy ), z = (int)floor( oz );
     int sx = dx > 0 ? 1 : ( dx < 0 ? -1 : 0 );
@@ -697,6 +814,7 @@ static int rayVoxel( double ox, double oy, double oz,
             if( lastAxis == 0 ) *px = x - sx;
             else if( lastAxis == 1 ) *py = y - sy;
             else if( lastAxis == 2 ) *pz = z - sz;
+            if( axisOut ) *axisOut = lastAxis;
             return 1;
         }
         if( tMaxX < tMaxY && tMaxX < tMaxZ ) {
@@ -710,38 +828,384 @@ static int rayVoxel( double ox, double oy, double oz,
     return 0;
 }
 
-/* Apply the current tool at window pixel (mx,my). */
-static void applyToolAt( int mx, int my )
+/* Place or erase a single cell with the current paint color/ramp. */
+static void putCell( int x, int y, int z )
+{
+    if( g_mode == 1 ) editVoxel( x, y, z, 0, 0, 0, 0 );
+    else              editVoxel( x, y, z, 1, g_pick, g_rampStart,
+                                 g_rampEnd - g_rampStart + 1 );
+}
+
+/* Pick the cell under (mx,my) that the current mode acts on, plus the plane it
+ * lives on.  Returns 1 on a hit.  *cx/cy/cz = the acted cell; *axis = the plane
+ * normal axis (0/1/2); *dir = +/-1 extrude direction along that axis (out of
+ * the surface for draw, into the solid for erase); *onGround set if it fell to
+ * the y=0 plane. */
+static int pickCell( int mx, int my, int *cx, int *cy, int *cz,
+                     int *axis, int *dir, int *onGround )
 {
     double ox, oy, oz, dx, dy, dz;
-    int hx, hy, hz, px, py, pz;
+    int hx, hy, hz, px, py, pz, ax = 1;
     mouseRay( mx, my, &ox, &oy, &oz, &dx, &dy, &dz );
+    *onGround = 0;
 
-    if( rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz, &px, &py, &pz ) ) {
-        if( g_tool == 1 ) {
-            editVoxel( hx, hy, hz, 0, 0, 0, 0 );
-            setStatus( "Erased voxel" );
+    if( rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz, &px, &py, &pz, &ax ) ) {
+        if( g_mode == 1 ) {
+            /* erase acts on the hit cell; extrude burrows into the solid */
+            *cx = hx; *cy = hy; *cz = hz;
+            *dir = ( ax == 0 ) ? ( hx - px ) : ( ax == 1 ) ? ( hy - py )
+                                                           : ( hz - pz );
         } else {
-            editVoxel( px, py, pz, 1, g_pick, g_rampStart,
-                       g_rampEnd - g_rampStart + 1 );
-            setStatus( "Placed voxel on face" );
+            /* draw acts on the empty neighbour; extrude piles outward */
+            *cx = px; *cy = py; *cz = pz;
+            *dir = ( ax == 0 ) ? ( px - hx ) : ( ax == 1 ) ? ( py - hy )
+                                                           : ( pz - hz );
         }
-        return;
+        if( *dir == 0 ) *dir = 1;
+        *axis = ax;
+        return 1;
     }
 
-    /* no voxel hit: pencil drops onto the ground plane y=0 */
-    if( g_tool == 0 && dy < -1e-6 ) {
+    /* missed all voxels: drop onto the ground plane y=0 */
+    if( dy < -1e-6 ) {
         double t = -oy / dy;
         if( t > 0 ) {
             int gx = (int)floor( ox + dx * t );
             int gz = (int)floor( oz + dz * t );
-            if( abs( gx ) < 256 && abs( gz ) < 256 ) {
-                editVoxel( gx, 0, gz, 1, g_pick, g_rampStart,
-                           g_rampEnd - g_rampStart + 1 );
-                setStatus( "Placed voxel on ground" );
+            if( abs( gx ) < 512 && abs( gz ) < 512 ) {
+                *cx = gx; *cy = 0; *cz = gz;
+                *axis = 1; *dir = 1; *onGround = 1;
+                return 1;
             }
         }
     }
+    return 0;
+}
+
+/* Intersect the mouse ray with the working plane (axisN = planeCoord+0.5) and
+ * return the integer cell on that plane under the cursor.  Fixes the plane-axis
+ * coordinate to planeCoord so drags glide across a single flat layer. */
+static int planeCell( int mx, int my, int axisN, int planeCoord,
+                      int *cx, int *cy, int *cz )
+{
+    double ox, oy, oz, dx, dy, dz, o[3], d[3], t, hit[3];
+    double target = planeCoord + 0.5;
+    mouseRay( mx, my, &ox, &oy, &oz, &dx, &dy, &dz );
+    o[0]=ox; o[1]=oy; o[2]=oz; d[0]=dx; d[1]=dy; d[2]=dz;
+    if( d[axisN] > -1e-9 && d[axisN] < 1e-9 ) return 0;
+    t = ( target - o[axisN] ) / d[axisN];
+    if( t <= 0 ) return 0;
+    hit[0] = o[0] + d[0]*t; hit[1] = o[1] + d[1]*t; hit[2] = o[2] + d[2]*t;
+    hit[axisN] = target;
+    *cx = (int)floor( hit[0] );
+    *cy = (int)floor( hit[1] );
+    *cz = (int)floor( hit[2] );
+    return 1;
+}
+
+/* ---- region gesture state (line / rect / box / select drag) ---- */
+static int g_gActive = 0;          /* 1 while a region drag is in progress */
+static int g_gAx, g_gAy, g_gAz;    /* anchor cell (fixes the plane coord) */
+static int g_gBx, g_gBy, g_gBz;    /* current cell on the plane */
+static int g_gAxis = 1;            /* plane normal axis */
+static int g_gDir  = 1;            /* extrude direction along plane axis */
+static int g_gHaveB = 0;           /* current cell is valid */
+
+/* Enumerate the cells of the active region, calling cb(x,y,z,ud) for each.
+ * Handles line / rect(outline) / box(filled) shapes plus thickness extrusion
+ * along the plane normal.  Capped so a huge drag can't stall the app. */
+static void regionForEach( int tool,
+                           void (*cb)( int, int, int, void* ), void *ud )
+{
+    int A = g_gAxis;
+    int i0 = ( A + 1 ) % 3, i1 = ( A + 2 ) % 3;   /* the two in-plane axes */
+    int a[3], b[3], c[3];
+    int lo0, hi0, lo1, hi1, p0, p1, k, count = 0;
+    int limit = 200000;
+    a[0]=g_gAx; a[1]=g_gAy; a[2]=g_gAz;
+    b[0]=g_gBx; b[1]=g_gBy; b[2]=g_gBz;
+
+    lo0 = a[i0] < b[i0] ? a[i0] : b[i0];
+    hi0 = a[i0] > b[i0] ? a[i0] : b[i0];
+    lo1 = a[i1] < b[i1] ? a[i1] : b[i1];
+    hi1 = a[i1] > b[i1] ? a[i1] : b[i1];
+
+    for( k = 0; k < g_thickness; k++ ) {
+        int layer = a[A] + k * g_gDir;
+        c[A] = layer;
+        if( tool == 1 ) {
+            /* line: integer Bresenham in the (i0,i1) plane */
+            int x0 = a[i0], y0 = a[i1], x1 = b[i0], y1 = b[i1];
+            int dx =  ( x1 > x0 ? x1-x0 : x0-x1 ), sx = x0 < x1 ? 1 : -1;
+            int dy = -( y1 > y0 ? y1-y0 : y0-y1 ), sy = y0 < y1 ? 1 : -1;
+            int err = dx + dy, e2;
+            for( ;; ) {
+                c[i0] = x0; c[i1] = y0;
+                cb( c[0], c[1], c[2], ud );
+                if( ++count > limit ) return;
+                if( x0 == x1 && y0 == y1 ) break;
+                e2 = 2 * err;
+                if( e2 >= dy ) { err += dy; x0 += sx; }
+                if( e2 <= dx ) { err += dx; y0 += sy; }
+            }
+        } else {
+            for( p0 = lo0; p0 <= hi0; p0++ )
+              for( p1 = lo1; p1 <= hi1; p1++ ) {
+                if( tool == 2 &&                       /* rect: outline only */
+                    p0 != lo0 && p0 != hi0 &&
+                    p1 != lo1 && p1 != hi1 ) continue;
+                c[i0] = p0; c[i1] = p1;
+                cb( c[0], c[1], c[2], ud );
+                if( ++count > limit ) return;
+              }
+        }
+    }
+}
+
+/* callbacks over a region */
+static int g_regCount;
+static void cbPut( int x, int y, int z, void *ud )
+{ (void)ud; putCell( x, y, z ); g_regCount++; }
+static void cbSelect( int x, int y, int z, void *ud )
+{
+    Voxel *v = voxAt( x, y, z );
+    (void)ud;
+    if( v ) { v->sel = ( g_mode == 1 ) ? 0 : 1; g_regCount++; }
+}
+
+/* Commit the active region gesture into the model (or the selection). */
+static void regionCommit( void )
+{
+    char msg[96];
+    if( !g_gHaveB ) return;
+    g_regCount = 0;
+    if( g_tool == 4 ) {
+        regionForEach( 3, cbSelect, NULL );   /* select: filled marquee */
+        sprintf( msg, "%s %d voxels",
+                 g_mode == 1 ? "Deselected" : "Selected", g_regCount );
+    } else {
+        groupBegin();
+        regionForEach( g_tool, cbPut, NULL );
+        groupEnd();
+        sprintf( msg, "%s %d voxels", g_mode == 1 ? "Erased" : "Placed",
+                 g_regCount );
+    }
+    setStatus( msg );
+}
+
+/* Single-click pencil (or single-cell select). */
+static void applyToolAt( int mx, int my )
+{
+    int cx, cy, cz, axis, dir, ground;
+    if( !pickCell( mx, my, &cx, &cy, &cz, &axis, &dir, &ground ) ) return;
+    if( g_tool == 4 ) {
+        Voxel *v = voxAt( cx, cy, cz );
+        if( v ) { v->sel = ( g_mode == 1 ) ? 0 : 1;
+                  setStatus( g_mode == 1 ? "Deselected voxel"
+                                         : "Selected voxel" ); }
+        return;
+    }
+    putCell( cx, cy, cz );
+    setStatus( g_mode == 1 ? "Erased voxel" : "Placed voxel" );
+}
+
+/* Begin a region drag under the cursor. */
+static void gestureBegin( int mx, int my )
+{
+    int cx, cy, cz, axis, dir, ground;
+    g_gActive = 0; g_gHaveB = 0;
+    if( !pickCell( mx, my, &cx, &cy, &cz, &axis, &dir, &ground ) ) return;
+    g_gAx = g_gBx = cx; g_gAy = g_gBy = cy; g_gAz = g_gBz = cz;
+    g_gAxis = axis; g_gDir = dir;
+    g_gActive = 1; g_gHaveB = 1;
+}
+
+/* Update the region drag as the mouse moves. */
+static void gestureUpdate( int mx, int my )
+{
+    int cx, cy, cz, planeCoord;
+    if( !g_gActive ) return;
+    planeCoord = ( g_gAxis == 0 ) ? g_gAx : ( g_gAxis == 1 ) ? g_gAy : g_gAz;
+    if( planeCell( mx, my, g_gAxis, planeCoord, &cx, &cy, &cz ) ) {
+        g_gBx = cx; g_gBy = cy; g_gBz = cz;
+        /* keep the plane-axis coordinate pinned to the anchor layer */
+        if( g_gAxis == 0 ) g_gBx = g_gAx;
+        else if( g_gAxis == 1 ) g_gBy = g_gAy;
+        else g_gBz = g_gAz;
+        g_gHaveB = 1;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* selection operations + clipboard                                    */
+/* ------------------------------------------------------------------ */
+
+typedef struct { int dx, dy, dz, color, rampStart, rampLen; } ClipVox;
+static ClipVox *g_clip = NULL;
+static int      g_clipCount = 0;
+
+static int selCount( void )
+{
+    int i, n = 0;
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 && g_vox[i].sel ) n++;
+    return n;
+}
+
+static void selClear( void )
+{
+    int i;
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 ) g_vox[i].sel = 0;
+}
+
+static void selAll( void )
+{
+    int i;
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 ) g_vox[i].sel = 1;
+}
+
+/* Delete every selected voxel as one undo group. */
+static void selDelete( void )
+{
+    int i, n = 0;
+    int *coords, cap = selCount();
+    if( cap == 0 ) { setStatus( "Selection empty" ); return; }
+    coords = (int*)malloc( (size_t)cap * 3 * sizeof( int ) );
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 && g_vox[i].sel ) {
+            coords[n*3+0]=g_vox[i].x; coords[n*3+1]=g_vox[i].y;
+            coords[n*3+2]=g_vox[i].z; n++;
+        }
+    groupBegin();
+    for( i = 0; i < n; i++ )
+        editVoxel( coords[i*3+0], coords[i*3+1], coords[i*3+2], 0, 0,0,0 );
+    groupEnd();
+    free( coords );
+    { char m[64]; sprintf( m, "Deleted %d voxels", n ); setStatus( m ); }
+}
+
+/* Repaint every selected voxel with the current color/ramp, one undo group. */
+static void selRecolor( void )
+{
+    int i, n = 0;
+    int *coords, cap = selCount();
+    int rl = g_rampEnd - g_rampStart + 1;
+    if( cap == 0 ) { setStatus( "Selection empty" ); return; }
+    coords = (int*)malloc( (size_t)cap * 3 * sizeof( int ) );
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 && g_vox[i].sel ) {
+            coords[n*3+0]=g_vox[i].x; coords[n*3+1]=g_vox[i].y;
+            coords[n*3+2]=g_vox[i].z; n++;
+        }
+    groupBegin();
+    for( i = 0; i < n; i++ )
+        editVoxel( coords[i*3+0], coords[i*3+1], coords[i*3+2], 1,
+                   g_pick, g_rampStart, rl );
+    groupEnd();
+    /* recolor drops selection flags (voxSet rewrites the cell); restore them */
+    for( i = 0; i < n; i++ ) {
+        Voxel *v = voxAt( coords[i*3+0], coords[i*3+1], coords[i*3+2] );
+        if( v ) v->sel = 1;
+    }
+    free( coords );
+    { char m[64]; sprintf( m, "Recolored %d voxels", n ); setStatus( m ); }
+}
+
+/* Copy the selection into the clipboard, relative to its min corner. */
+static void selCopy( void )
+{
+    int i, n = 0, have = 0, mnx=0, mny=0, mnz=0;
+    int cap = selCount();
+    if( cap == 0 ) { setStatus( "Selection empty" ); return; }
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 && g_vox[i].sel ) {
+            if( !have ) { mnx=g_vox[i].x; mny=g_vox[i].y; mnz=g_vox[i].z; have=1; }
+            if( g_vox[i].x < mnx ) mnx = g_vox[i].x;
+            if( g_vox[i].y < mny ) mny = g_vox[i].y;
+            if( g_vox[i].z < mnz ) mnz = g_vox[i].z;
+        }
+    free( g_clip );
+    g_clip = (ClipVox*)malloc( (size_t)cap * sizeof( ClipVox ) );
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 && g_vox[i].sel ) {
+            g_clip[n].dx = g_vox[i].x - mnx;
+            g_clip[n].dy = g_vox[i].y - mny;
+            g_clip[n].dz = g_vox[i].z - mnz;
+            g_clip[n].color = g_vox[i].color;
+            g_clip[n].rampStart = g_vox[i].rampStart;
+            g_clip[n].rampLen = g_vox[i].rampLen;
+            n++;
+        }
+    g_clipCount = n;
+    { char m[64]; sprintf( m, "Copied %d voxels", n ); setStatus( m ); }
+}
+
+/* Paste the clipboard, offset by (g_pasteDX,DY,DZ) from the ORIGINAL min
+ * corner.  The pasted copy becomes the new selection. */
+static void selPaste( void )
+{
+    int i, mnx=0, mny=0, mnz=0, have=0;
+    if( g_clipCount == 0 ) { setStatus( "Clipboard empty" ); return; }
+    /* place relative to current selection's min corner if any, else origin */
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 && g_vox[i].sel ) {
+            if( !have ) { mnx=g_vox[i].x; mny=g_vox[i].y; mnz=g_vox[i].z; have=1; }
+            if( g_vox[i].x < mnx ) mnx = g_vox[i].x;
+            if( g_vox[i].y < mny ) mny = g_vox[i].y;
+            if( g_vox[i].z < mnz ) mnz = g_vox[i].z;
+        }
+    selClear();
+    groupBegin();
+    for( i = 0; i < g_clipCount; i++ ) {
+        int x = mnx + g_pasteDX + g_clip[i].dx;
+        int y = mny + g_pasteDY + g_clip[i].dy;
+        int z = mnz + g_pasteDZ + g_clip[i].dz;
+        editVoxel( x, y, z, 1, g_clip[i].color, g_clip[i].rampStart,
+                   g_clip[i].rampLen );
+    }
+    groupEnd();
+    for( i = 0; i < g_clipCount; i++ ) {
+        Voxel *v = voxAt( mnx + g_pasteDX + g_clip[i].dx,
+                          mny + g_pasteDY + g_clip[i].dy,
+                          mnz + g_pasteDZ + g_clip[i].dz );
+        if( v ) v->sel = 1;
+    }
+    { char m[64]; sprintf( m, "Pasted %d voxels", g_clipCount );
+      setStatus( m ); }
+}
+
+/* ---- ghost preview of the in-progress region drag ---- */
+static void cbGhost( int x, int y, int z, void *ud )
+{
+    float fx=(float)x, fy=(float)y, fz=(float)z;
+    (void)ud;
+    /* +Y */ glVertex3f(fx,fy+1,fz);   glVertex3f(fx,fy+1,fz+1); glVertex3f(fx+1,fy+1,fz+1); glVertex3f(fx+1,fy+1,fz);
+    /* -Y */ glVertex3f(fx,fy,fz);     glVertex3f(fx+1,fy,fz);   glVertex3f(fx+1,fy,fz+1);   glVertex3f(fx,fy,fz+1);
+    /* +Z */ glVertex3f(fx,fy,fz+1);   glVertex3f(fx+1,fy,fz+1); glVertex3f(fx+1,fy+1,fz+1); glVertex3f(fx,fy+1,fz+1);
+    /* -Z */ glVertex3f(fx,fy,fz);     glVertex3f(fx,fy+1,fz);   glVertex3f(fx+1,fy+1,fz);   glVertex3f(fx+1,fy,fz);
+    /* +X */ glVertex3f(fx+1,fy,fz);   glVertex3f(fx+1,fy,fz+1); glVertex3f(fx+1,fy+1,fz+1); glVertex3f(fx+1,fy+1,fz);
+    /* -X */ glVertex3f(fx,fy,fz);     glVertex3f(fx,fy+1,fz);   glVertex3f(fx,fy+1,fz+1);   glVertex3f(fx,fy,fz+1);
+}
+
+static void drawGesturePreview( void )
+{
+    int tool;
+    if( !g_gActive || !g_gHaveB ) return;
+    tool = ( g_tool == 4 ) ? 3 : g_tool;   /* select previews as a filled box */
+    if( g_tool == 0 ) return;              /* pencil: nothing to preview */
+    glEnable( GL_BLEND );
+    glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+    glDepthMask( GL_FALSE );
+    if( g_tool == 4 )       glColor4f( 1.0f, 0.9f, 0.15f, 0.35f ); /* select */
+    else if( g_mode == 1 )  glColor4f( 1.0f, 0.25f, 0.2f, 0.40f ); /* erase */
+    else                    glColor4f( 0.3f, 1.0f, 0.45f, 0.40f ); /* draw */
+    glBegin( GL_QUADS );
+    regionForEach( tool, cbGhost, NULL );
+    glEnd();
+    glDepthMask( GL_TRUE );
+    glDisable( GL_BLEND );
 }
 
 /* ------------------------------------------------------------------ */
@@ -993,6 +1457,142 @@ static void renderOblique( void )
     free( zbuf );
 }
 
+/* World-frame shadow ray: 1 if a voxel blocks P->L before reaching L. */
+static int shadowedWorld( double px, double py, double pz,
+                          double lx, double ly, double lz )
+{
+    double dx = lx - px, dy = ly - py, dz = lz - pz;
+    double len = sqrt( dx*dx + dy*dy + dz*dz );
+    int x, y, z, sx, sy, sz, step, maxCells;
+    double INF = 1e30, tMaxX, tMaxY, tMaxZ, tDX, tDY, tDZ;
+    if( len < 1e-6 ) return 0;
+    dx /= len; dy /= len; dz /= len;
+    x = (int)floor( px ); y = (int)floor( py ); z = (int)floor( pz );
+    sx = dx > 0 ? 1 : ( dx < 0 ? -1 : 0 );
+    sy = dy > 0 ? 1 : ( dy < 0 ? -1 : 0 );
+    sz = dz > 0 ? 1 : ( dz < 0 ? -1 : 0 );
+    tMaxX = tMaxY = tMaxZ = INF; tDX = tDY = tDZ = INF;
+    if( sx != 0 ) { double nb = (sx>0)?(x+1):x; tMaxX=(nb-px)/dx; tDX=sx/dx; }
+    if( sy != 0 ) { double nb = (sy>0)?(y+1):y; tMaxY=(nb-py)/dy; tDY=sy/dy; }
+    if( sz != 0 ) { double nb = (sz>0)?(z+1):z; tMaxZ=(nb-pz)/dz; tDZ=sz/dz; }
+    maxCells = 512;
+    for( step = 0; step < maxCells; step++ ) {
+        double t;
+        if( tMaxX < tMaxY && tMaxX < tMaxZ ) { t = tMaxX; x += sx; tMaxX += tDX; }
+        else if( tMaxY < tMaxZ )             { t = tMaxY; y += sy; tMaxY += tDY; }
+        else                                 { t = tMaxZ; z += sz; tMaxZ += tDZ; }
+        if( t > len - 0.02 ) return 0;
+        if( voxAt( x, y, z ) ) return 1;
+    }
+    return 0;
+}
+
+/* Shade a face sample directly in world space -- the same Lambert + colored
+ * point-light + shadow math the oblique renderer uses, so the 3D preview and
+ * the baked pixel art agree surface-by-surface. */
+static void shadeWorld( double px, double py, double pz,
+                        double nx, double ny, double nz,
+                        const Voxel *v, unsigned char *out )
+{
+    int i;
+    double accR = g_ambient, accG = g_ambient, accB = g_ambient;
+    double scalarLit = g_ambient;
+    for( i = 0; i < g_numLights; i++ ) {
+        double ldx, ldy, ldz, len, nl, atten, f;
+        if( !g_lights[i].enabled ) continue;
+        ldx = g_lights[i].x - px; ldy = g_lights[i].y - py; ldz = g_lights[i].z - pz;
+        len = sqrt( ldx*ldx + ldy*ldy + ldz*ldz );
+        if( len < 1e-5 ) continue;
+        ldx /= len; ldy /= len; ldz /= len;
+        nl = nx*ldx + ny*ldy + nz*ldz;
+        if( nl <= 0 ) continue;
+        if( shadowedWorld( px + nx*0.02, py + ny*0.02, pz + nz*0.02,
+                           g_lights[i].x, g_lights[i].y, g_lights[i].z ) )
+            continue;
+        atten = g_lights[i].intensity / ( 1.0 + 0.03 * len );
+        f = nl * atten;
+        accR += f * g_pal[ g_lights[i].color*3+0 ] / 255.0;
+        accG += f * g_pal[ g_lights[i].color*3+1 ] / 255.0;
+        accB += f * g_pal[ g_lights[i].color*3+2 ] / 255.0;
+        scalarLit += f;
+    }
+    if( g_shadingMode == 1 ) {
+        int rl = v->rampLen < 1 ? 1 : v->rampLen;
+        int lo = clampi( v->rampStart, 0, g_palCount - 1 );
+        int hi = clampi( v->rampStart + rl - 1, 0, g_palCount - 1 );
+        int lumLo = g_pal[lo*3]+g_pal[lo*3+1]+g_pal[lo*3+2];
+        int lumHi = g_pal[hi*3]+g_pal[hi*3+1]+g_pal[hi*3+2];
+        double t = clampf( (float)scalarLit, 0.0f, 1.0f );
+        int idx = (int)( t * rl );
+        if( idx >= rl ) idx = rl - 1;
+        if( lumLo > lumHi ) idx = rl - 1 - idx;
+        idx = clampi( v->rampStart + idx, 0, g_palCount - 1 );
+        out[0] = g_pal[ idx*3+0 ]; out[1] = g_pal[ idx*3+1 ]; out[2] = g_pal[ idx*3+2 ];
+    } else {
+        double br = g_pal[ v->color*3+0 ] / 255.0;
+        double bg = g_pal[ v->color*3+1 ] / 255.0;
+        double bb = g_pal[ v->color*3+2 ] / 255.0;
+        out[0] = (unsigned char)clampi( (int)( br * accR * 255.0 + 0.5 ), 0, 255 );
+        out[1] = (unsigned char)clampi( (int)( bg * accG * 255.0 + 0.5 ), 0, 255 );
+        out[2] = (unsigned char)clampi( (int)( bb * accB * 255.0 + 0.5 ), 0, 255 );
+    }
+}
+
+/* Quick (shadowless) preview shade used for the 3D view's non-match modes. */
+static void shadeQuick( double nx, double ny, double nz,
+                        const Voxel *v, unsigned char *out )
+{
+    float f = previewFace( (float)nx, (float)ny, (float)nz );
+    out[0] = (unsigned char)clampf( g_pal[v->color*3+0] * f, 0, 255 );
+    out[1] = (unsigned char)clampf( g_pal[v->color*3+1] * f, 0, 255 );
+    out[2] = (unsigned char)clampf( g_pal[v->color*3+2] * f, 0, 255 );
+}
+
+static void pfacePush( float x, float y, float z, float nx, float ny, float nz,
+                       const unsigned char *c )
+{
+    PFace *p;
+    if( g_pfaceCount == g_pfaceCap ) {
+        g_pfaceCap = g_pfaceCap ? g_pfaceCap * 2 : 4096;
+        g_pface = (PFace*)realloc( g_pface, (size_t)g_pfaceCap * sizeof(PFace) );
+    }
+    p = &g_pface[ g_pfaceCount++ ];
+    p->x=x; p->y=y; p->z=z; p->nx=nx; p->ny=ny; p->nz=nz;
+    p->r=c[0]; p->g=c[1]; p->b=c[2];
+}
+
+/* Rebuild the exposed-face color cache for the 3D preview.  Mode 2 ("match
+ * render") uses the full lit/shadowed shader at each face center; modes 0/1
+ * use the cheap normal-keyed preview so orbiting stays instant. */
+static void rebuildPreviewFaces( void )
+{
+    int i;
+    static const int NB[6][3] = { {0,1,0},{0,-1,0},{0,0,1},{0,0,-1},{1,0,0},{-1,0,0} };
+    static const float NR[6][3] = { {0,1,0},{0,-1,0},{0,0,1},{0,0,-1},{1,0,0},{-1,0,0} };
+    g_pfaceCount = 0;
+    if( g_previewShade == 0 ) return;   /* flat mode: use fallback path */
+    for( i = 0; i < g_voxCap; i++ ) {
+        int f; Voxel *v;
+        if( g_vox[i].used != 1 ) continue;
+        v = &g_vox[i];
+        for( f = 0; f < 6; f++ ) {
+            int nx = v->x+NB[f][0], ny = v->y+NB[f][1], nz = v->z+NB[f][2];
+            unsigned char c[4];
+            if( voxAt( nx, ny, nz ) ) continue;   /* hidden face */
+            if( g_previewShade == 2 ) {
+                double cxp = v->x + 0.5 + NR[f][0]*0.5;
+                double cyp = v->y + 0.5 + NR[f][1]*0.5;
+                double czp = v->z + 0.5 + NR[f][2]*0.5;
+                shadeWorld( cxp, cyp, czp, NR[f][0],NR[f][1],NR[f][2], v, c );
+            } else {
+                shadeQuick( NR[f][0],NR[f][1],NR[f][2], v, c );
+            }
+            pfacePush( (float)v->x,(float)v->y,(float)v->z,
+                       NR[f][0],NR[f][1],NR[f][2], c );
+        }
+    }
+}
+
 static void uploadRenderTexture( void )
 {
     if( !g_img ) return;
@@ -1013,6 +1613,7 @@ static void ensureRender( void )
     if( g_renderDirty ) {
         renderOblique();
         uploadRenderTexture();
+        rebuildPreviewFaces();
         g_renderDirty = 0;
     }
 }
@@ -1171,7 +1772,11 @@ static void setView( float yaw, float pitch )
 
 static int  g_showFront = 0, g_showTop = 0;   /* unused reserved */
 
-static void openFileDialog( const char *id ) { gui_open_popup( id ); }
+/* Which modal to open next frame.  We must call ImGui::OpenPopup at the same
+ * ID-stack scope as BeginPopupModal (root, in buildDialogs) -- calling it from
+ * inside a menu resolves a different id and the popup silently never opens. */
+static const char *g_pendingPopup = NULL;
+static void openFileDialog( const char *id ) { g_pendingPopup = id; }
 
 static void buildMenuBar( int *quit )
 {
@@ -1195,8 +1800,25 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Undo", "Ctrl+Z", g_histPos > 0 ) ) histUndo();
         if( gui_menu_item( "Redo", "Ctrl+Y", g_histPos < g_histLen ) ) histRedo();
         gui_separator();
-        if( gui_menu_item( "Pencil", "B", 1 ) ) g_tool = 0;
-        if( gui_menu_item( "Erase",  "E", 1 ) ) g_tool = 1;
+        if( gui_menu_item( "Draw mode",  "B", 1 ) ) g_mode = 0;
+        if( gui_menu_item( "Erase mode", "E", 1 ) ) g_mode = 1;
+        gui_separator();
+        if( gui_menu_item( "Pencil", "1", 1 ) ) g_tool = 0;
+        if( gui_menu_item( "Line",   "2", 1 ) ) g_tool = 1;
+        if( gui_menu_item( "Rect",   "3", 1 ) ) g_tool = 2;
+        if( gui_menu_item( "Box",    "4", 1 ) ) g_tool = 3;
+        if( gui_menu_item( "Select", "5", 1 ) ) g_tool = 4;
+        gui_end_menu();
+    }
+    if( gui_begin_menu( "Select" ) ) {
+        if( gui_menu_item( "Select all",   "Ctrl+A", 1 ) ) { selAll(); }
+        if( gui_menu_item( "Clear",        "Esc",    1 ) ) { selClear(); }
+        gui_separator();
+        if( gui_menu_item( "Delete",       "Del",    1 ) ) selDelete();
+        if( gui_menu_item( "Recolor",      NULL,     1 ) ) selRecolor();
+        gui_separator();
+        if( gui_menu_item( "Copy",         "Ctrl+C", 1 ) ) selCopy();
+        if( gui_menu_item( "Paste",        "Ctrl+V", 1 ) ) selPaste();
         gui_end_menu();
     }
     if( gui_begin_menu( "View" ) ) {
@@ -1211,7 +1833,10 @@ static void buildMenuBar( int *quit )
         gui_end_menu();
     }
     if( gui_begin_menu( "Display" ) ) {
-        gui_menu_item_check( "Shade preview", NULL, &g_previewShade );
+        if( gui_menu_item( "Preview: flat",         NULL, 1 ) ) { g_previewShade=0; g_renderDirty=1; }
+        if( gui_menu_item( "Preview: quick light",  NULL, 1 ) ) { g_previewShade=1; g_renderDirty=1; }
+        if( gui_menu_item( "Preview: match render", NULL, 1 ) ) { g_previewShade=2; g_renderDirty=1; }
+        gui_separator();
         gui_menu_item_check( "Voxel edges",   NULL, &g_previewEdges );
         gui_end_menu();
     }
@@ -1237,7 +1862,37 @@ static void buildLeftPanel( float top, float h )
 
     gui_separator_text( "Tool" );
     gui_radio_int( "Pencil", &g_tool, 0 ); gui_same_line();
-    gui_radio_int( "Erase",  &g_tool, 1 );
+    gui_radio_int( "Line",   &g_tool, 1 ); gui_same_line();
+    gui_radio_int( "Rect",   &g_tool, 2 );
+    gui_radio_int( "Box",    &g_tool, 3 ); gui_same_line();
+    gui_radio_int( "Select", &g_tool, 4 );
+
+    gui_separator_text( "Mode" );
+    gui_radio_int( "Draw",  &g_mode, 0 ); gui_same_line();
+    gui_radio_int( "Erase", &g_mode, 1 );
+    if( g_tool >= 1 && g_tool <= 3 )
+        gui_slider_int( "thickness", &g_thickness, 1, 32 );
+
+    if( g_tool == 4 ) {
+        int nsel;
+        gui_separator_text( "Selection" );
+        nsel = selCount();
+        sprintf( buf, "%d selected", nsel );
+        gui_text( buf );
+        if( gui_button( "All" ) ) selAll();
+        gui_same_line();
+        if( gui_button( "Clear" ) ) selClear();
+        if( gui_button( "Delete" ) ) selDelete();
+        gui_same_line();
+        if( gui_button( "Recolor" ) ) selRecolor();
+        if( gui_button( "Copy" ) ) selCopy();
+        gui_same_line();
+        if( gui_button( "Paste" ) ) selPaste();
+        gui_text( "paste offset (x,y,z):" );
+        gui_slider_int( "px", &g_pasteDX, -32, 32 );
+        gui_slider_int( "py", &g_pasteDY, -32, 32 );
+        gui_slider_int( "pz", &g_pasteDZ, -32, 32 );
+    }
 
     gui_separator_text( "Paint color / ramp" );
     colorRGB( g_pick, &r, &g, &b );
@@ -1307,7 +1962,7 @@ static void buildRightPanel( float top, float h, float winW )
 {
     char buf[128];
     float pw = 300.0f;
-    static const char *orientItems[4] = { "0", "90", "180", "270" };
+    static const char *orientItems[4] = { "Front", "Right", "Back", "Left" };
 
     gui_set_next_window_pos( winW - pw, top );
     gui_set_next_window_size( pw, h );
@@ -1316,7 +1971,7 @@ static void buildRightPanel( float top, float h, float winW )
     if( gui_slider_int( "voxel px", &g_voxPx, 1, 12 ) )       g_renderDirty = 1;
     if( gui_slider_int( "front scrunch", &g_frontScrunch, 1, 3 ) ) g_renderDirty = 1;
     if( gui_slider_int( "top scrunch", &g_topScrunch, 1, 3 ) )     g_renderDirty = 1;
-    if( gui_combo( "orient", &g_orient, orientItems, 4 ) )    g_renderDirty = 1;
+    if( gui_combo( "view dir", &g_orient, orientItems, 4 ) )  g_renderDirty = 1;
     gui_slider_int( "zoom", &g_renderZoom, 1, 12 );
 
     ensureRender();
@@ -1340,6 +1995,7 @@ static void buildRightPanel( float top, float h, float winW )
 
 static void buildDialogs( void )
 {
+    if( g_pendingPopup ) { gui_open_popup( g_pendingPopup ); g_pendingPopup = NULL; }
     if( gui_begin_popup_modal( "Save" ) ) {
         gui_text( "Save sculpture as:" );
         if( gui_input_text( "##savef", g_fileName, sizeof g_fileName ) ) {
@@ -1429,6 +2085,16 @@ static void panDrag( int dx, int dy )
     cam_tz += (float)( ( -dx*rz + dy*uz ) * s );
 }
 
+/* Is window pixel (x,y) inside the raw-GL 3D viewport?  Used to gate voxel
+ * clicks geometrically -- ImGui's hover flag lags a frame, so a click landing
+ * the instant the cursor reaches a side panel could otherwise leak into the
+ * 3D view and drop a stray voxel far off in space. */
+static int inView( int x, int y )
+{
+    return x >= g_viewX && x < g_viewX + g_viewW &&
+           y >= g_viewY && y < g_viewY + g_viewH;
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -1478,8 +2144,8 @@ int main( int argc, char **argv )
     } else {
         buildDemoScene();
     }
-    setStatus( "Left-drag: orbit  |  Left-click: paint/erase  |  "
-               "Mid/Right-drag: pan  |  Wheel: zoom" );
+    setStatus( "Pencil: left-click paints.  Line/Rect/Box/Select: left-drag.  "
+               "Right-drag: orbit  |  Mid-drag: pan  |  Wheel: zoom" );
 
     while( running ) {
         SDL_Event ev;
@@ -1489,7 +2155,7 @@ int main( int argc, char **argv )
 
         while( SDL_PollEvent( &ev ) ) {
             gui_process_event( &ev );
-            overGui = gui_any_window_hovered();
+            overGui = gui_any_popup_open();   /* immediate, non-lagged */
             switch( ev.type ) {
                 case SDL_QUIT: running = 0; break;
                 case SDL_KEYDOWN:
@@ -1499,22 +2165,38 @@ int main( int argc, char **argv )
                         SDL_Keycode k = ev.key.keysym.sym;
                         if( ctrl && k == SDLK_z ) { if( shift ) histRedo(); else histUndo(); }
                         else if( ctrl && k == SDLK_y ) histRedo();
-                        else if( k == SDLK_b ) g_tool = 0;
-                        else if( k == SDLK_e ) g_tool = 1;
+                        else if( ctrl && k == SDLK_c ) selCopy();
+                        else if( ctrl && k == SDLK_v ) selPaste();
+                        else if( ctrl && k == SDLK_a ) { selAll(); setStatus("Selected all"); }
+                        else if( k == SDLK_b ) g_mode = 0;   /* draw */
+                        else if( k == SDLK_e ) g_mode = 1;   /* erase */
+                        else if( k == SDLK_1 ) g_tool = 0;
+                        else if( k == SDLK_2 ) g_tool = 1;
+                        else if( k == SDLK_3 ) g_tool = 2;
+                        else if( k == SDLK_4 ) g_tool = 3;
+                        else if( k == SDLK_5 ) g_tool = 4;
+                        else if( k == SDLK_DELETE || k == SDLK_BACKSPACE ) selDelete();
+                        else if( k == SDLK_ESCAPE ) { selClear(); setStatus("Selection cleared"); }
                     }
                     break;
                 case SDL_MOUSEBUTTONDOWN:
-                    if( !overGui ) {
+                    if( !overGui && inView( ev.button.x, ev.button.y ) ) {
                         g_dragBtn = ev.button.button;
                         g_downX = g_lastX = ev.button.x;
                         g_downY = g_lastY = ev.button.y;
                         g_moved = 0;
+                        /* region tools grab the left button for a drag gesture */
+                        if( g_dragBtn == SDL_BUTTON_LEFT && g_tool != 0 )
+                            gestureBegin( ev.button.x, ev.button.y );
                     }
                     break;
                 case SDL_MOUSEBUTTONUP:
                     if( g_dragBtn == ev.button.button ) {
-                        if( g_dragBtn == SDL_BUTTON_LEFT && !g_moved )
-                            applyToolAt( ev.button.x, ev.button.y );
+                        if( g_dragBtn == SDL_BUTTON_LEFT ) {
+                            if( g_gActive ) { regionCommit(); g_gActive = 0; }
+                            else if( !g_moved && g_tool == 0 )
+                                applyToolAt( ev.button.x, ev.button.y );
+                        }
                         g_dragBtn = 0;
                     }
                     break;
@@ -1525,17 +2207,21 @@ int main( int argc, char **argv )
                         g_lastX = ev.motion.x; g_lastY = ev.motion.y;
                         if( abs( ev.motion.x - g_downX ) +
                             abs( ev.motion.y - g_downY ) > 3 ) g_moved = 1;
-                        if( g_dragBtn == SDL_BUTTON_LEFT )
-                            orbitDrag( dx, dy );
+                        if( g_gActive && g_dragBtn == SDL_BUTTON_LEFT )
+                            gestureUpdate( ev.motion.x, ev.motion.y );
+                        else if( g_dragBtn == SDL_BUTTON_LEFT ||
+                                 g_dragBtn == SDL_BUTTON_RIGHT )
+                            orbitDrag( dx, dy );   /* right-drag always orbits */
                         else
-                            panDrag( dx, dy );
+                            panDrag( dx, dy );      /* middle-drag pans */
                     }
                     break;
                 case SDL_MOUSEWHEEL:
-                    if( !overGui ) {
+                    { int mxw, myw; SDL_GetMouseState( &mxw, &myw );
+                      if( !overGui && inView( mxw, myw ) ) {
                         cam_dist *= ( ev.wheel.y > 0 ) ? 0.9f : 1.1111f;
                         cam_dist = clampf( cam_dist, 1.5f, 400.0f );
-                    }
+                      } }
                     break;
                 default: break;
             }
@@ -1563,6 +2249,7 @@ int main( int argc, char **argv )
         glClearColor( 0.14f, 0.15f, 0.18f, 1.0f );
         glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
         setupCamera( g_viewW, g_viewH );
+        ensureRender();          /* keep the lit-preview cache current */
         drawScene3D();
         glDisable( GL_SCISSOR_TEST );
         glViewport( 0, 0, winW, winH );

@@ -68,6 +68,14 @@ int gui_any_window_hovered( void )
 {
     return ImGui::IsWindowHovered( ImGuiHoveredFlags_AnyWindow ) ? 1 : 0;
 }
+/* True if any popup/menu/modal is currently open.  Unlike WantCaptureMouse
+ * this is immediate (not hover-lagged), so it reliably blocks 3D-view clicks
+ * while a dropdown or dialog is up. */
+int gui_any_popup_open( void )
+{
+    return ImGui::IsPopupOpen( 0, ImGuiPopupFlags_AnyPopupId |
+                                  ImGuiPopupFlags_AnyPopupLevel ) ? 1 : 0;
+}
 
 /* ---- main menu bar ---- */
 int  gui_begin_main_menu_bar( void ) { return ImGui::BeginMainMenuBar() ? 1 : 0; }

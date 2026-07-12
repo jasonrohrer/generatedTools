@@ -94,6 +94,7 @@ int  gui_palette_grid( const unsigned char *rgb, int count, int perRow,
 void gui_image( unsigned int texId, float w, float h );
 
 /* ---- popups / modals ---- */
+int  gui_any_popup_open( void );
 void gui_open_popup( const char *id );
 int  gui_begin_popup( const char *id );
 int  gui_begin_popup_modal( const char *id );

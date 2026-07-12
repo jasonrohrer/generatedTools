@@ -1,0 +1,2706 @@
+Forked GDB child on PID=575358
+Logging GDB commands and responses to wcGDBLog.txt
+
+
+Starting gdb program with 'run  > wcOut.txt', redirecting program output to wcOut.txt
+Debugging program './cwave'
+PID of debugged process = 575367
+Sampling stack while program runs...
+Sampling 200.00 times per second, for 5000 usec between samples
+Program exited normally
+70 stack samples taken
+49 unique stacks sampled
+
+
+
+Report:
+
+
+
+
+Functions with more than one sample:
+
+700.000% ===================================== (490 samples)
+         ??
+
+
+ 98.571% ===================================== (69 samples)
+         main
+
+
+ 58.571% ===================================== (41 samples)
+         __internal_syscall_cancel
+
+
+ 58.571% ===================================== (41 samples)
+         __syscall_cancel
+
+
+ 54.286% ===================================== (38 samples)
+         __GI___poll
+
+
+ 51.429% ===================================== (36 samples)
+         __syscall_cancel_arch
+
+
+ 40.000% ===================================== (28 samples)
+         __GI__dl_catch_exception
+
+
+ 31.429% ===================================== (22 samples)
+         _XReply
+
+
+ 28.571% ===================================== (20 samples)
+         xcb_wait_for_reply64
+
+
+ 15.714% ===================================== (11 samples)
+         xcb_writev
+
+
+ 15.714% ===================================== (11 samples)
+         _XSend
+
+
+ 15.714% ===================================== (11 samples)
+         XcursorLibraryLoadCursor
+
+
+ 15.714% ===================================== (11 samples)
+         ImGui_ImplSDL2_Init(SDL_Window*
+
+
+ 15.714% ===================================== (11 samples)
+         ImGui_ImplSDL2_InitForOpenGL(SDL_Window*
+
+
+ 15.714% ===================================== (11 samples)
+         gui_init
+
+
+ 14.286% ===================================== (10 samples)
+         dl_open_worker
+
+
+ 14.286% ===================================== (10 samples)
+         _dl_open
+
+
+ 14.286% ===================================== (10 samples)
+         dlopen_doit
+
+
+ 14.286% ===================================== (10 samples)
+         _dl_catch_error
+
+
+ 14.286% ===================================== (10 samples)
+         _dlerror_run
+
+
+ 14.286% ===================================== (10 samples)
+         dlopen_implementation
+
+
+ 14.286% ===================================== (10 samples)
+         ___dlopen
+
+
+ 14.286% ===================================== (10 samples)
+         XPutImage
+
+
+ 14.286% ===================================== (10 samples)
+         XcursorImageLoadCursor
+
+
+ 14.286% ===================================== (10 samples)
+         XcursorImagesLoadCursors
+
+
+ 14.286% ===================================== (10 samples)
+         XcursorImagesLoadCursor
+
+
+ 12.857% ===================================== (9 samples)
+         glXChooseVisual
+
+
+ 12.857% ===================================== (9 samples)
+         glFramebufferTextureMultisampleMultiviewOVR
+
+
+ 11.429% ===================================== (8 samples)
+         dl_open_worker_begin
+
+
+ 10.000% ===================================== (7 samples)
+         do_lookup_x
+
+
+ 10.000% ===================================== (7 samples)
+         _dl_lookup_symbol_x
+
+
+ 10.000% ===================================== (7 samples)
+         elf_dynamic_do_Rela
+
+
+ 10.000% ===================================== (7 samples)
+         _dl_relocate_object_no_relro
+
+
+ 10.000% ===================================== (7 samples)
+         _dl_relocate_object
+
+
+ 10.000% ===================================== (7 samples)
+         _dl_open_relocate_one_object
+
+
+  8.571% ===================================== (6 samples)
+         resolve_map
+
+
+  8.571% ===================================== (6 samples)
+         elf_machine_rela
+
+
+  8.571% ===================================== (6 samples)
+         XSync
+
+
+  8.571% ===================================== (6 samples)
+         XCloseDisplay
+
+
+  5.714% ===================================== (4 samples)
+         __GI__dl_debug_state
+
+
+  5.714% ===================================== (4 samples)
+         xcb_wait_for_reply
+
+
+  5.714% ===================================== (4 samples)
+         glXQueryDrawable
+
+
+  4.286% ===================================== (3 samples)
+         XML_ParseBuffer
+
+
+  4.286% ===================================== (3 samples)
+         __GI___ioctl
+
+
+  4.286% ===================================== (3 samples)
+         drmIoctl
+
+
+  4.286% ===================================== (3 samples)
+         driCreateNewScreen3
+
+
+  4.286% ===================================== (3 samples)
+         xcb_wait_for_event
+
+
+  4.286% ===================================== (3 samples)
+         _XReadEvents
+
+
+  4.286% ===================================== (3 samples)
+         XIfEvent
+
+
+  4.286% ===================================== (3 samples)
+         glXCreateContext
+
+
+  4.286% ===================================== (3 samples)
+         XGetWindowProperty
+
+
+  2.857% ===================================== (2 samples)
+         __memset_sse2_unaligned_erms
+
+
+  2.857% ===================================== (2 samples)
+         _XimLocalOpenIM
+
+
+  2.857% ===================================== (2 samples)
+         _XimOpenIM
+
+
+  2.857% ===================================== (2 samples)
+         _XGetWindowAttributes
+
+
+  2.857% ===================================== (2 samples)
+         XGetWindowAttributes
+
+
+  2.857% ===================================== (2 samples)
+         XQueryPointer
+
+
+
+
+
+Partial stacks of depth [1] with more than one sample:
+
+ 34.286% ===================================== (24 samples)
+         1: main   (at cwave.c:2500)
+            2500:|   window = SDL_CreateWindow( \"cwave\",
+
+
+ 15.714% ===================================== (11 samples)
+         1: main   (at cwave.c:2522)
+            2522:|   if( gui_init( window, glctx ) ) {
+
+
+ 10.000% ===================================== (7 samples)
+         1: main   (at cwave.c:2491)
+            2491:|   if( SDL_Init( SDL_INIT_VIDEO ) != 0 ) {
+
+
+ 10.000% ===================================== (7 samples)
+         1: main   (at cwave.c:2552)
+            2552:|   while( SDL_PollEvent( &ev ) ) {
+
+
+  8.571% ===================================== (6 samples)
+         1: main   (at cwave.c:2674)
+            2674:|   SDL_Quit();
+
+
+  7.143% ===================================== (5 samples)
+         1: main   (at cwave.c:2510)
+            2510:|   glctx = SDL_GL_CreateContext( window );
+
+
+  5.714% ===================================== (4 samples)
+         1: main   (at cwave.c:2519)
+            2519:|   SDL_GL_SetSwapInterval( 1 ); /* vsync */
+
+
+  2.857% ===================================== (2 samples)
+         1: main   (at cwave.c:2672)
+            2672:|   SDL_GL_DeleteContext( glctx );
+
+
+
+
+
+Partial stacks of depth [2] with more than one sample:
+
+ 28.571% ===================================== (20 samples)
+         1: ??   (at :-1)
+         2: main   (at cwave.c:2500)
+
+
+ 15.714% ===================================== (11 samples)
+         1: gui_init   (at :-1)
+         2: main   (at cwave.c:2522)
+
+
+ 10.000% ===================================== (7 samples)
+         1: ??   (at :-1)
+         2: main   (at cwave.c:2491)
+
+
+ 10.000% ===================================== (7 samples)
+         1: ??   (at :-1)
+         2: main   (at cwave.c:2552)
+
+
+  8.571% ===================================== (6 samples)
+         1: ??   (at :-1)
+         2: main   (at cwave.c:2674)
+
+
+  7.143% ===================================== (5 samples)
+         1: ??   (at :-1)
+         2: main   (at cwave.c:2510)
+
+
+  5.714% ===================================== (4 samples)
+         1: ??   (at :-1)
+         2: main   (at cwave.c:2519)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: main   (at cwave.c:2500)
+
+
+
+
+
+Partial stacks of depth [3] with more than one sample:
+
+ 28.571% ===================================== (20 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: main   (at cwave.c:2500)
+
+
+ 15.714% ===================================== (11 samples)
+         1: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         2: gui_init   (at :-1)
+         3: main   (at cwave.c:2522)
+
+
+ 10.000% ===================================== (7 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: main   (at cwave.c:2552)
+
+
+  8.571% ===================================== (6 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: main   (at cwave.c:2491)
+
+
+  8.571% ===================================== (6 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: main   (at cwave.c:2674)
+
+
+  5.714% ===================================== (4 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: main   (at cwave.c:2519)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: main   (at cwave.c:2500)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: main   (at cwave.c:2510)
+
+
+
+
+
+Partial stacks of depth [4] with more than one sample:
+
+ 27.143% ===================================== (19 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: main   (at cwave.c:2500)
+
+
+ 10.000% ===================================== (7 samples)
+         1: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         2: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         3: gui_init   (at :-1)
+         4: main   (at cwave.c:2522)
+
+
+ 10.000% ===================================== (7 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: main   (at cwave.c:2552)
+
+
+  8.571% ===================================== (6 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: main   (at cwave.c:2674)
+
+
+  7.143% ===================================== (5 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: main   (at cwave.c:2491)
+
+
+  5.714% ===================================== (4 samples)
+         1: glXQueryDrawable   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: main   (at cwave.c:2519)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: main   (at cwave.c:2500)
+
+
+  4.286% ===================================== (3 samples)
+         1: glXCreateContext   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: main   (at cwave.c:2510)
+
+
+  4.286% ===================================== (3 samples)
+         1: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         2: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         3: gui_init   (at :-1)
+         4: main   (at cwave.c:2522)
+
+
+
+
+
+Partial stacks of depth [5] with more than one sample:
+
+ 27.143% ===================================== (19 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: main   (at cwave.c:2500)
+
+
+ 10.000% ===================================== (7 samples)
+         1: ??   (at :-1)
+         2: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         3: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         4: gui_init   (at :-1)
+         5: main   (at cwave.c:2522)
+
+
+  5.714% ===================================== (4 samples)
+         1: ??   (at :-1)
+         2: glXQueryDrawable   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: main   (at cwave.c:2519)
+
+
+  5.714% ===================================== (4 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: main   (at cwave.c:2552)
+
+
+  5.714% ===================================== (4 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: main   (at cwave.c:2674)
+
+
+  4.286% ===================================== (3 samples)
+         1: XIfEvent   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: main   (at cwave.c:2500)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: glXCreateContext   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: main   (at cwave.c:2510)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         3: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         4: gui_init   (at :-1)
+         5: main   (at cwave.c:2522)
+
+
+  2.857% ===================================== (2 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: main   (at cwave.c:2491)
+
+
+  2.857% ===================================== (2 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: main   (at cwave.c:2674)
+
+
+
+
+
+Partial stacks of depth [6] with more than one sample:
+
+ 14.286% ===================================== (10 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: main   (at cwave.c:2500)
+
+
+ 12.857% ===================================== (9 samples)
+         1: glXChooseVisual   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: main   (at cwave.c:2500)
+
+
+ 10.000% ===================================== (7 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         4: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         5: gui_init   (at :-1)
+         6: main   (at cwave.c:2522)
+
+
+  5.714% ===================================== (4 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: glXQueryDrawable   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: main   (at cwave.c:2519)
+
+
+  5.714% ===================================== (4 samples)
+         1: XCloseDisplay   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: main   (at cwave.c:2674)
+
+
+  4.286% ===================================== (3 samples)
+         1: _XReadEvents   (at :-1)
+         2: XIfEvent   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: main   (at cwave.c:2500)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: glXCreateContext   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: main   (at cwave.c:2510)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         4: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         5: gui_init   (at :-1)
+         6: main   (at cwave.c:2522)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: _XimOpenIM   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: main   (at cwave.c:2491)
+
+
+  2.857% ===================================== (2 samples)
+         1: XQueryPointer   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: XCloseDisplay   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: main   (at cwave.c:2674)
+
+
+
+
+
+Partial stacks of depth [7] with more than one sample:
+
+ 12.857% ===================================== (9 samples)
+         1: ??   (at :-1)
+         2: glXChooseVisual   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: main   (at cwave.c:2500)
+
+
+ 12.857% ===================================== (9 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: main   (at cwave.c:2500)
+
+
+ 10.000% ===================================== (7 samples)
+         1: XcursorLibraryLoadCursor   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         5: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         6: gui_init   (at :-1)
+         7: main   (at cwave.c:2522)
+
+
+  5.714% ===================================== (4 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: glXQueryDrawable   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: main   (at cwave.c:2519)
+
+
+  5.714% ===================================== (4 samples)
+         1: XSync   (at :-1)
+         2: XCloseDisplay   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: main   (at cwave.c:2674)
+
+
+  4.286% ===================================== (3 samples)
+         1: xcb_wait_for_event   (at :-1)
+         2: _XReadEvents   (at :-1)
+         3: XIfEvent   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: main   (at cwave.c:2500)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: glXCreateContext   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: main   (at cwave.c:2510)
+
+
+  4.286% ===================================== (3 samples)
+         1: XcursorLibraryLoadCursor   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         5: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         6: gui_init   (at :-1)
+         7: main   (at cwave.c:2522)
+
+
+  4.286% ===================================== (3 samples)
+         1: XGetWindowProperty   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: _XimLocalOpenIM   (at :-1)
+         2: _XimOpenIM   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: main   (at cwave.c:2491)
+
+
+  2.857% ===================================== (2 samples)
+         1: _XReply   (at :-1)
+         2: XQueryPointer   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: ??   (at :-1)
+         2: XCloseDisplay   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: main   (at cwave.c:2674)
+
+
+
+
+
+Partial stacks of depth [8] with more than one sample:
+
+ 12.857% ===================================== (9 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: glXChooseVisual   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: main   (at cwave.c:2500)
+
+
+ 11.429% ===================================== (8 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: main   (at cwave.c:2500)
+
+
+ 10.000% ===================================== (7 samples)
+         1: XcursorImagesLoadCursor   (at :-1)
+         2: XcursorLibraryLoadCursor   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         6: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         7: gui_init   (at :-1)
+         8: main   (at cwave.c:2522)
+
+
+  5.714% ===================================== (4 samples)
+         1: _XReply   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: glXQueryDrawable   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: main   (at cwave.c:2519)
+
+
+  5.714% ===================================== (4 samples)
+         1: _XReply   (at :-1)
+         2: XSync   (at :-1)
+         3: XCloseDisplay   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: main   (at cwave.c:2674)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: xcb_wait_for_event   (at :-1)
+         3: _XReadEvents   (at :-1)
+         4: XIfEvent   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: main   (at cwave.c:2500)
+
+
+  4.286% ===================================== (3 samples)
+         1: xcb_wait_for_reply   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: glXCreateContext   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: main   (at cwave.c:2510)
+
+
+  4.286% ===================================== (3 samples)
+         1: XcursorImagesLoadCursor   (at :-1)
+         2: XcursorLibraryLoadCursor   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         6: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         7: gui_init   (at :-1)
+         8: main   (at cwave.c:2522)
+
+
+  4.286% ===================================== (3 samples)
+         1: _XReply   (at :-1)
+         2: XGetWindowProperty   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: xcb_wait_for_reply64   (at :-1)
+         2: _XReply   (at :-1)
+         3: XQueryPointer   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: XCloseDisplay   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: main   (at cwave.c:2674)
+
+
+
+
+
+Partial stacks of depth [9] with more than one sample:
+
+ 12.857% ===================================== (9 samples)
+         1: ___dlopen   (at ./dlfcn/dlopen.c:81)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: glXChooseVisual   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: main   (at cwave.c:2500)
+
+
+ 10.000% ===================================== (7 samples)
+         1: XcursorImagesLoadCursors   (at :-1)
+         2: XcursorImagesLoadCursor   (at :-1)
+         3: XcursorLibraryLoadCursor   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         7: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         8: gui_init   (at :-1)
+         9: main   (at cwave.c:2522)
+
+
+  8.571% ===================================== (6 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: main   (at cwave.c:2500)
+
+
+  5.714% ===================================== (4 samples)
+         1: xcb_wait_for_reply64   (at :-1)
+         2: _XReply   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: glXQueryDrawable   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: main   (at cwave.c:2519)
+
+
+  5.714% ===================================== (4 samples)
+         1: xcb_wait_for_reply64   (at :-1)
+         2: _XReply   (at :-1)
+         3: XSync   (at :-1)
+         4: XCloseDisplay   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: main   (at cwave.c:2674)
+
+
+  4.286% ===================================== (3 samples)
+         1: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         2: ??   (at :-1)
+         3: xcb_wait_for_event   (at :-1)
+         4: _XReadEvents   (at :-1)
+         5: XIfEvent   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: main   (at cwave.c:2500)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: xcb_wait_for_reply   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: glXCreateContext   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: main   (at cwave.c:2510)
+
+
+  4.286% ===================================== (3 samples)
+         1: XcursorImagesLoadCursors   (at :-1)
+         2: XcursorImagesLoadCursor   (at :-1)
+         3: XcursorLibraryLoadCursor   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         7: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         8: gui_init   (at :-1)
+         9: main   (at cwave.c:2522)
+
+
+  4.286% ===================================== (3 samples)
+         1: xcb_wait_for_reply64   (at :-1)
+         2: _XReply   (at :-1)
+         3: XGetWindowProperty   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: ??   (at :-1)
+         2: xcb_wait_for_reply64   (at :-1)
+         3: _XReply   (at :-1)
+         4: XQueryPointer   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: XCloseDisplay   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: main   (at cwave.c:2674)
+
+
+
+
+
+Partial stacks of depth [10] with more than one sample:
+
+ 12.857% ===================================== (9 samples)
+         1: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+         2: ___dlopen   (at ./dlfcn/dlopen.c:81)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: glXChooseVisual   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: main   (at cwave.c:2500)
+
+
+ 10.000% ===================================== (7 samples)
+         1: XcursorImageLoadCursor   (at :-1)
+         2: XcursorImagesLoadCursors   (at :-1)
+         3: XcursorImagesLoadCursor   (at :-1)
+         4: XcursorLibraryLoadCursor   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         8: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         9: gui_init   (at :-1)
+        10: main   (at cwave.c:2522)
+
+
+  5.714% ===================================== (4 samples)
+         1: ??   (at :-1)
+         2: xcb_wait_for_reply64   (at :-1)
+         3: _XReply   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: glXQueryDrawable   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: main   (at cwave.c:2519)
+
+
+  5.714% ===================================== (4 samples)
+         1: ??   (at :-1)
+         2: xcb_wait_for_reply64   (at :-1)
+         3: _XReply   (at :-1)
+         4: XSync   (at :-1)
+         5: XCloseDisplay   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: main   (at cwave.c:2674)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: main   (at cwave.c:2500)
+
+
+  4.286% ===================================== (3 samples)
+         1: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         2: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         3: ??   (at :-1)
+         4: xcb_wait_for_event   (at :-1)
+         5: _XReadEvents   (at :-1)
+         6: XIfEvent   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: main   (at cwave.c:2500)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: xcb_wait_for_reply   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: glXCreateContext   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: main   (at cwave.c:2510)
+
+
+  4.286% ===================================== (3 samples)
+         1: XcursorImageLoadCursor   (at :-1)
+         2: XcursorImagesLoadCursors   (at :-1)
+         3: XcursorImagesLoadCursor   (at :-1)
+         4: XcursorLibraryLoadCursor   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         8: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+         9: gui_init   (at :-1)
+        10: main   (at cwave.c:2522)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: xcb_wait_for_reply64   (at :-1)
+         3: _XReply   (at :-1)
+         4: XGetWindowProperty   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: main   (at cwave.c:2500)
+
+
+  2.857% ===================================== (2 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: xcb_wait_for_reply64   (at :-1)
+         4: _XReply   (at :-1)
+         5: XQueryPointer   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: XCloseDisplay   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: main   (at cwave.c:2674)
+
+
+
+
+
+Partial stacks of depth [11] with more than one sample:
+
+ 12.857% ===================================== (9 samples)
+         1: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+         2: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+         3: ___dlopen   (at ./dlfcn/dlopen.c:81)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: glXChooseVisual   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2500)
+
+
+ 10.000% ===================================== (7 samples)
+         1: XPutImage   (at :-1)
+         2: XcursorImageLoadCursor   (at :-1)
+         3: XcursorImagesLoadCursors   (at :-1)
+         4: XcursorImagesLoadCursor   (at :-1)
+         5: XcursorLibraryLoadCursor   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         9: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+        10: gui_init   (at :-1)
+        11: main   (at cwave.c:2522)
+
+
+  5.714% ===================================== (4 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: xcb_wait_for_reply64   (at :-1)
+         4: _XReply   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: glXQueryDrawable   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2519)
+
+
+  5.714% ===================================== (4 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: xcb_wait_for_reply64   (at :-1)
+         4: _XReply   (at :-1)
+         5: XSync   (at :-1)
+         6: XCloseDisplay   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2674)
+
+
+  4.286% ===================================== (3 samples)
+         1: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         2: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         3: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         4: ??   (at :-1)
+         5: xcb_wait_for_event   (at :-1)
+         6: _XReadEvents   (at :-1)
+         7: XIfEvent   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2500)
+
+
+  4.286% ===================================== (3 samples)
+         1: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: xcb_wait_for_reply   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: glXCreateContext   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2510)
+
+
+  4.286% ===================================== (3 samples)
+         1: XPutImage   (at :-1)
+         2: XcursorImageLoadCursor   (at :-1)
+         3: XcursorImagesLoadCursors   (at :-1)
+         4: XcursorImagesLoadCursor   (at :-1)
+         5: XcursorLibraryLoadCursor   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+         9: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+        10: gui_init   (at :-1)
+        11: main   (at cwave.c:2522)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: xcb_wait_for_reply64   (at :-1)
+         4: _XReply   (at :-1)
+         5: XGetWindowProperty   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: driCreateNewScreen3   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2500)
+
+
+  2.857% ===================================== (2 samples)
+         1: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: xcb_wait_for_reply64   (at :-1)
+         5: _XReply   (at :-1)
+         6: XQueryPointer   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: XCloseDisplay   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2674)
+
+
+
+
+
+Partial stacks of depth [12] with more than one sample:
+
+ 12.857% ===================================== (9 samples)
+         1: _dl_catch_error   (at ./elf/dl-catch.c:260)
+         2: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+         3: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+         4: ___dlopen   (at ./dlfcn/dlopen.c:81)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: glXChooseVisual   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: main   (at cwave.c:2500)
+
+
+ 10.000% ===================================== (7 samples)
+         1: ??   (at :-1)
+         2: XPutImage   (at :-1)
+         3: XcursorImageLoadCursor   (at :-1)
+         4: XcursorImagesLoadCursors   (at :-1)
+         5: XcursorImagesLoadCursor   (at :-1)
+         6: XcursorLibraryLoadCursor   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+        10: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+        11: gui_init   (at :-1)
+        12: main   (at cwave.c:2522)
+
+
+  5.714% ===================================== (4 samples)
+         1: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: xcb_wait_for_reply64   (at :-1)
+         5: _XReply   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: glXQueryDrawable   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: main   (at cwave.c:2519)
+
+
+  5.714% ===================================== (4 samples)
+         1: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: xcb_wait_for_reply64   (at :-1)
+         5: _XReply   (at :-1)
+         6: XSync   (at :-1)
+         7: XCloseDisplay   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: main   (at cwave.c:2674)
+
+
+  4.286% ===================================== (3 samples)
+         1: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         2: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: xcb_wait_for_reply   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: glXCreateContext   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: main   (at cwave.c:2510)
+
+
+  4.286% ===================================== (3 samples)
+         1: ??   (at :-1)
+         2: XPutImage   (at :-1)
+         3: XcursorImageLoadCursor   (at :-1)
+         4: XcursorImagesLoadCursors   (at :-1)
+         5: XcursorImagesLoadCursor   (at :-1)
+         6: XcursorLibraryLoadCursor   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+        10: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+        11: gui_init   (at :-1)
+        12: main   (at cwave.c:2522)
+
+
+  4.286% ===================================== (3 samples)
+         1: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: xcb_wait_for_reply64   (at :-1)
+         5: _XReply   (at :-1)
+         6: XGetWindowProperty   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         2: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: xcb_wait_for_reply64   (at :-1)
+         6: _XReply   (at :-1)
+         7: XQueryPointer   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: main   (at cwave.c:2552)
+
+
+
+
+
+Partial stacks of depth [13] with more than one sample:
+
+ 12.857% ===================================== (9 samples)
+         1: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+         2: _dl_catch_error   (at ./elf/dl-catch.c:260)
+         3: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+         4: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+         5: ___dlopen   (at ./dlfcn/dlopen.c:81)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: glXChooseVisual   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: main   (at cwave.c:2500)
+
+
+ 10.000% ===================================== (7 samples)
+         1: _XSend   (at :-1)
+         2: ??   (at :-1)
+         3: XPutImage   (at :-1)
+         4: XcursorImageLoadCursor   (at :-1)
+         5: XcursorImagesLoadCursors   (at :-1)
+         6: XcursorImagesLoadCursor   (at :-1)
+         7: XcursorLibraryLoadCursor   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+        11: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+        12: gui_init   (at :-1)
+        13: main   (at cwave.c:2522)
+
+
+  5.714% ===================================== (4 samples)
+         1: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         2: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: xcb_wait_for_reply64   (at :-1)
+         6: _XReply   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: glXQueryDrawable   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: main   (at cwave.c:2519)
+
+
+  5.714% ===================================== (4 samples)
+         1: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         2: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: xcb_wait_for_reply64   (at :-1)
+         6: _XReply   (at :-1)
+         7: XSync   (at :-1)
+         8: XCloseDisplay   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: main   (at cwave.c:2674)
+
+
+  4.286% ===================================== (3 samples)
+         1: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         2: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         3: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: xcb_wait_for_reply   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: glXCreateContext   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: main   (at cwave.c:2510)
+
+
+  4.286% ===================================== (3 samples)
+         1: _XSend   (at :-1)
+         2: ??   (at :-1)
+         3: XPutImage   (at :-1)
+         4: XcursorImageLoadCursor   (at :-1)
+         5: XcursorImagesLoadCursors   (at :-1)
+         6: XcursorImagesLoadCursor   (at :-1)
+         7: XcursorLibraryLoadCursor   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+        11: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+        12: gui_init   (at :-1)
+        13: main   (at cwave.c:2522)
+
+
+  4.286% ===================================== (3 samples)
+         1: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         2: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: xcb_wait_for_reply64   (at :-1)
+         6: _XReply   (at :-1)
+         7: XGetWindowProperty   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         2: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         3: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: xcb_wait_for_reply64   (at :-1)
+         7: _XReply   (at :-1)
+         8: XQueryPointer   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: main   (at cwave.c:2552)
+
+
+
+
+
+Partial stacks of depth [14] with more than one sample:
+
+ 12.857% ===================================== (9 samples)
+         1: dlopen_doit   (at ./dlfcn/dlopen.c:56)
+         2: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+         3: _dl_catch_error   (at ./elf/dl-catch.c:260)
+         4: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+         5: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+         6: ___dlopen   (at ./dlfcn/dlopen.c:81)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: glXChooseVisual   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: main   (at cwave.c:2500)
+
+
+ 10.000% ===================================== (7 samples)
+         1: xcb_writev   (at :-1)
+         2: _XSend   (at :-1)
+         3: ??   (at :-1)
+         4: XPutImage   (at :-1)
+         5: XcursorImageLoadCursor   (at :-1)
+         6: XcursorImagesLoadCursors   (at :-1)
+         7: XcursorImagesLoadCursor   (at :-1)
+         8: XcursorLibraryLoadCursor   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+        12: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+        13: gui_init   (at :-1)
+        14: main   (at cwave.c:2522)
+
+
+  5.714% ===================================== (4 samples)
+         1: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         2: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         3: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: xcb_wait_for_reply64   (at :-1)
+         7: _XReply   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: glXQueryDrawable   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: main   (at cwave.c:2519)
+
+
+  5.714% ===================================== (4 samples)
+         1: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         2: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         3: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: xcb_wait_for_reply64   (at :-1)
+         7: _XReply   (at :-1)
+         8: XSync   (at :-1)
+         9: XCloseDisplay   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: main   (at cwave.c:2674)
+
+
+  4.286% ===================================== (3 samples)
+         1: xcb_writev   (at :-1)
+         2: _XSend   (at :-1)
+         3: ??   (at :-1)
+         4: XPutImage   (at :-1)
+         5: XcursorImageLoadCursor   (at :-1)
+         6: XcursorImagesLoadCursors   (at :-1)
+         7: XcursorImagesLoadCursor   (at :-1)
+         8: XcursorLibraryLoadCursor   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+        12: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+        13: gui_init   (at :-1)
+        14: main   (at cwave.c:2522)
+
+
+  4.286% ===================================== (3 samples)
+         1: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         2: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         3: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: xcb_wait_for_reply64   (at :-1)
+         7: _XReply   (at :-1)
+         8: XGetWindowProperty   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: main   (at cwave.c:2552)
+
+
+
+
+
+Full stacks with at least one sample:
+
+ 10.000% ===================================== (7 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: xcb_writev   (at :-1)
+         7: _XSend   (at :-1)
+         8: ??   (at :-1)
+         9: XPutImage   (at :-1)
+        10: XcursorImageLoadCursor   (at :-1)
+        11: XcursorImagesLoadCursors   (at :-1)
+        12: XcursorImagesLoadCursor   (at :-1)
+        13: XcursorLibraryLoadCursor   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+        17: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+        18: gui_init   (at :-1)
+        19: main   (at cwave.c:2522)
+
+
+  5.714% ===================================== (4 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: xcb_wait_for_reply64   (at :-1)
+         8: _XReply   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: glXQueryDrawable   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: main   (at cwave.c:2519)
+
+
+  5.714% ===================================== (4 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: xcb_wait_for_reply64   (at :-1)
+         8: _XReply   (at :-1)
+         9: XSync   (at :-1)
+        10: XCloseDisplay   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: main   (at cwave.c:2674)
+
+
+  4.286% ===================================== (3 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: xcb_wait_for_event   (at :-1)
+         7: _XReadEvents   (at :-1)
+         8: XIfEvent   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: main   (at cwave.c:2500)
+
+
+  4.286% ===================================== (3 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: xcb_wait_for_reply   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: glXCreateContext   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: main   (at cwave.c:2510)
+
+
+  4.286% ===================================== (3 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: xcb_writev   (at :-1)
+         7: _XSend   (at :-1)
+         8: ??   (at :-1)
+         9: XPutImage   (at :-1)
+        10: XcursorImageLoadCursor   (at :-1)
+        11: XcursorImagesLoadCursors   (at :-1)
+        12: XcursorImagesLoadCursor   (at :-1)
+        13: XcursorLibraryLoadCursor   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+        17: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+        18: gui_init   (at :-1)
+        19: main   (at cwave.c:2522)
+
+
+  4.286% ===================================== (3 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: xcb_wait_for_reply64   (at :-1)
+         8: _XReply   (at :-1)
+         9: XGetWindowProperty   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: main   (at cwave.c:2552)
+
+
+  2.857% ===================================== (2 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: xcb_wait_for_reply64   (at :-1)
+         8: _XReply   (at :-1)
+         9: XQueryPointer   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: main   (at cwave.c:2552)
+
+
+  1.429% ===================================== (1 samples)
+         1: __GI__dl_debug_state   (at ./elf/dl-debug_state.c:29)
+         2: dl_main   (at ./elf/rtld.c:2372)
+         3: _dl_sysdep_start   (at ../sysdeps/unix/sysv/linux/dl-sysdep.c:141)
+         4: _dl_start_final   (at ./elf/rtld.c:496)
+         5: _dl_start   (at ./elf/rtld.c:581)
+         6: _start   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+
+
+  1.429% ===================================== (1 samples)
+         1: __memset_sse2_unaligned_erms   (at ../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S:294)
+         2: ensureDocCap   (at cwave.c:1120)
+         3: main   (at cwave.c:2471)
+
+
+  1.429% ===================================== (1 samples)
+         1: __GI__dl_debug_state   (at ./elf/dl-debug_state.c:29)
+         2: dl_open_worker   (at ./elf/dl-open.c:784)
+         3: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+         4: _dl_open   (at ./elf/dl-open.c:883)
+         5: dlopen_doit   (at ./dlfcn/dlopen.c:56)
+         6: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+         7: _dl_catch_error   (at ./elf/dl-catch.c:260)
+         8: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+         9: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+        10: ___dlopen   (at ./dlfcn/dlopen.c:81)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: main   (at cwave.c:2491)
+
+
+  1.429% ===================================== (1 samples)
+         1: __internal_syscall_cancel   (at ./nptl/cancellation.c:44)
+         2: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         3: __recvmsg_syscall   (at ../sysdeps/unix/sysv/linux/recvmsg.c:27)
+         4: __libc_recvmsg   (at ../sysdeps/unix/sysv/linux/recvmsg.c:41)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: _XReply   (at :-1)
+        10: XQueryExtension   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: main   (at cwave.c:2491)
+
+
+  1.429% ===================================== (1 samples)
+         1: __GI___close_nocancel   (at ../sysdeps/unix/sysv/linux/close_nocancel.c:26)
+         2: _IO_new_file_close_it   (at ./libio/libioP.h:1041)
+         3: _IO_new_fclose   (at ./libio/iofclose.c:53)
+         4: _XlcCreateLocaleDataBase   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: _XlcCreateLC   (at :-1)
+         8: _XlcUtf8Loader   (at :-1)
+         9: _XOpenLC   (at :-1)
+        10: XSetLocaleModifiers   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: main   (at cwave.c:2491)
+
+
+  1.429% ===================================== (1 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: _XimLocalOpenIM   (at :-1)
+         5: _XimOpenIM   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: main   (at cwave.c:2491)
+
+
+  1.429% ===================================== (1 samples)
+         1: _XrmInternalStringToQuark   (at :-1)
+         2: _XlcOpenConverter   (at :-1)
+         3: _Xlcmbstowcs   (at :-1)
+         4: ??   (at :-1)
+         5: _XimLocalOpenIM   (at :-1)
+         6: _XimOpenIM   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2491)
+
+
+  1.429% ===================================== (1 samples)
+         1: __internal_syscall_cancel   (at ./nptl/cancellation.c:44)
+         2: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         3: __GI___writev   (at ../sysdeps/unix/sysv/linux/writev.c:26)
+         4: ??   (at :-1)
+         5: xcb_writev   (at :-1)
+         6: _XSend   (at :-1)
+         7: _XReply   (at :-1)
+         8: XkbGetState   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: main   (at cwave.c:2491)
+
+
+  1.429% ===================================== (1 samples)
+         1: __internal_syscall_cancel   (at ./nptl/cancellation.c:44)
+         2: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         3: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: dbus_connection_send_with_reply_and_block   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: ??   (at :-1)
+        17: ??   (at :-1)
+        18: main   (at cwave.c:2491)
+
+
+  1.429% ===================================== (1 samples)
+         1: __GI__dl_debug_state   (at ./elf/dl-debug_state.c:29)
+         2: _dl_notify_new_object   (at ./elf/dl-load.c:924)
+         3: _dl_map_object_from_fd   (at ./elf/dl-load.c:1464)
+         4: _dl_map_object   (at ./elf/dl-load.c:2200)
+         5: dl_open_worker_begin   (at ./elf/dl-open.c:542)
+         6: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+         7: dl_open_worker   (at ./elf/dl-open.c:771)
+         8: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+         9: _dl_open   (at ./elf/dl-open.c:883)
+        10: dlopen_doit   (at ./dlfcn/dlopen.c:56)
+        11: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        12: _dl_catch_error   (at ./elf/dl-catch.c:260)
+        13: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+        14: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+        15: ___dlopen   (at ./dlfcn/dlopen.c:81)
+        16: ??   (at :-1)
+        17: ??   (at :-1)
+        18: glXChooseVisual   (at :-1)
+        19: ??   (at :-1)
+        20: ??   (at :-1)
+        21: ??   (at :-1)
+        22: ??   (at :-1)
+        23: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: do_lookup_x   (at ./elf/dl-lookup.c:428)
+         2: _dl_lookup_symbol_x   (at ./elf/dl-lookup.c:789)
+         3: resolve_map   (at ./elf/dl-reloc.c:190)
+         4: elf_machine_rela   (at ../sysdeps/x86_64/dl-machine.h:280)
+         5: elf_dynamic_do_Rela   (at ./elf/do-rel.h:138)
+         6: _dl_relocate_object_no_relro   (at ./elf/dl-reloc.c:296)
+         7: _dl_relocate_object   (at ./elf/dl-reloc.c:346)
+         8: _dl_open_relocate_one_object   (at ./elf/dl-open.c:486)
+         9: dl_open_worker_begin   (at ./elf/dl-open.c:691)
+        10: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        11: dl_open_worker   (at ./elf/dl-open.c:771)
+        12: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        13: _dl_open   (at ./elf/dl-open.c:883)
+        14: dlopen_doit   (at ./dlfcn/dlopen.c:56)
+        15: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        16: _dl_catch_error   (at ./elf/dl-catch.c:260)
+        17: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+        18: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+        19: ___dlopen   (at ./dlfcn/dlopen.c:81)
+        20: ??   (at :-1)
+        21: ??   (at :-1)
+        22: glXChooseVisual   (at :-1)
+        23: ??   (at :-1)
+        24: ??   (at :-1)
+        25: ??   (at :-1)
+        26: ??   (at :-1)
+        27: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: elf_dynamic_do_Rela   (at ./elf/do-rel.h:115)
+         2: _dl_relocate_object_no_relro   (at ./elf/dl-reloc.c:296)
+         3: _dl_relocate_object   (at ./elf/dl-reloc.c:346)
+         4: _dl_open_relocate_one_object   (at ./elf/dl-open.c:486)
+         5: dl_open_worker_begin   (at ./elf/dl-open.c:691)
+         6: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+         7: dl_open_worker   (at ./elf/dl-open.c:771)
+         8: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+         9: _dl_open   (at ./elf/dl-open.c:883)
+        10: dlopen_doit   (at ./dlfcn/dlopen.c:56)
+        11: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        12: _dl_catch_error   (at ./elf/dl-catch.c:260)
+        13: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+        14: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+        15: ___dlopen   (at ./dlfcn/dlopen.c:81)
+        16: ??   (at :-1)
+        17: ??   (at :-1)
+        18: glXChooseVisual   (at :-1)
+        19: ??   (at :-1)
+        20: ??   (at :-1)
+        21: ??   (at :-1)
+        22: ??   (at :-1)
+        23: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: do_lookup_x   (at ./elf/dl-lookup.c:426)
+         2: _dl_lookup_symbol_x   (at ./elf/dl-lookup.c:789)
+         3: resolve_map   (at ./elf/dl-reloc.c:190)
+         4: elf_machine_rela   (at ../sysdeps/x86_64/dl-machine.h:280)
+         5: elf_dynamic_do_Rela   (at ./elf/do-rel.h:138)
+         6: _dl_relocate_object_no_relro   (at ./elf/dl-reloc.c:296)
+         7: _dl_relocate_object   (at ./elf/dl-reloc.c:346)
+         8: _dl_open_relocate_one_object   (at ./elf/dl-open.c:486)
+         9: dl_open_worker_begin   (at ./elf/dl-open.c:691)
+        10: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        11: dl_open_worker   (at ./elf/dl-open.c:771)
+        12: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        13: _dl_open   (at ./elf/dl-open.c:883)
+        14: dlopen_doit   (at ./dlfcn/dlopen.c:56)
+        15: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        16: _dl_catch_error   (at ./elf/dl-catch.c:260)
+        17: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+        18: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+        19: ___dlopen   (at ./dlfcn/dlopen.c:81)
+        20: ??   (at :-1)
+        21: ??   (at :-1)
+        22: glXChooseVisual   (at :-1)
+        23: ??   (at :-1)
+        24: ??   (at :-1)
+        25: ??   (at :-1)
+        26: ??   (at :-1)
+        27: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: do_lookup_x   (at ./elf/dl-lookup.c:416)
+         2: _dl_lookup_symbol_x   (at ./elf/dl-lookup.c:789)
+         3: resolve_map   (at ./elf/dl-reloc.c:190)
+         4: elf_machine_rela   (at ../sysdeps/x86_64/dl-machine.h:280)
+         5: elf_dynamic_do_Rela   (at ./elf/do-rel.h:138)
+         6: _dl_relocate_object_no_relro   (at ./elf/dl-reloc.c:296)
+         7: _dl_relocate_object   (at ./elf/dl-reloc.c:346)
+         8: _dl_open_relocate_one_object   (at ./elf/dl-open.c:486)
+         9: dl_open_worker_begin   (at ./elf/dl-open.c:691)
+        10: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        11: dl_open_worker   (at ./elf/dl-open.c:771)
+        12: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        13: _dl_open   (at ./elf/dl-open.c:883)
+        14: dlopen_doit   (at ./dlfcn/dlopen.c:56)
+        15: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        16: _dl_catch_error   (at ./elf/dl-catch.c:260)
+        17: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+        18: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+        19: ___dlopen   (at ./dlfcn/dlopen.c:81)
+        20: ??   (at :-1)
+        21: ??   (at :-1)
+        22: glXChooseVisual   (at :-1)
+        23: ??   (at :-1)
+        24: ??   (at :-1)
+        25: ??   (at :-1)
+        26: ??   (at :-1)
+        27: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: do_lookup_x   (at ./elf/dl-lookup.c:416)
+         2: _dl_lookup_symbol_x   (at ./elf/dl-lookup.c:789)
+         3: resolve_map   (at ./elf/dl-reloc.c:190)
+         4: elf_machine_rela   (at ../sysdeps/x86_64/dl-machine.h:280)
+         5: elf_dynamic_do_Rela   (at ./elf/do-rel.h:138)
+         6: _dl_relocate_object_no_relro   (at ./elf/dl-reloc.c:296)
+         7: _dl_relocate_object   (at ./elf/dl-reloc.c:346)
+         8: _dl_open_relocate_one_object   (at ./elf/dl-open.c:486)
+         9: dl_open_worker_begin   (at ./elf/dl-open.c:691)
+        10: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        11: dl_open_worker   (at ./elf/dl-open.c:771)
+        12: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        13: _dl_open   (at ./elf/dl-open.c:883)
+        14: dlopen_doit   (at ./dlfcn/dlopen.c:56)
+        15: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        16: _dl_catch_error   (at ./elf/dl-catch.c:260)
+        17: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+        18: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+        19: ___dlopen   (at ./dlfcn/dlopen.c:81)
+        20: ??   (at :-1)
+        21: ??   (at :-1)
+        22: glXChooseVisual   (at :-1)
+        23: ??   (at :-1)
+        24: ??   (at :-1)
+        25: ??   (at :-1)
+        26: ??   (at :-1)
+        27: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: do_lookup_x   (at ./elf/dl-lookup.c:410)
+         2: _dl_lookup_symbol_x   (at ./elf/dl-lookup.c:789)
+         3: resolve_map   (at ./elf/dl-reloc.c:190)
+         4: elf_machine_rela   (at ../sysdeps/x86_64/dl-machine.h:280)
+         5: elf_dynamic_do_Rela   (at ./elf/do-rel.h:138)
+         6: _dl_relocate_object_no_relro   (at ./elf/dl-reloc.c:296)
+         7: _dl_relocate_object   (at ./elf/dl-reloc.c:346)
+         8: _dl_open_relocate_one_object   (at ./elf/dl-open.c:486)
+         9: dl_open_worker_begin   (at ./elf/dl-open.c:691)
+        10: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        11: dl_open_worker   (at ./elf/dl-open.c:771)
+        12: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        13: _dl_open   (at ./elf/dl-open.c:883)
+        14: dlopen_doit   (at ./dlfcn/dlopen.c:56)
+        15: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        16: _dl_catch_error   (at ./elf/dl-catch.c:260)
+        17: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+        18: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+        19: ___dlopen   (at ./dlfcn/dlopen.c:81)
+        20: ??   (at :-1)
+        21: ??   (at :-1)
+        22: glXChooseVisual   (at :-1)
+        23: ??   (at :-1)
+        24: ??   (at :-1)
+        25: ??   (at :-1)
+        26: ??   (at :-1)
+        27: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: do_lookup_x   (at ./elf/dl-lookup.c:416)
+         2: _dl_lookup_symbol_x   (at ./elf/dl-lookup.c:789)
+         3: resolve_map   (at ./elf/dl-reloc.c:190)
+         4: elf_machine_rela   (at ../sysdeps/x86_64/dl-machine.h:280)
+         5: elf_dynamic_do_Rela   (at ./elf/do-rel.h:138)
+         6: _dl_relocate_object_no_relro   (at ./elf/dl-reloc.c:296)
+         7: _dl_relocate_object   (at ./elf/dl-reloc.c:346)
+         8: _dl_open_relocate_one_object   (at ./elf/dl-open.c:486)
+         9: dl_open_worker_begin   (at ./elf/dl-open.c:691)
+        10: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        11: dl_open_worker   (at ./elf/dl-open.c:771)
+        12: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        13: _dl_open   (at ./elf/dl-open.c:883)
+        14: dlopen_doit   (at ./dlfcn/dlopen.c:56)
+        15: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+        16: _dl_catch_error   (at ./elf/dl-catch.c:260)
+        17: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+        18: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+        19: ___dlopen   (at ./dlfcn/dlopen.c:81)
+        20: ??   (at :-1)
+        21: ??   (at :-1)
+        22: glXChooseVisual   (at :-1)
+        23: ??   (at :-1)
+        24: ??   (at :-1)
+        25: ??   (at :-1)
+        26: ??   (at :-1)
+        27: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: __GI__dl_debug_state   (at ./elf/dl-debug_state.c:29)
+         2: dl_open_worker   (at ./elf/dl-open.c:784)
+         3: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+         4: _dl_open   (at ./elf/dl-open.c:883)
+         5: dlopen_doit   (at ./dlfcn/dlopen.c:56)
+         6: __GI__dl_catch_exception   (at ./elf/dl-catch.c:241)
+         7: _dl_catch_error   (at ./elf/dl-catch.c:260)
+         8: _dlerror_run   (at ./dlfcn/dlerror.c:138)
+         9: dlopen_implementation   (at ./dlfcn/dlopen.c:71)
+        10: ___dlopen   (at ./dlfcn/dlopen.c:81)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: glXChooseVisual   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: ??   (at :-1)
+        17: ??   (at :-1)
+        18: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: __internal_syscall_cancel   (at ./nptl/cancellation.c:44)
+         2: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         3: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: xcb_wait_for_reply   (at :-1)
+         7: xcb_get_extension_data   (at :-1)
+         8: glFramebufferTextureMultisampleMultiviewOVR   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: glFramebufferTextureMultisampleMultiviewOVR   (at :-1)
+         2: glFramebufferTextureMultisampleMultiviewOVR   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: XML_ParseBuffer   (at :-1)
+         7: glFramebufferTextureMultisampleMultiviewOVR   (at :-1)
+         8: glFramebufferTextureMultisampleMultiviewOVR   (at :-1)
+         9: glFramebufferTextureMultisampleMultiviewOVR   (at :-1)
+        10: glFramebufferTextureMultisampleMultiviewOVR   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: ??   (at :-1)
+        17: ??   (at :-1)
+        18: ??   (at :-1)
+        19: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: __GI___ioctl   (at ../sysdeps/unix/sysv/linux/ioctl.c:36)
+         2: drmIoctl   (at :-1)
+         3: drmGetVersion   (at :-1)
+         4: glFramebufferTextureMultisampleMultiviewOVR   (at :-1)
+         5: glFramebufferTextureMultisampleMultiviewOVR   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: __internal_syscall_cancel   (at ./nptl/cancellation.c:44)
+         2: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         3: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: xcb_wait_for_reply64   (at :-1)
+         9: _XReply   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: ??   (at :-1)
+        17: ??   (at :-1)
+        18: ??   (at :-1)
+        19: ??   (at :-1)
+        20: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: XML_ParseBuffer   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: driCreateNewScreen3   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: ??   (at :-1)
+        17: ??   (at :-1)
+        18: ??   (at :-1)
+        19: ??   (at :-1)
+        20: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: XML_ParseBuffer   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: driCreateNewScreen3   (at :-1)
+        16: ??   (at :-1)
+        17: ??   (at :-1)
+        18: ??   (at :-1)
+        19: ??   (at :-1)
+        20: ??   (at :-1)
+        21: ??   (at :-1)
+        22: ??   (at :-1)
+        23: ??   (at :-1)
+        24: ??   (at :-1)
+        25: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: __GI___ioctl   (at ../sysdeps/unix/sysv/linux/ioctl.c:36)
+         2: drmIoctl   (at :-1)
+         3: drmCommandWriteRead   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: driCreateNewScreen3   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: ??   (at :-1)
+        17: ??   (at :-1)
+        18: ??   (at :-1)
+        19: ??   (at :-1)
+        20: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: do_lookup_x   (at ./elf/dl-lookup.c:416)
+         2: _dl_lookup_symbol_x   (at ./elf/dl-lookup.c:789)
+         3: _dl_fixup   (at ./elf/dl-runtime.c:95)
+         4: _dl_runtime_resolve_fxsave   (at ../sysdeps/x86_64/dl-trampoline.h:98)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: ??   (at :-1)
+         2: ??   (at :-1)
+         3: __glDispatchMakeCurrent   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: xcb_wait_for_reply64   (at :-1)
+         8: _XReply   (at :-1)
+         9: XInternAtom   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: main   (at cwave.c:2500)
+
+
+  1.429% ===================================== (1 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: xcb_wait_for_reply64   (at :-1)
+         8: _XReply   (at :-1)
+         9: _XGetWindowAttributes   (at :-1)
+        10: XGetWindowAttributes   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: main   (at cwave.c:2510)
+
+
+  1.429% ===================================== (1 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: xcb_wait_for_reply64   (at :-1)
+         8: _XReply   (at :-1)
+         9: XSync   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: main   (at cwave.c:2510)
+
+
+  1.429% ===================================== (1 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __libc_open64   (at ../sysdeps/unix/sysv/linux/open64.c:41)
+         5: __GI__IO_file_open   (at ./libio/fileops.c:189)
+         6: _IO_new_file_fopen   (at ./libio/fileops.c:282)
+         7: __fopen_internal   (at ./libio/iofopen.c:75)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: XcursorLibraryLoadCursor   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ImGui_ImplSDL2_Init(SDL_Window*   (at :-1)
+        14: ImGui_ImplSDL2_InitForOpenGL(SDL_Window*   (at :-1)
+        15: gui_init   (at :-1)
+        16: main   (at cwave.c:2522)
+
+
+  1.429% ===================================== (1 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: xcb_wait_for_reply64   (at :-1)
+         8: _XReply   (at :-1)
+         9: _XGetWindowAttributes   (at :-1)
+        10: XGetWindowAttributes   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: main   (at cwave.c:2552)
+
+
+  1.429% ===================================== (1 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: xcb_wait_for_reply64   (at :-1)
+         8: _XReply   (at :-1)
+         9: XGetAtomName   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: main   (at cwave.c:2552)
+
+
+  1.429% ===================================== (1 samples)
+         1: std::__detail::_Prime_rehash_policy::_M_need_rehash(unsigned   (at :-1)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: ??   (at :-1)
+        17: ??   (at :-1)
+        18: ??   (at :-1)
+        19: drawRect   (at cwave.c:1416)
+        20: renderWaveform   (at cwave.c:1630)
+        21: main   (at cwave.c:2629)
+
+
+  1.429% ===================================== (1 samples)
+         1: __memset_sse2_unaligned_erms   (at ../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S:199)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: ??   (at :-1)
+        17: ??   (at :-1)
+        18: ??   (at :-1)
+        19: ??   (at :-1)
+        20: ImGui_ImplOpenGL2_UpdateTexture(ImTextureData*)   (at :-1)
+        21: ImGui_ImplOpenGL2_RenderDrawData(ImDrawData*)   (at :-1)
+        22: main   (at cwave.c:2638)
+
+
+  1.429% ===================================== (1 samples)
+         1: tcache_free   (at ./malloc/malloc.c:3265)
+         2: _int_free   (at ./malloc/malloc.c:4695)
+         3: __GI___libc_free   (at ./malloc/malloc.c:3476)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: main   (at cwave.c:2672)
+
+
+  1.429% ===================================== (1 samples)
+         1: __syscall_cancel_arch   (at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56)
+         2: __internal_syscall_cancel   (at ./nptl/cancellation.c:49)
+         3: __syscall_cancel   (at ./nptl/cancellation.c:75)
+         4: __GI___poll   (at ../sysdeps/unix/sysv/linux/poll.c:29)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: xcb_wait_for_reply64   (at :-1)
+         8: _XReply   (at :-1)
+         9: XSync   (at :-1)
+        10: main   (at cwave.c:2672)
+
+
+  1.429% ===================================== (1 samples)
+         1: __GI_munmap   (at ../sysdeps/unix/syscall-template.S:117)
+         2: ??   (at :-1)
+         3: ??   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: XCloseDisplay   (at :-1)
+        11: ??   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: main   (at cwave.c:2674)
+
+
+  1.429% ===================================== (1 samples)
+         1: __GI___ioctl   (at ../sysdeps/unix/sysv/linux/ioctl.c:36)
+         2: drmIoctl   (at :-1)
+         3: drmCommandWrite   (at :-1)
+         4: ??   (at :-1)
+         5: ??   (at :-1)
+         6: ??   (at :-1)
+         7: ??   (at :-1)
+         8: ??   (at :-1)
+         9: ??   (at :-1)
+        10: ??   (at :-1)
+        11: XCloseDisplay   (at :-1)
+        12: ??   (at :-1)
+        13: ??   (at :-1)
+        14: ??   (at :-1)
+        15: ??   (at :-1)
+        16: main   (at cwave.c:2674)
+
+

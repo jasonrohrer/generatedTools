@@ -266,10 +266,11 @@ static void smoothAdd( int x, int y, int z )
     g_smooth[g_smoothCount].z=z; g_smoothCount++;
 }
 
-static void smoothRemoveAt( int x, int y, int z )
+static int smoothRemoveAt( int x, int y, int z )
 {
     int i = smoothFind( x, y, z );
-    if( i >= 0 ) g_smooth[i] = g_smooth[ --g_smoothCount ];
+    if( i >= 0 ) { g_smooth[i] = g_smooth[ --g_smoothCount ]; return 1; }
+    return 0;
 }
 
 /* Drop any smoother that a voxel now occupies (a voxel covering a smoother
@@ -954,7 +955,10 @@ static int pickCell( int mx, int my, int *cx, int *cy, int *cz,
     *onGround = 0;
 
     if( rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz, &px, &py, &pz, &ax ) ) {
-        if( g_mode == 1 ) {
+        /* Smoothers only ever live in empty cells, so even in erase mode we
+         * target the empty neighbour (where the smoother sits), not the solid
+         * voxel -- otherwise the removal misses and nothing disappears. */
+        if( g_mode == 1 && g_tool != 8 ) {
             /* erase acts on the hit cell; extrude burrows into the solid */
             *cx = hx; *cy = hy; *cz = hz;
             *dir = ( ax == 0 ) ? ( hx - px ) : ( ax == 1 ) ? ( hy - py )
@@ -1108,7 +1112,7 @@ static void cbSelect( int x, int y, int z, void *ud )
 static void cbSmooth( int x, int y, int z, void *ud )
 {
     (void)ud;
-    if( g_mode == 1 ) { smoothRemoveAt( x, y, z ); g_regCount++; }
+    if( g_mode == 1 ) { if( smoothRemoveAt( x, y, z ) ) g_regCount++; }
     else if( !voxAt( x, y, z ) ) {   /* can't place inside a voxel */
         smoothAdd( x, y, z ); g_regCount++;
     }

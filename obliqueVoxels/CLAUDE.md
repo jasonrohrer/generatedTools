@@ -31,13 +31,19 @@ Occlusion uses a per-pixel depth buffer keyed by `closeness = v*topH + w*frontH`
 * **voxel px** = horizontal size of a voxel (and its face width).
 * **front/top scrunch** ∈ {1,2,3} foreshortens a face: `faceH = voxPx/scrunch`
   (whole-pixel ratios only — e.g. voxPx 2, top scrunch 2 → 2×1 top squares).
-* **orient** 0/90/180/270 yaws the oblique view around vertical.
+* **orient** 0/90/180/270 yaws the oblique view around vertical.  The four
+  named orientations (Front/Right/Back/Left) are aligned to show the SAME face
+  as the matching 3D-view preset: Front sees the −z face, Right +x, Back +z,
+  Left −x (so `toUVW`/`fromUVW`/`g_frontDir` and the light rotation all agree).
 
 ## Shading
 
 Per output pixel the renderer finds the world point on the face, then does
 Lambert + point-light attenuation + a DDA shadow ray per light (in the rotated
-view frame).  Two modes:
+view frame).  A light's **size** slider (0 = hard point/sun) spreads its shadow
+rays over a sphere of source points (a jittered direction for a sun), producing
+a soft penumbra like a soft-box; the ray count scales with size and is capped.
+Two modes:
 
 1. **Natural** — base color × accumulated (colored) light; may go off-palette.
    The base color is the ramp's mid (non-black) sample via `voxFlatColor`, so a
@@ -101,7 +107,11 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   toggles one.  The Select tool has **below/above** depth sliders that sweep the
   marquee down into the solid (and up out of it) from the clicked surface.
   **Ctrl+A** all · **Esc** clear · **Del** delete · Copy/Recolor and
-  **Ctrl+C / Ctrl+V** paste (at an editable x,y,z offset).
+  **Ctrl+C / Ctrl+V** paste (at an editable x,y,z offset).  **Invert** selects
+  every unselected voxel.  **Extrude** sweeps the selected shape along a chosen
+  axis (±X/±Y/±Z) by a distance, filling a prism whose cross-section is the
+  selection (copies inherit each source voxel's color/ramp) — the whole
+  extruded volume becomes the new selection so it can be repeated.
 * Drag the thin handle at either **panel/view boundary** to resize the side
   panels; the palette grid re-wraps to the new width.
 * **Ctrl+Z / Ctrl+Y** undo / redo (whole gesture at a time).
@@ -113,10 +123,10 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 
 Human-readable, one record per line: a header, the embedded palette (`C r g b`),
 `AMBIENT`, `L` lights, a `RENDER` params line, then `V x y z color rampStart
-rampLen` per voxel.  A light line is `L x y z color intensity enabled [infinite]`
+rampLen` per voxel.  A light line is `L x y z color intensity enabled [infinite [size]]`
 — the trailing `infinite` flag (1 = directional "sun", parallel rays and no
-distance falloff, with x,y,z read as a direction) is optional so older files
-still load.  Trailing `S x y z` lines record smoother cells.  **File ▸ Import
+distance falloff, with x,y,z read as a direction) and `size` (soft-light radius,
+0 = hard) are optional so older files still load.  Trailing `S x y z` lines record smoother cells.  **File ▸ Import
 lighting** reads just the `AMBIENT`/`L` lines from another `.ovox` and replaces
 the current scene's lighting (for lighting a matched set identically).
 

@@ -298,6 +298,8 @@ typedef struct {
     int   enabled;
     int   infinite;     /* 1 = directional "sun": parallel rays, no falloff.
                          * Then (x,y,z) is read as a direction, not a position. */
+    float size;         /* soft-light radius: 0 = hard point/sun; larger casts
+                         * a penumbra by sampling a sphere of source points. */
 } Light;
 
 static Light g_lights[ MAX_LIGHTS ];
@@ -314,6 +316,7 @@ static void lightAdd( float x, float y, float z, int color, float inten )
     g_lights[ g_numLights ].intensity = inten;
     g_lights[ g_numLights ].enabled = 1;
     g_lights[ g_numLights ].infinite = 0;
+    g_lights[ g_numLights ].size = 0.0f;
     g_numLights++;
 }
 
@@ -518,11 +521,14 @@ static void histRedo( void )
 static void toUVW( int x, int y, int z, int *u, int *v, int *w )
 {
     *v = y;
+    /* +w is "toward the viewer" (the rendered front face).  Each orient is
+     * aligned so it shows the SAME face as the matching 3D-view preset:
+     * Front sees -z, Right sees +x, Back sees +z, Left sees -x. */
     switch( g_orient & 3 ) {
-        case 0:  *u =  x; *w =  z; break;
-        case 1:  *u =  z; *w = -x; break;
-        case 2:  *u = -x; *w = -z; break;
-        default: *u = -z; *w =  x; break;
+        case 0:  *u = -x; *w = -z; break;   /* Front: front face = -z */
+        case 1:  *u = -z; *w =  x; break;   /* Right: front face = +x */
+        case 2:  *u =  x; *w =  z; break;   /* Back:  front face = +z */
+        default: *u =  z; *w = -x; break;   /* Left:  front face = -x */
     }
 }
 
@@ -531,10 +537,10 @@ static void fromUVW( double u, double v, double w, double *x, double *y, double 
 {
     *y = v;
     switch( g_orient & 3 ) {
-        case 0:  *x =  u; *z =  w; break;
-        case 1:  *x = -w; *z =  u; break;
-        case 2:  *x = -u; *z = -w; break;
-        default: *x =  w; *z = -u; break;
+        case 0:  *x = -u; *z = -w; break;
+        case 1:  *x =  w; *z = -u; break;
+        case 2:  *x =  u; *z =  w; break;
+        default: *x = -w; *z =  u; break;
     }
 }
 
@@ -1332,6 +1338,56 @@ static void selAll( void )
         if( g_vox[i].used == 1 ) g_vox[i].sel = 1;
 }
 
+/* Invert: select every unselected voxel and drop the current selection. */
+static void selInvert( void )
+{
+    int i;
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 ) g_vox[i].sel = !g_vox[i].sel;
+    { char m[64]; sprintf( m, "%d selected", selCount() ); setStatus( m ); }
+}
+
+/* Extrude the selection along an axis: copy every selected voxel forward
+ * step-by-step, filling a prism whose cross-section is the selected shape.
+ * The whole extruded volume becomes the new selection so it can be repeated. */
+static const int g_axis6[6][3] =
+    { {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1} };
+static int g_extrudeDir  = 4;   /* index into g_axis6; default +Z */
+static int g_extrudeDist = 4;
+
+static void selExtrude( void )
+{
+    int i, k, n = 0, cap = selCount();
+    int dx = g_axis6[g_extrudeDir][0];
+    int dy = g_axis6[g_extrudeDir][1];
+    int dz = g_axis6[g_extrudeDir][2];
+    int *src;   /* x,y,z,color,rampStart,rampLen per source voxel */
+    if( cap == 0 ) { setStatus( "Selection empty" ); return; }
+    if( g_extrudeDist < 1 ) { setStatus( "Extrude distance is 0" ); return; }
+    src = (int*)malloc( (size_t)cap * 6 * sizeof( int ) );
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 && g_vox[i].sel ) {
+            src[n*6+0]=g_vox[i].x; src[n*6+1]=g_vox[i].y; src[n*6+2]=g_vox[i].z;
+            src[n*6+3]=g_vox[i].color; src[n*6+4]=g_vox[i].rampStart;
+            src[n*6+5]=g_vox[i].rampLen; n++;
+        }
+    groupBegin();
+    for( k = 1; k <= g_extrudeDist; k++ )
+        for( i = 0; i < n; i++ )
+            editVoxel( src[i*6+0]+dx*k, src[i*6+1]+dy*k, src[i*6+2]+dz*k, 1,
+                       src[i*6+3], src[i*6+4], src[i*6+5] );
+    groupEnd();
+    /* select the full extruded volume (voxSet cleared sel flags on new cells) */
+    for( k = 0; k <= g_extrudeDist; k++ )
+        for( i = 0; i < n; i++ ) {
+            Voxel *v = voxAt( src[i*6+0]+dx*k, src[i*6+1]+dy*k, src[i*6+2]+dz*k );
+            if( v ) v->sel = 1;
+        }
+    free( src );
+    { char m[80]; sprintf( m, "Extruded %d voxels by %d", n, g_extrudeDist );
+      setStatus( m ); }
+}
+
 /* Delete every selected voxel as one undo group. */
 static void selDelete( void )
 {
@@ -1493,6 +1549,76 @@ static void drawGesturePreview( void )
 /* oblique CPU renderer                                                */
 /* ------------------------------------------------------------------ */
 
+/* Evenly-spread unit-sphere sample offsets (Fibonacci sphere), used to spread a
+ * soft light's shadow rays over a sphere of source points so edges get a
+ * penumbra instead of a hard step.  Filled once at startup. */
+#define SOFT_MAX_SAMPLES 32
+static double g_sphereOff[ SOFT_MAX_SAMPLES ][3];
+static int    g_sphereOffN = 0;
+
+static void initSoftSamples( void )
+{
+    int i;
+    double ga = M_PI * ( 3.0 - sqrt( 5.0 ) );   /* golden angle */
+    for( i = 0; i < SOFT_MAX_SAMPLES; i++ ) {
+        double y  = 1.0 - ( i + 0.5 ) * 2.0 / SOFT_MAX_SAMPLES;
+        double r  = sqrt( 1.0 - y*y );
+        double th = ga * i;
+        g_sphereOff[i][0] = cos( th ) * r;
+        g_sphereOff[i][1] = y;
+        g_sphereOff[i][2] = sin( th ) * r;
+    }
+    g_sphereOffN = SOFT_MAX_SAMPLES;
+}
+
+/* Number of shadow rays to spend on a light of the given size (1 for a hard
+ * point light; scales up with size for a smoother penumbra, capped). */
+static int softSampleCount( double size )
+{
+    int n;
+    if( size <= 1e-4 ) return 1;
+    n = (int)( 5.0 + size * 2.5 );
+    if( n > g_sphereOffN ) n = g_sphereOffN;
+    if( n < 4 ) n = 4;
+    return n;
+}
+
+/* Fraction (0..1) of a light visible from P.  For a hard light this is a single
+ * shadow ray (1 or 0).  For a soft light we jitter the target over a sphere of
+ * radius `size` (a jittered direction for an infinite sun) and average.
+ * shadowFn is shadowedUVW or shadowedWorld -- identical signatures, so the same
+ * soft logic serves both the oblique renderer and the 3D match preview. */
+static int shadowedUVW( double, double, double, double, double, double );
+static double softVisible( double px, double py, double pz,
+                           double lx, double ly, double lz,
+                           double dirx, double diry, double dirz,
+                           int infinite, double size,
+                           int (*shadowFn)( double,double,double,
+                                            double,double,double ) )
+{
+    int i, ns, blocked = 0;
+    if( size <= 1e-4 )
+        return shadowFn( px, py, pz, lx, ly, lz ) ? 0.0 : 1.0;
+    ns = softSampleCount( size );
+    for( i = 0; i < ns; i++ ) {
+        double ox = g_sphereOff[i][0], oy = g_sphereOff[i][1], oz = g_sphereOff[i][2];
+        double sx, sy, sz;
+        if( infinite ) {
+            /* jitter the direction toward the sun by an angular amount ~size */
+            double ddx = dirx + ox*size*0.12;
+            double ddy = diry + oy*size*0.12;
+            double ddz = dirz + oz*size*0.12;
+            double dl = sqrt( ddx*ddx + ddy*ddy + ddz*ddz );
+            if( dl < 1e-6 ) dl = 1.0;
+            sx = px + ddx/dl*1000.0; sy = py + ddy/dl*1000.0; sz = pz + ddz/dl*1000.0;
+        } else {
+            sx = lx + ox*size; sy = ly + oy*size; sz = lz + oz*size;
+        }
+        if( shadowFn( px, py, pz, sx, sy, sz ) ) blocked++;
+    }
+    return 1.0 - (double)blocked / ns;
+}
+
 /* Cast a shadow ray in the view frame from surface point P toward a light at
  * L (also view-frame).  Returns 1 if blocked by a voxel before the light. */
 static int shadowedUVW( double px, double py, double pz,
@@ -1537,17 +1663,17 @@ static void shadeSample( double px, double py, double pz,
     double scalarLit = g_ambient;
 
     for( i = 0; i < g_numLights; i++ ) {
-        double lu, lv, lw, ldx, ldy, ldz, len, nl, atten, f;
+        double lu, lv, lw, ldx, ldy, ldz, len, nl, atten, f, vis;
         double du, dv, dw;
         if( !g_lights[i].enabled ) continue;
         /* rotate the world light vector into uvw the same way toUVW rotates
          * cells (a position for local lights, a direction for the sun) */
         { double lxw = g_lights[i].x, lyw = g_lights[i].y, lzw = g_lights[i].z;
           switch( g_orient & 3 ) {
-            case 0: du = lxw; dw = lzw; break;
-            case 1: du = lzw; dw = -lxw; break;
-            case 2: du = -lxw; dw = -lzw; break;
-            default: du = -lzw; dw = lxw; break;
+            case 0: du = -lxw; dw = -lzw; break;
+            case 1: du = -lzw; dw = lxw; break;
+            case 2: du = lxw; dw = lzw; break;
+            default: du = lzw; dw = -lxw; break;
           }
           dv = lyw;
         }
@@ -1566,12 +1692,15 @@ static void shadeSample( double px, double py, double pz,
         }
         nl = nx*ldx + ny*ldy + nz*ldz;
         if( nl <= 0 ) continue;
-        /* shadow test: nudge off the surface along the normal */
-        if( shadowedUVW( px + nx*0.02, py + ny*0.02, pz + nz*0.02, lu, lv, lw ) )
-            continue;
+        /* shadow test: nudge off the surface along the normal.  Soft lights
+         * spread the rays over a sphere to get a penumbra. */
+        vis = softVisible( px + nx*0.02, py + ny*0.02, pz + nz*0.02, lu, lv, lw,
+                           ldx, ldy, ldz, g_lights[i].infinite,
+                           g_lights[i].size, shadowedUVW );
+        if( vis <= 0.0 ) continue;
         atten = g_lights[i].infinite ? g_lights[i].intensity
                                      : g_lights[i].intensity / ( 1.0 + 0.03 * len );
-        f = nl * atten;
+        f = nl * atten * vis;
         accR += f * g_pal[ g_lights[i].color*3+0 ] / 255.0;
         accG += f * g_pal[ g_lights[i].color*3+1 ] / 255.0;
         accB += f * g_pal[ g_lights[i].color*3+2 ] / 255.0;
@@ -1618,7 +1747,7 @@ static void smootherBlend( int sx, int sy, int sz, const Voxel *forV,
                            unsigned char *out );
 
 /* World-frame direction of the oblique "front" (+w) neighbour per orient. */
-static const int g_frontDir[4][3] = { {0,0,1}, {-1,0,0}, {0,0,-1}, {1,0,0} };
+static const int g_frontDir[4][3] = { {0,0,-1}, {1,0,0}, {0,0,1}, {-1,0,0} };
 
 /* Render the sculpture to the g_img RGBA buffer via the oblique projection. */
 static void renderOblique( void )
@@ -1813,7 +1942,7 @@ static void shadeWorld( double px, double py, double pz,
     double accR = g_ambient, accG = g_ambient, accB = g_ambient;
     double scalarLit = g_ambient;
     for( i = 0; i < g_numLights; i++ ) {
-        double ldx, ldy, ldz, len, nl, atten, f, lx, ly, lz;
+        double ldx, ldy, ldz, len, nl, atten, f, lx, ly, lz, vis;
         if( !g_lights[i].enabled ) continue;
         if( g_lights[i].infinite ) {
             /* directional sun: (x,y,z) read as the direction toward the light */
@@ -1831,11 +1960,13 @@ static void shadeWorld( double px, double py, double pz,
         }
         nl = nx*ldx + ny*ldy + nz*ldz;
         if( nl <= 0 ) continue;
-        if( shadowedWorld( px + nx*0.02, py + ny*0.02, pz + nz*0.02, lx, ly, lz ) )
-            continue;
+        vis = softVisible( px + nx*0.02, py + ny*0.02, pz + nz*0.02, lx, ly, lz,
+                           ldx, ldy, ldz, g_lights[i].infinite,
+                           g_lights[i].size, shadowedWorld );
+        if( vis <= 0.0 ) continue;
         atten = g_lights[i].infinite ? g_lights[i].intensity
                                      : g_lights[i].intensity / ( 1.0 + 0.03 * len );
-        f = nl * atten;
+        f = nl * atten * vis;
         accR += f * g_pal[ g_lights[i].color*3+0 ] / 255.0;
         accG += f * g_pal[ g_lights[i].color*3+1 ] / 255.0;
         accB += f * g_pal[ g_lights[i].color*3+2 ] / 255.0;
@@ -2030,10 +2161,10 @@ static void saveSculpture( const char *path )
         fprintf( f, "C %d %d %d\n", g_pal[i*3+0], g_pal[i*3+1], g_pal[i*3+2] );
     fprintf( f, "AMBIENT %.4f\n", g_ambient );
     for( i = 0; i < g_numLights; i++ )
-        fprintf( f, "L %.4f %.4f %.4f %d %.4f %d %d\n",
+        fprintf( f, "L %.4f %.4f %.4f %d %.4f %d %d %.4f\n",
                  g_lights[i].x, g_lights[i].y, g_lights[i].z,
                  g_lights[i].color, g_lights[i].intensity, g_lights[i].enabled,
-                 g_lights[i].infinite );
+                 g_lights[i].infinite, g_lights[i].size );
     fprintf( f, "RENDER %d %d %d %d %d\n", g_shadingMode, g_voxPx,
              g_frontScrunch, g_topScrunch, g_orient );
     /* one voxel per line: V x y z color rampStart rampLen */
@@ -2088,15 +2219,16 @@ static int loadSculpture( const char *path )
         } else if( line[0] == 'A' ) {
             float a; if( sscanf( line, "AMBIENT %f", &a ) == 1 ) g_ambient = a;
         } else if( line[0] == 'L' && line[1] == ' ' ) {
-            float x,y,z,inten; int col,en,inf=0,got;
-            got = sscanf( line, "L %f %f %f %d %f %d %d",
-                          &x,&y,&z,&col,&inten,&en,&inf );
+            float x,y,z,inten,sz=0.0f; int col,en,inf=0,got;
+            got = sscanf( line, "L %f %f %f %d %f %d %d %f",
+                          &x,&y,&z,&col,&inten,&en,&inf,&sz );
             if( got >= 6 && g_numLights < MAX_LIGHTS ) {
                 g_lights[g_numLights].x=x; g_lights[g_numLights].y=y;
                 g_lights[g_numLights].z=z; g_lights[g_numLights].color=col;
                 g_lights[g_numLights].intensity=inten;
                 g_lights[g_numLights].enabled=en;
                 g_lights[g_numLights].infinite = ( got >= 7 ) ? inf : 0;
+                g_lights[g_numLights].size = ( got >= 8 ) ? sz : 0.0f;
                 g_numLights++;
             }
         } else if( line[0] == 'R' ) {
@@ -2145,13 +2277,14 @@ static int importLighting( const char *path )
         if( line[0] == 'A' ) {
             float a; if( sscanf( line, "AMBIENT %f", &a ) == 1 ) { amb=a; haveAmb=1; }
         } else if( line[0] == 'L' && line[1] == ' ' ) {
-            float x,y,z,inten; int col,en,inf=0,got;
-            got = sscanf( line, "L %f %f %f %d %f %d %d",
-                          &x,&y,&z,&col,&inten,&en,&inf );
+            float x,y,z,inten,sz=0.0f; int col,en,inf=0,got;
+            got = sscanf( line, "L %f %f %f %d %f %d %d %f",
+                          &x,&y,&z,&col,&inten,&en,&inf,&sz );
             if( got >= 6 && n < MAX_LIGHTS ) {
                 tmp[n].x=x; tmp[n].y=y; tmp[n].z=z; tmp[n].color=col;
                 tmp[n].intensity=inten; tmp[n].enabled=en;
                 tmp[n].infinite = ( got >= 7 ) ? inf : 0;
+                tmp[n].size = ( got >= 8 ) ? sz : 0.0f;
                 n++;
             }
         }
@@ -2373,6 +2506,8 @@ static void buildLeftPanel( float top, float h )
         if( gui_button( "All" ) ) selAll();
         gui_same_line();
         if( gui_button( "Clear" ) ) selClear();
+        gui_same_line();
+        if( gui_button( "Invert" ) ) selInvert();
         if( gui_button( "Delete" ) ) selDelete();
         gui_same_line();
         if( gui_button( "Recolor" ) ) selRecolor();
@@ -2383,6 +2518,13 @@ static void buildLeftPanel( float top, float h )
         gui_slider_int( "px", &g_pasteDX, -32, 32 );
         gui_slider_int( "py", &g_pasteDY, -32, 32 );
         gui_slider_int( "pz", &g_pasteDZ, -32, 32 );
+        { static const char *dirItems[6] =
+              { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
+          gui_separator_text( "Extrude selection" );
+          gui_combo( "dir", &g_extrudeDir, dirItems, 6 );
+          gui_slider_int( "distance", &g_extrudeDist, 1, 64 );
+          if( gui_button( "Extrude" ) ) selExtrude();
+        }
     }
 
     gui_separator_text( "Paint color / ramp" );
@@ -2462,6 +2604,10 @@ static void buildLeftPanel( float top, float h )
         }
         if( gui_slider_float( "intensity", &L->intensity, 0.0f, 3.0f, "%.2f" ) )
             g_renderDirty=1;
+        if( gui_slider_float( "size (soft)", &L->size, 0.0f, 12.0f, "%.1f" ) )
+            g_renderDirty=1;
+        gui_text( L->size > 0.05f ? "soft shadows (slower)"
+                                  : "0 = hard point/sun" );
         if( gui_checkbox( "enabled", &L->enabled ) ) g_renderDirty=1;
         if( gui_button( "Set light color from paint" ) ) {
             L->color = g_pick; g_renderDirty = 1;
@@ -2674,6 +2820,7 @@ int main( int argc, char **argv )
         fprintf( stderr, "GUI init failed\n" ); return 1;
     }
 
+    initSoftSamples();
     voxInit( 1024 );
     if( argc > 1 ) {
         if( !loadSculpture( argv[1] ) ) buildDemoScene();

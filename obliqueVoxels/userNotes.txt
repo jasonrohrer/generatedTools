@@ -1,37 +1,17 @@
-Great work!
+Astounding!
+
+Next:
+
+--Natural shading, if pixels have a ramp color, doesn't work in pixel view, and still shows black as the base color if the ramp starts with black.  Same behavior should happen (which works nicely in the Flat and Quick in the 3d view), where a middle ramp color is chosen as the base color, or any non-black ramp color, if possible.
+
+--Tools for drawing cylinders.  Same thickness settings and behavior as box, but you're defining a (jaggy) circle (or oval) on a face, and it's rising up that thickness, or sinking in that thickness in erase mode.
+
+--Tools for drawing spheres.  They should stick like a wart on the surface and grow as you drag.  Only perfect spheres for now.  There should be a slider to control how deep the sphere is positioned into the surface (so you can make domes on a flat surface).  Erase mode should work here too (where the sphere can dig a crater out from the surface, if the depth is non-zero).  This depth setting will work a little different than the "thickness" of a line or box, which changes meaning in erase vs draw mode.  For spheres, depth always means how deep the sphere is into the surface, in both modes.
+
+--A way to import lighting from another ovox file.  Call it Import Lighting in the file menu.  On import, it should read the ovox file and REPLACE the lighting in the currently open session with the lighting from that other ovox file.  This will allow us to copy lighting from one scene to another (like when making a chess set, we want them all lit the same, and we might tweak the lighting on one until we get it right, then import that same lighting to all of them.
+
+--A slider to rotate the light around the y axis.  We should be able to watch the x and z coordinates change as we drag this slider, and we should be able to watch the y-angle change as we drag the z or x sliders.
+
+--I'm having trouble with visual stair-stepping in the pixel art shading for surfaces that are supposed to represent curves.  For example, if I made a spehere, I get that the OUTLINE of the sphere is necessarily stair-stepped (it's pixel art!), but on the face of the sphere, the shading is stair-stepped too.  Sometimes we get almost stripes of bright and dark lines, where we see the dark front and the bright top of each step.   I'm wondering if we can have a "smoothers" tool, that behaves like a 1-thick line tool, and adds translucent cube smoothers to certain spots.  These smoothers are only visible when the smoothers tool is active (so it's not cluttering the view when we just want to see the voxels).  Smoothers are drawn as little translucent boxes.  Smoothers can't be placed inside existing voxels (if the line tool placing the smoother crosses a voxel along the way, that smoother is skipped), and if a voxel is drawn later that covers a smoother, the smoother disappears.  What the smoother does is take whatever faces it its touching, average those colors (or find a color between them on the ramp) and then sets ALL faces to that average (or middle ramp) color.  If there are only two neighboring colors on the ramp with nothing in between, it picks the brigther one.  In natural shading, it can always use the average color.  This should be visible in the Preview Match Render 3D view, and also in the resulting pixel art render.  So instead of strips of alternating color down the face of a sphere, we'd have a uniform patch of color in that are, thanks to the smoothers that we placed there.
 
 
-All previously-listed issues are addressed (2026-07-12):
-
---DONE: Scribble Select tool (tool 6): left-drag paints every touched voxel
-  into the selection; erase mode (E) un-paints.  Shares the selection with the
-  marquee Select tool.
-
---DONE: The marquee Select tool now has "below" and "above" depth sliders.
-  "below" sweeps the marquee down into the solid from the clicked surface;
-  "above" sweeps it up out of the surface (both like the Box tool's thickness,
-  but two-sided).
-
---DONE: Draggable separators between each side panel and the view.  Grab the
-  thin handle at either boundary and drag.  The palette grid re-wraps to the new
-  width, so wide ramps can be made to sit on one line.
-
---DONE: Flat and Quick-Light preview now pick a representative color from the
-  MIDDLE of a voxel's ramp instead of its first index, and skip pure black when
-  the ramp holds any non-black color -- so a ramp that starts on black no longer
-  makes the whole voxel read as black.  (Natural render mode still uses the base
-  color as the material, by design; switch to Palette-ramp mode to shade a black-
-  based ramp across its range.)
-
---DONE: Lights have an "infinite (sun)" toggle.  A sun light casts parallel rays
-  with no distance falloff (x,y,z is read as the direction toward the sun), so
-  you get flat directional lighting instead of the local desk-lamp halo.  Saved
-  in .ovox as an optional 7th field on the L line (older files still load).
-
---DONE: Real file pickers for Open / Save / Export PNG / Load palette.  They
-  list the current directory (folders first), filter by the relevant extension,
-  hide dotfiles (but keep ".." to go up), and let you click an entry or type a
-  name.
-
-
-New issues go below:

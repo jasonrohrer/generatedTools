@@ -66,6 +66,8 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   (C++), so the app stays C89.  Adds a color-swatch and drag-to-select palette
   grid widget.
 * `stbiw.c` — stb_image_write PNG encoder as its own object (relaxed std).
+* `fs.c` / `fs.h` — POSIX directory listing (opendir/stat/getcwd) for the file
+  browser, in its own relaxed-std unit so the main app stays C89.
 * `imgui/` — vendored Dear ImGui (only `.o` files are gitignored).
 
 ## Controls
@@ -73,7 +75,9 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 * **Right-drag** orbit · **Mid-drag** pan · **Wheel** zoom.
 * **Left-click** (Pencil) place/erase · **Left-drag** (Line/Rect/Box/Select)
   region gesture with a live ghost, committed as one undo step.
-* Tools **1** Pencil · **2** Line · **3** Rect · **4** Box · **5** Select.
+* Tools **1** Pencil · **2** Line · **3** Rect · **4** Box · **5** Select ·
+  **6** Scribble (paint a selection over whatever voxels the drag touches;
+  erase mode un-paints).
 * Modes **B** draw · **E** erase — every tool obeys the mode (erase a whole
   line/box, marquee-deselect, etc.).
 * **thickness** slider extrudes Line/Rect/Box along the started face's normal,
@@ -81,8 +85,12 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 * Region tools lock to the plane of the started face (or ground y=0); a drag
   glides across that single layer.
 * Selection: marquee-drag adds voxels (erase mode removes), single-click
-  toggles one. **Ctrl+A** all · **Esc** clear · **Del** delete · Copy/Recolor
-  and **Ctrl+C / Ctrl+V** paste (at an editable x,y,z offset).
+  toggles one.  The Select tool has **below/above** depth sliders that sweep the
+  marquee down into the solid (and up out of it) from the clicked surface.
+  **Ctrl+A** all · **Esc** clear · **Del** delete · Copy/Recolor and
+  **Ctrl+C / Ctrl+V** paste (at an editable x,y,z offset).
+* Drag the thin handle at either **panel/view boundary** to resize the side
+  panels; the palette grid re-wraps to the new width.
 * **Ctrl+Z / Ctrl+Y** undo / redo (whole gesture at a time).
 * Clicks are gated on the real 3D-viewport rect + an immediate popup-open
   check (not ImGui's one-frame-late hover), so nothing leaks between panels
@@ -92,7 +100,10 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 
 Human-readable, one record per line: a header, the embedded palette (`C r g b`),
 `AMBIENT`, `L` lights, a `RENDER` params line, then `V x y z color rampStart
-rampLen` per voxel.
+rampLen` per voxel.  A light line is `L x y z color intensity enabled [infinite]`
+— the trailing `infinite` flag (1 = directional "sun", parallel rays and no
+distance falloff, with x,y,z read as a direction) is optional so older files
+still load.
 
 ## Notes
 

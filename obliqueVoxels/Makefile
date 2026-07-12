@@ -32,7 +32,7 @@ IMGUI_SRC = $(IMGUI_DIR)/imgui.cpp \
 
 IMGUI_OBJ = $(IMGUI_SRC:.cpp=.o)
 
-OBJ = obliqueVoxels.o gui.o stbiw.o $(IMGUI_OBJ)
+OBJ = obliqueVoxels.o gui.o stbiw.o fs.o $(IMGUI_OBJ)
 
 all: obliqueVoxels
 
@@ -45,6 +45,9 @@ obliqueVoxels.o: obliqueVoxels.c gui.h
 stbiw.o: stbiw.c stb_image_write.h
 	$(CC) $(STBFLAGS) -c -o $@ stbiw.c
 
+fs.o: fs.c fs.h
+	$(CC) $(STBFLAGS) -c -o $@ fs.c
+
 gui.o: gui.cpp gui.h
 	$(CXX) $(CXXFLAGS) -c -o $@ gui.cpp
 
@@ -52,7 +55,7 @@ gui.o: gui.cpp gui.h
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 clean:
-	rm -f obliqueVoxels obliqueVoxels.o gui.o stbiw.o
+	rm -f obliqueVoxels obliqueVoxels.o gui.o stbiw.o fs.o
 
 # Leave the (slow-to-build) imgui objects in place on clean; use realclean to
 # force a full imgui rebuild.

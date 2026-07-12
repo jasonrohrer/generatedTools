@@ -270,6 +270,18 @@ int gui_palette_grid( const unsigned char *rgb, int count, int perRow,
     return changed;
 }
 
+int gui_selectable( const char *label, int selected )
+{
+    return ImGui::Selectable( label, selected != 0 ) ? 1 : 0;
+}
+
+void gui_overlay_rect( float x0, float y0, float x1, float y1,
+                       int r, int g, int b, int a )
+{
+    ImGui::GetForegroundDrawList()->AddRectFilled(
+        ImVec2( x0, y0 ), ImVec2( x1, y1 ), IM_COL32( r, g, b, a ) );
+}
+
 /* ---- image ---- */
 void gui_image( unsigned int texId, float w, float h )
 {

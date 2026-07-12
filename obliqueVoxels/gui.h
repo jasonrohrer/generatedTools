@@ -90,6 +90,13 @@ int  gui_color_button( const char *id, int r, int g, int b,
 int  gui_palette_grid( const unsigned char *rgb, int count, int perRow,
                        float cell, int *picked, int *rampStart, int *rampEnd );
 
+int  gui_selectable( const char *label, int selected );
+
+/* Draw a filled rectangle on the top-most (foreground) draw list, above every
+ * window.  Used to paint the draggable panel splitter handles.  rgba 0..255. */
+void gui_overlay_rect( float x0, float y0, float x1, float y1,
+                       int r, int g, int b, int a );
+
 /* ---- image (the oblique render texture) ---- */
 void gui_image( unsigned int texId, float w, float h );
 

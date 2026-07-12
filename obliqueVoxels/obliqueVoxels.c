@@ -22,6 +22,7 @@
 #include <GL/glu.h>
 
 #include "gui.h"
+#include "fs.h"
 
 /* stb_image_write (implementation lives in stbiw.o) */
 extern int stbi_write_png( char const *filename, int w, int h, int comp,
@@ -248,6 +249,8 @@ typedef struct {
     int   color;        /* palette index */
     float intensity;
     int   enabled;
+    int   infinite;     /* 1 = directional "sun": parallel rays, no falloff.
+                         * Then (x,y,z) is read as a direction, not a position. */
 } Light;
 
 static Light g_lights[ MAX_LIGHTS ];
@@ -263,6 +266,7 @@ static void lightAdd( float x, float y, float z, int color, float inten )
     g_lights[ g_numLights ].color = color;
     g_lights[ g_numLights ].intensity = inten;
     g_lights[ g_numLights ].enabled = 1;
+    g_lights[ g_numLights ].infinite = 0;
     g_numLights++;
 }
 
@@ -325,17 +329,19 @@ static PFace *g_pface = NULL;
 static int    g_pfaceCount = 0, g_pfaceCap = 0;
 
 /* filenames for save/load dialogs */
-static char g_fileName[ 256 ] = "sculpture.ovox";
-static char g_pngName[ 256 ]  = "render.png";
-static char g_gplName[ 256 ]  = "sheltzy32.gpl";
 static char g_status[ 256 ]   = "";
 
 /* window / view layout (raw-GL 3D viewport rect, filled each frame) */
 static int g_viewX = 0, g_viewY = 0, g_viewW = 0, g_viewH = 0;
 static int g_winH = 720;   /* full window height, for GL-y conversion */
 
+/* side-panel widths (draggable via the splitter handles at each edge) */
+static float g_leftW  = 240.0f;
+static float g_rightW = 300.0f;
+
 /* mouse drag tracking for the 3D view */
 static int g_dragBtn = 0;          /* 0 none, else SDL button */
+static int g_splitDrag = 0;        /* 0 none, 1 left splitter, 2 right splitter */
 static int g_downX = 0, g_downY = 0;
 static int g_lastX = 0, g_lastY = 0;
 static int g_moved = 0;
@@ -518,6 +524,33 @@ static void setupCamera( int w, int h )
 }
 
 /* face brightness used only for the 3D preview (cheap, no shadows) */
+/* Representative flat/preview color for a voxel.  Flat and quick-light preview
+ * modes need a single color to tint the whole voxel; taking v->color naively
+ * grabs the ramp's first index, which is often pure black (ramps are commonly
+ * dragged out dark->light).  Instead pick the middle of the ramp, and if that
+ * sample is black while the ramp holds any non-black color, walk outward to the
+ * nearest non-black sample -- so a ramped voxel never reads as solid black. */
+static int voxFlatColor( const Voxel *v )
+{
+    int rl = v->rampLen < 1 ? 1 : v->rampLen;
+    int start, mid, i;
+    if( rl <= 1 ) return v->color;
+    start = clampi( v->rampStart, 0, g_palCount - 1 );
+    if( start + rl > g_palCount ) rl = g_palCount - start;
+    if( rl < 1 ) return v->color;
+    mid = start + rl / 2;
+    if( g_pal[mid*3]+g_pal[mid*3+1]+g_pal[mid*3+2] == 0 ) {
+        for( i = 1; i < rl; i++ ) {
+            int lo = mid - i, hi = mid + i;
+            if( lo >= start &&
+                g_pal[lo*3]+g_pal[lo*3+1]+g_pal[lo*3+2] > 0 ) { mid = lo; break; }
+            if( hi < start + rl &&
+                g_pal[hi*3]+g_pal[hi*3+1]+g_pal[hi*3+2] > 0 ) { mid = hi; break; }
+        }
+    }
+    return clampi( mid, 0, g_palCount - 1 );
+}
+
 static float previewFace( float nx, float ny, float nz )
 {
     if( !g_previewShade ) {
@@ -647,7 +680,8 @@ static void drawScene3D( void )
             if( g_vox[i].used != 1 ) continue;
             v = &g_vox[i];
             x = v->x; y = v->y; z = v->z;
-            r = g_pal[ v->color*3+0 ]; g = g_pal[ v->color*3+1 ]; b = g_pal[ v->color*3+2 ];
+            { int fc = voxFlatColor( v );
+              r = g_pal[ fc*3+0 ]; g = g_pal[ fc*3+1 ]; b = g_pal[ fc*3+2 ]; }
             if( !voxAt( x, y+1, z ) ) drawCubeFace( (float)x,(float)y,(float)z, 0,1,0, r,g,b );
             if( !voxAt( x, y-1, z ) ) drawCubeFace( (float)x,(float)y,(float)z, 0,-1,0, r,g,b );
             if( !voxAt( x, y, z+1 ) ) drawCubeFace( (float)x,(float)y,(float)z, 0,0,1, r,g,b );
@@ -911,6 +945,21 @@ static int g_gAxis = 1;            /* plane normal axis */
 static int g_gDir  = 1;            /* extrude direction along plane axis */
 static int g_gHaveB = 0;           /* current cell is valid */
 
+/* selection marquee depth: how many layers to sweep below (into the solid) and
+ * above (out of the surface) the clicked plane, like the Box tool's thickness
+ * but two-sided.  Only used by the Select tool. */
+static int g_selBelow = 0;
+static int g_selAbove = 0;
+
+/* Inclusive layer-offset range along g_gDir that regionForEach sweeps.  Set by
+ * setRegionLayers() from the active tool just before enumerating a region. */
+static int g_regLayerLo = 0, g_regLayerHi = 0;
+static void setRegionLayers( void )
+{
+    if( g_tool == 4 ) { g_regLayerLo = -g_selBelow; g_regLayerHi = g_selAbove; }
+    else              { g_regLayerLo = 0; g_regLayerHi = g_thickness - 1; }
+}
+
 /* Enumerate the cells of the active region, calling cb(x,y,z,ud) for each.
  * Handles line / rect(outline) / box(filled) shapes plus thickness extrusion
  * along the plane normal.  Capped so a huge drag can't stall the app. */
@@ -930,7 +979,7 @@ static void regionForEach( int tool,
     lo1 = a[i1] < b[i1] ? a[i1] : b[i1];
     hi1 = a[i1] > b[i1] ? a[i1] : b[i1];
 
-    for( k = 0; k < g_thickness; k++ ) {
+    for( k = g_regLayerLo; k <= g_regLayerHi; k++ ) {
         int layer = a[A] + k * g_gDir;
         c[A] = layer;
         if( tool == 1 ) {
@@ -979,6 +1028,7 @@ static void regionCommit( void )
     char msg[96];
     if( !g_gHaveB ) return;
     g_regCount = 0;
+    setRegionLayers();
     if( g_tool == 4 ) {
         regionForEach( 3, cbSelect, NULL );   /* select: filled marquee */
         sprintf( msg, "%s %d voxels",
@@ -1033,6 +1083,21 @@ static void gestureUpdate( int mx, int my )
         else if( g_gAxis == 1 ) g_gBy = g_gAy;
         else g_gBz = g_gAz;
         g_gHaveB = 1;
+    }
+}
+
+/* Scribble-select: select (or, in erase mode, deselect) the surface voxel the
+ * cursor is over.  Called on the initial click and every mouse-move of a
+ * scribble drag, so dragging paints a selection across whatever it touches. */
+static int g_scribbling = 0;
+static void scribbleAt( int mx, int my )
+{
+    double ox, oy, oz, dx, dy, dz;
+    int hx, hy, hz, px, py, pz, ax;
+    mouseRay( mx, my, &ox, &oy, &oz, &dx, &dy, &dz );
+    if( rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz, &px, &py, &pz, &ax ) ) {
+        Voxel *v = voxAt( hx, hy, hz );
+        if( v ) v->sel = ( g_mode == 1 ) ? 0 : 1;
     }
 }
 
@@ -1195,6 +1260,7 @@ static void drawGesturePreview( void )
     if( !g_gActive || !g_gHaveB ) return;
     tool = ( g_tool == 4 ) ? 3 : g_tool;   /* select previews as a filled box */
     if( g_tool == 0 ) return;              /* pencil: nothing to preview */
+    setRegionLayers();
     glEnable( GL_BLEND );
     glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
     glDepthMask( GL_FALSE );
@@ -1257,31 +1323,39 @@ static void shadeSample( double px, double py, double pz,
 
     for( i = 0; i < g_numLights; i++ ) {
         double lu, lv, lw, ldx, ldy, ldz, len, nl, atten, f;
-        int wx, wy, wz;
+        double du, dv, dw;
         if( !g_lights[i].enabled ) continue;
-        /* transform world light into the view frame */
-        { int iu,iv,iw; double du,dv,dw;
-          /* rotate a world vector into uvw the same way toUVW rotates cells */
-          double lxw = g_lights[i].x, lyw = g_lights[i].y, lzw = g_lights[i].z;
+        /* rotate the world light vector into uvw the same way toUVW rotates
+         * cells (a position for local lights, a direction for the sun) */
+        { double lxw = g_lights[i].x, lyw = g_lights[i].y, lzw = g_lights[i].z;
           switch( g_orient & 3 ) {
             case 0: du = lxw; dw = lzw; break;
             case 1: du = lzw; dw = -lxw; break;
             case 2: du = -lxw; dw = -lzw; break;
             default: du = -lzw; dw = lxw; break;
           }
-          dv = lyw; lu = du; lv = dv; lw = dw;
-          (void)iu;(void)iv;(void)iw;(void)wx;(void)wy;(void)wz;
+          dv = lyw;
         }
-        ldx = lu - px; ldy = lv - py; ldz = lw - pz;
-        len = sqrt( ldx*ldx + ldy*ldy + ldz*ldz );
-        if( len < 1e-5 ) continue;
-        ldx /= len; ldy /= len; ldz /= len;
+        if( g_lights[i].infinite ) {
+            /* directional: (du,dv,dw) is the direction toward the sun */
+            len = sqrt( du*du + dv*dv + dw*dw );
+            if( len < 1e-6 ) continue;
+            ldx = du/len; ldy = dv/len; ldz = dw/len;
+            lu = px + ldx*1000.0; lv = py + ldy*1000.0; lw = pz + ldz*1000.0;
+        } else {
+            lu = du; lv = dv; lw = dw;
+            ldx = lu - px; ldy = lv - py; ldz = lw - pz;
+            len = sqrt( ldx*ldx + ldy*ldy + ldz*ldz );
+            if( len < 1e-5 ) continue;
+            ldx /= len; ldy /= len; ldz /= len;
+        }
         nl = nx*ldx + ny*ldy + nz*ldz;
         if( nl <= 0 ) continue;
         /* shadow test: nudge off the surface along the normal */
         if( shadowedUVW( px + nx*0.02, py + ny*0.02, pz + nz*0.02, lu, lv, lw ) )
             continue;
-        atten = g_lights[i].intensity / ( 1.0 + 0.03 * len );
+        atten = g_lights[i].infinite ? g_lights[i].intensity
+                                     : g_lights[i].intensity / ( 1.0 + 0.03 * len );
         f = nl * atten;
         accR += f * g_pal[ g_lights[i].color*3+0 ] / 255.0;
         accG += f * g_pal[ g_lights[i].color*3+1 ] / 255.0;
@@ -1498,18 +1572,28 @@ static void shadeWorld( double px, double py, double pz,
     double accR = g_ambient, accG = g_ambient, accB = g_ambient;
     double scalarLit = g_ambient;
     for( i = 0; i < g_numLights; i++ ) {
-        double ldx, ldy, ldz, len, nl, atten, f;
+        double ldx, ldy, ldz, len, nl, atten, f, lx, ly, lz;
         if( !g_lights[i].enabled ) continue;
-        ldx = g_lights[i].x - px; ldy = g_lights[i].y - py; ldz = g_lights[i].z - pz;
-        len = sqrt( ldx*ldx + ldy*ldy + ldz*ldz );
-        if( len < 1e-5 ) continue;
-        ldx /= len; ldy /= len; ldz /= len;
+        if( g_lights[i].infinite ) {
+            /* directional sun: (x,y,z) read as the direction toward the light */
+            ldx = g_lights[i].x; ldy = g_lights[i].y; ldz = g_lights[i].z;
+            len = sqrt( ldx*ldx + ldy*ldy + ldz*ldz );
+            if( len < 1e-6 ) continue;
+            ldx /= len; ldy /= len; ldz /= len;
+            lx = px + ldx*1000.0; ly = py + ldy*1000.0; lz = pz + ldz*1000.0;
+        } else {
+            ldx = g_lights[i].x - px; ldy = g_lights[i].y - py; ldz = g_lights[i].z - pz;
+            len = sqrt( ldx*ldx + ldy*ldy + ldz*ldz );
+            if( len < 1e-5 ) continue;
+            ldx /= len; ldy /= len; ldz /= len;
+            lx = g_lights[i].x; ly = g_lights[i].y; lz = g_lights[i].z;
+        }
         nl = nx*ldx + ny*ldy + nz*ldz;
         if( nl <= 0 ) continue;
-        if( shadowedWorld( px + nx*0.02, py + ny*0.02, pz + nz*0.02,
-                           g_lights[i].x, g_lights[i].y, g_lights[i].z ) )
+        if( shadowedWorld( px + nx*0.02, py + ny*0.02, pz + nz*0.02, lx, ly, lz ) )
             continue;
-        atten = g_lights[i].intensity / ( 1.0 + 0.03 * len );
+        atten = g_lights[i].infinite ? g_lights[i].intensity
+                                     : g_lights[i].intensity / ( 1.0 + 0.03 * len );
         f = nl * atten;
         accR += f * g_pal[ g_lights[i].color*3+0 ] / 255.0;
         accG += f * g_pal[ g_lights[i].color*3+1 ] / 255.0;
@@ -1542,10 +1626,11 @@ static void shadeWorld( double px, double py, double pz,
 static void shadeQuick( double nx, double ny, double nz,
                         const Voxel *v, unsigned char *out )
 {
+    int fc = voxFlatColor( v );
     float f = previewFace( (float)nx, (float)ny, (float)nz );
-    out[0] = (unsigned char)clampf( g_pal[v->color*3+0] * f, 0, 255 );
-    out[1] = (unsigned char)clampf( g_pal[v->color*3+1] * f, 0, 255 );
-    out[2] = (unsigned char)clampf( g_pal[v->color*3+2] * f, 0, 255 );
+    out[0] = (unsigned char)clampf( g_pal[fc*3+0] * f, 0, 255 );
+    out[1] = (unsigned char)clampf( g_pal[fc*3+1] * f, 0, 255 );
+    out[2] = (unsigned char)clampf( g_pal[fc*3+2] * f, 0, 255 );
 }
 
 static void pfacePush( float x, float y, float z, float nx, float ny, float nz,
@@ -1623,7 +1708,7 @@ static void savePNG( const char *path )
     ensureRender();
     if( g_img && g_imgW > 0 && g_imgH > 0 &&
         stbi_write_png( path, g_imgW, g_imgH, 4, g_img, g_imgW*4 ) ) {
-        char msg[300];
+        char msg[1400];
         sprintf( msg, "Saved PNG %dx%d -> %s", g_imgW, g_imgH, path );
         setStatus( msg );
     } else {
@@ -1646,9 +1731,10 @@ static void saveSculpture( const char *path )
         fprintf( f, "C %d %d %d\n", g_pal[i*3+0], g_pal[i*3+1], g_pal[i*3+2] );
     fprintf( f, "AMBIENT %.4f\n", g_ambient );
     for( i = 0; i < g_numLights; i++ )
-        fprintf( f, "L %.4f %.4f %.4f %d %.4f %d\n",
+        fprintf( f, "L %.4f %.4f %.4f %d %.4f %d %d\n",
                  g_lights[i].x, g_lights[i].y, g_lights[i].z,
-                 g_lights[i].color, g_lights[i].intensity, g_lights[i].enabled );
+                 g_lights[i].color, g_lights[i].intensity, g_lights[i].enabled,
+                 g_lights[i].infinite );
     fprintf( f, "RENDER %d %d %d %d %d\n", g_shadingMode, g_voxPx,
              g_frontScrunch, g_topScrunch, g_orient );
     /* one voxel per line: V x y z color rampStart rampLen */
@@ -1660,7 +1746,7 @@ static void saveSculpture( const char *path )
                  v->x, v->y, v->z, v->color, v->rampStart, v->rampLen );
     }
     fclose( f );
-    { char msg[300]; sprintf( msg, "Saved %d voxels -> %s", g_voxUsed, path );
+    { char msg[1400]; sprintf( msg, "Saved %d voxels -> %s", g_voxUsed, path );
       setStatus( msg ); }
 }
 
@@ -1698,14 +1784,15 @@ static int loadSculpture( const char *path )
         } else if( line[0] == 'A' ) {
             float a; if( sscanf( line, "AMBIENT %f", &a ) == 1 ) g_ambient = a;
         } else if( line[0] == 'L' && line[1] == ' ' ) {
-            float x,y,z,inten; int col,en;
-            if( sscanf( line, "L %f %f %f %d %f %d",
-                        &x,&y,&z,&col,&inten,&en ) == 6 &&
-                g_numLights < MAX_LIGHTS ) {
+            float x,y,z,inten; int col,en,inf=0,got;
+            got = sscanf( line, "L %f %f %f %d %f %d %d",
+                          &x,&y,&z,&col,&inten,&en,&inf );
+            if( got >= 6 && g_numLights < MAX_LIGHTS ) {
                 g_lights[g_numLights].x=x; g_lights[g_numLights].y=y;
                 g_lights[g_numLights].z=z; g_lights[g_numLights].color=col;
                 g_lights[g_numLights].intensity=inten;
                 g_lights[g_numLights].enabled=en;
+                g_lights[g_numLights].infinite = ( got >= 7 ) ? inf : 0;
                 g_numLights++;
             }
         } else if( line[0] == 'R' ) {
@@ -1725,7 +1812,7 @@ static int loadSculpture( const char *path )
     g_rampStart = clampi( g_rampStart, 0, g_palCount-1 );
     g_rampEnd = clampi( g_rampEnd, g_rampStart, g_palCount-1 );
     g_renderDirty = 1;
-    { char msg[300]; sprintf( msg, "Loaded %d voxels from %s", g_voxUsed, path );
+    { char msg[1400]; sprintf( msg, "Loaded %d voxels from %s", g_voxUsed, path );
       setStatus( msg ); }
     return 1;
 }
@@ -1776,7 +1863,37 @@ static int  g_showFront = 0, g_showTop = 0;   /* unused reserved */
  * ID-stack scope as BeginPopupModal (root, in buildDialogs) -- calling it from
  * inside a menu resolves a different id and the popup silently never opens. */
 static const char *g_pendingPopup = NULL;
-static void openFileDialog( const char *id ) { g_pendingPopup = id; }
+
+/* ---- file-browser dialog state ---- */
+static FSEntry    g_fbEntries[ 1024 ];
+static int        g_fbCount = 0;
+static char       g_fbDir[ 1024 ] = "";
+static char       g_fbExt[ 16 ]   = "";
+static char       g_fbFile[ 256 ] = "";
+static const char *g_fbAction = NULL;   /* "Open" "Save" "PNG" "Palette" */
+
+static void fbRefresh( void )
+{
+    g_fbCount = fs_list( g_fbDir, g_fbExt, g_fbEntries, 1024 );
+}
+
+static void setFbFile( const char *s )
+{
+    strncpy( g_fbFile, s, sizeof g_fbFile - 1 );
+    g_fbFile[ sizeof g_fbFile - 1 ] = 0;
+}
+
+/* Open the unified file browser for the given purpose. */
+static void openFileDialog( const char *id )
+{
+    g_pendingPopup = "FileBrowser";
+    g_fbAction = id;
+    if( g_fbDir[0] == 0 ) fs_cwd( g_fbDir, sizeof g_fbDir );
+    if( strcmp( id, "PNG" ) == 0 )          { strcpy( g_fbExt, ".png" );  setFbFile( "render.png" ); }
+    else if( strcmp( id, "Palette" ) == 0 ) { strcpy( g_fbExt, ".gpl" );  setFbFile( "" ); }
+    else                                    { strcpy( g_fbExt, ".ovox" ); setFbFile( "sculpture.ovox" ); }
+    fbRefresh();
+}
 
 static void buildMenuBar( int *quit )
 {
@@ -1808,6 +1925,7 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Rect",   "3", 1 ) ) g_tool = 2;
         if( gui_menu_item( "Box",    "4", 1 ) ) g_tool = 3;
         if( gui_menu_item( "Select", "5", 1 ) ) g_tool = 4;
+        if( gui_menu_item( "Scribble select", "6", 1 ) ) g_tool = 5;
         gui_end_menu();
     }
     if( gui_begin_menu( "Select" ) ) {
@@ -1857,7 +1975,7 @@ static void buildLeftPanel( float top, float h )
     char buf[128];
 
     gui_set_next_window_pos( 0.0f, top );
-    gui_set_next_window_size( 240.0f, h );
+    gui_set_next_window_size( g_leftW, h );
     gui_begin( "Tools", 1 );
 
     gui_separator_text( "Tool" );
@@ -1866,6 +1984,7 @@ static void buildLeftPanel( float top, float h )
     gui_radio_int( "Rect",   &g_tool, 2 );
     gui_radio_int( "Box",    &g_tool, 3 ); gui_same_line();
     gui_radio_int( "Select", &g_tool, 4 );
+    gui_radio_int( "Scribble", &g_tool, 5 );
 
     gui_separator_text( "Mode" );
     gui_radio_int( "Draw",  &g_mode, 0 ); gui_same_line();
@@ -1873,9 +1992,14 @@ static void buildLeftPanel( float top, float h )
     if( g_tool >= 1 && g_tool <= 3 )
         gui_slider_int( "thickness", &g_thickness, 1, 32 );
 
-    if( g_tool == 4 ) {
+    if( g_tool == 4 || g_tool == 5 ) {
         int nsel;
         gui_separator_text( "Selection" );
+        if( g_tool == 4 ) {
+            gui_text( "marquee depth (below/above surface):" );
+            gui_slider_int( "below", &g_selBelow, 0, 64 );
+            gui_slider_int( "above", &g_selAbove, 0, 64 );
+        }
         nsel = selCount();
         sprintf( buf, "%d selected", nsel );
         gui_text( buf );
@@ -1905,8 +2029,15 @@ static void buildLeftPanel( float top, float h )
         sprintf( buf, "index %d (flat)", g_pick );
     gui_text( buf );
     gui_text( "click=pick  drag=ramp" );
-    gui_palette_grid( g_pal, g_palCount, 8, 22.0f,
-                      &g_pick, &g_rampStart, &g_rampEnd );
+    { float aw, ah; int perRow;
+      gui_content_avail( &aw, &ah );
+      perRow = (int)( aw / 22.0f );
+      if( perRow < 4 ) perRow = 4;
+      if( perRow > g_palCount ) perRow = g_palCount;
+      if( perRow < 1 ) perRow = 1;
+      gui_palette_grid( g_pal, g_palCount, perRow, 22.0f,
+                        &g_pick, &g_rampStart, &g_rampEnd );
+    }
 
     gui_separator_text( "Shading mode" );
     if( gui_combo( "mode", &g_shadingMode, shadeItems, 2 ) ) g_renderDirty = 1;
@@ -1944,6 +2075,9 @@ static void buildLeftPanel( float top, float h )
     if( g_selLight >= 0 && g_selLight < g_numLights ) {
         Light *L = &g_lights[ g_selLight ];
         gui_separator_text( "Selected light" );
+        if( gui_checkbox( "infinite (sun)", &L->infinite ) ) g_renderDirty=1;
+        gui_text( L->infinite ? "x,y,z = direction toward sun"
+                              : "x,y,z = light position" );
         if( gui_slider_float( "x", &L->x, -40.0f, 40.0f, "%.1f" ) ) g_renderDirty=1;
         if( gui_slider_float( "y", &L->y, -40.0f, 40.0f, "%.1f" ) ) g_renderDirty=1;
         if( gui_slider_float( "z", &L->z, -40.0f, 40.0f, "%.1f" ) ) g_renderDirty=1;
@@ -1961,7 +2095,7 @@ static void buildLeftPanel( float top, float h )
 static void buildRightPanel( float top, float h, float winW )
 {
     char buf[128];
-    float pw = 300.0f;
+    float pw = g_rightW;
     static const char *orientItems[4] = { "Front", "Right", "Back", "Left" };
 
     gui_set_next_window_pos( winW - pw, top );
@@ -1993,64 +2127,84 @@ static void buildRightPanel( float top, float h, float winW )
     gui_end();
 }
 
+/* Carry out the current file-browser action against g_fbDir/g_fbFile. */
+static void fbDoAction( void )
+{
+    char full[ 1300 ];
+    if( !g_fbAction || g_fbFile[0] == 0 ) return;
+    fs_join( g_fbDir, g_fbFile, full, sizeof full );
+    if( strcmp( g_fbAction, "Open" ) == 0 ) {
+        loadSculpture( full );
+    } else if( strcmp( g_fbAction, "Save" ) == 0 ) {
+        saveSculpture( full );
+    } else if( strcmp( g_fbAction, "PNG" ) == 0 ) {
+        savePNG( full );
+    } else if( strcmp( g_fbAction, "Palette" ) == 0 ) {
+        if( paletteLoad( full ) ) {
+            g_renderDirty = 1;
+            g_pick = clampi( g_pick, 0, g_palCount-1 );
+            g_rampStart = clampi( g_rampStart, 0, g_palCount-1 );
+            g_rampEnd = clampi( g_rampEnd, g_rampStart, g_palCount-1 );
+            setStatus( "Palette loaded" );
+        } else setStatus( "Palette load failed" );
+    }
+}
+
 static void buildDialogs( void )
 {
+    const char *act, *actLabel, *title;
+    int i, navigated = 0;
+    char label[ 300 ];
+
     if( g_pendingPopup ) { gui_open_popup( g_pendingPopup ); g_pendingPopup = NULL; }
-    if( gui_begin_popup_modal( "Save" ) ) {
-        gui_text( "Save sculpture as:" );
-        if( gui_input_text( "##savef", g_fileName, sizeof g_fileName ) ) {
-            saveSculpture( g_fileName ); gui_close_current_popup();
+    if( !gui_begin_popup_modal( "FileBrowser" ) ) return;
+
+    act = g_fbAction ? g_fbAction : "Open";
+    if( strcmp( act, "Save" ) == 0 )         { title = "Save sculpture (.ovox)";  actLabel = "Save"; }
+    else if( strcmp( act, "PNG" ) == 0 )     { title = "Export render (.png)";    actLabel = "Export"; }
+    else if( strcmp( act, "Palette" ) == 0 ) { title = "Load palette (.gpl)";     actLabel = "Load"; }
+    else                                     { title = "Open sculpture (.ovox)";  actLabel = "Open"; }
+
+    gui_text( title );
+    gui_text( g_fbDir );
+
+    if( gui_begin_child( "fblist", 460.0f, 300.0f, 1 ) ) {
+        for( i = 0; i < g_fbCount && !navigated; i++ ) {
+            int isDir = g_fbEntries[i].isDir;
+            int selected = ( !isDir && strcmp( g_fbEntries[i].name, g_fbFile ) == 0 );
+            gui_push_id( i );
+            if( isDir ) sprintf( label, "[%.250s]", g_fbEntries[i].name );
+            else        sprintf( label, "%.250s", g_fbEntries[i].name );
+            if( gui_selectable( label, selected ) ) {
+                if( isDir ) {
+                    char nd[ 1024 ];
+                    fs_join( g_fbDir, g_fbEntries[i].name, nd, sizeof nd );
+                    strncpy( g_fbDir, nd, sizeof g_fbDir - 1 );
+                    g_fbDir[ sizeof g_fbDir - 1 ] = 0;
+                    fbRefresh();
+                    navigated = 1;
+                } else {
+                    setFbFile( g_fbEntries[i].name );
+                }
+            }
+            gui_pop_id();
         }
-        if( gui_button( "Save" ) ) { saveSculpture( g_fileName ); gui_close_current_popup(); }
-        gui_same_line();
-        if( gui_button( "Cancel" ) ) gui_close_current_popup();
-        gui_end_popup();
     }
-    if( gui_begin_popup_modal( "Open" ) ) {
-        gui_text( "Open sculpture:" );
-        if( gui_input_text( "##openf", g_fileName, sizeof g_fileName ) ) {
-            loadSculpture( g_fileName ); gui_close_current_popup();
-        }
-        if( gui_button( "Open" ) ) { loadSculpture( g_fileName ); gui_close_current_popup(); }
-        gui_same_line();
-        if( gui_button( "Cancel" ) ) gui_close_current_popup();
-        gui_end_popup();
+    gui_end_child();
+
+    if( gui_input_text( "name", g_fbFile, sizeof g_fbFile ) ) {
+        fbDoAction(); gui_close_current_popup();
     }
-    if( gui_begin_popup_modal( "PNG" ) ) {
-        gui_text( "Export PNG as:" );
-        if( gui_input_text( "##pngf", g_pngName, sizeof g_pngName ) ) {
-            savePNG( g_pngName ); gui_close_current_popup();
-        }
-        if( gui_button( "Export" ) ) { savePNG( g_pngName ); gui_close_current_popup(); }
-        gui_same_line();
-        if( gui_button( "Cancel" ) ) gui_close_current_popup();
-        gui_end_popup();
-    }
-    if( gui_begin_popup_modal( "Palette" ) ) {
-        gui_text( "Load GIMP palette (.gpl):" );
-        if( gui_input_text( "##gplf", g_gplName, sizeof g_gplName ) ) {
-            if( paletteLoad( g_gplName ) ) g_renderDirty = 1;
-            gui_close_current_popup();
-        }
-        if( gui_button( "Load" ) ) {
-            if( paletteLoad( g_gplName ) ) { g_renderDirty = 1;
-                g_pick = clampi(g_pick,0,g_palCount-1);
-                g_rampStart = clampi(g_rampStart,0,g_palCount-1);
-                g_rampEnd = clampi(g_rampEnd,g_rampStart,g_palCount-1);
-                setStatus( "Palette loaded" );
-            } else setStatus( "Palette load failed" );
-            gui_close_current_popup();
-        }
-        gui_same_line();
-        if( gui_button( "Cancel" ) ) gui_close_current_popup();
-        gui_end_popup();
-    }
+    if( gui_button( actLabel ) ) { fbDoAction(); gui_close_current_popup(); }
+    gui_same_line();
+    if( gui_button( "Cancel" ) ) gui_close_current_popup();
+    gui_end_popup();
 }
 
 static void buildStatusBar( float winW, float winH )
 {
-    gui_set_next_window_pos( 240.0f, winH - 26.0f );
-    gui_set_next_window_size( winW - 240.0f - 300.0f, 26.0f );
+    gui_set_next_window_pos( g_leftW, winH - 26.0f );
+    gui_set_next_window_size( winW - g_leftW - g_rightW, 26.0f );
     gui_begin( "status", 1 );
     gui_text( g_status );
     gui_end();
@@ -2175,25 +2329,51 @@ int main( int argc, char **argv )
                         else if( k == SDLK_3 ) g_tool = 2;
                         else if( k == SDLK_4 ) g_tool = 3;
                         else if( k == SDLK_5 ) g_tool = 4;
+                        else if( k == SDLK_6 ) g_tool = 5;
                         else if( k == SDLK_DELETE || k == SDLK_BACKSPACE ) selDelete();
                         else if( k == SDLK_ESCAPE ) { selClear(); setStatus("Selection cleared"); }
                     }
                     break;
                 case SDL_MOUSEBUTTONDOWN:
-                    if( !overGui && inView( ev.button.x, ev.button.y ) ) {
+                    /* grab a panel splitter handle if the click landed on one */
+                    if( ev.button.button == SDL_BUTTON_LEFT && !overGui ) {
+                        int ww, wh, mx = ev.button.x;
+                        SDL_GetWindowSize( window, &ww, &wh );
+                        if( mx >= (int)g_leftW - 6 && mx < (int)g_leftW )
+                            g_splitDrag = 1;
+                        else if( mx >= ww - (int)g_rightW &&
+                                 mx < ww - (int)g_rightW + 6 )
+                            g_splitDrag = 2;
+                    }
+                    if( !overGui && !g_splitDrag &&
+                        inView( ev.button.x, ev.button.y ) ) {
                         g_dragBtn = ev.button.button;
                         g_downX = g_lastX = ev.button.x;
                         g_downY = g_lastY = ev.button.y;
                         g_moved = 0;
-                        /* region tools grab the left button for a drag gesture */
-                        if( g_dragBtn == SDL_BUTTON_LEFT && g_tool != 0 )
+                        /* scribble-select paints selection along the drag;
+                         * other region tools grab the left button for a plane
+                         * gesture */
+                        if( g_dragBtn == SDL_BUTTON_LEFT && g_tool == 5 ) {
+                            g_scribbling = 1;
+                            scribbleAt( ev.button.x, ev.button.y );
+                        } else if( g_dragBtn == SDL_BUTTON_LEFT && g_tool != 0 )
                             gestureBegin( ev.button.x, ev.button.y );
                     }
                     break;
                 case SDL_MOUSEBUTTONUP:
+                    if( ev.button.button == SDL_BUTTON_LEFT ) g_splitDrag = 0;
                     if( g_dragBtn == ev.button.button ) {
                         if( g_dragBtn == SDL_BUTTON_LEFT ) {
                             if( g_gActive ) { regionCommit(); g_gActive = 0; }
+                            else if( g_scribbling ) {
+                                char m[64];
+                                sprintf( m, "%s (%d selected)",
+                                    g_mode==1 ? "Scribble deselect" : "Scribble select",
+                                    selCount() );
+                                setStatus( m );
+                                g_scribbling = 0;
+                            }
                             else if( !g_moved && g_tool == 0 )
                                 applyToolAt( ev.button.x, ev.button.y );
                         }
@@ -2201,13 +2381,17 @@ int main( int argc, char **argv )
                     }
                     break;
                 case SDL_MOUSEMOTION:
-                    if( g_dragBtn ) {
+                    if( g_splitDrag == 1 )      g_leftW  += ev.motion.xrel;
+                    else if( g_splitDrag == 2 ) g_rightW -= ev.motion.xrel;
+                    else if( g_dragBtn ) {
                         int dx = ev.motion.x - g_lastX;
                         int dy = ev.motion.y - g_lastY;
                         g_lastX = ev.motion.x; g_lastY = ev.motion.y;
                         if( abs( ev.motion.x - g_downX ) +
                             abs( ev.motion.y - g_downY ) > 3 ) g_moved = 1;
-                        if( g_gActive && g_dragBtn == SDL_BUTTON_LEFT )
+                        if( g_scribbling && g_dragBtn == SDL_BUTTON_LEFT )
+                            scribbleAt( ev.motion.x, ev.motion.y );
+                        else if( g_gActive && g_dragBtn == SDL_BUTTON_LEFT )
                             gestureUpdate( ev.motion.x, ev.motion.y );
                         else if( g_dragBtn == SDL_BUTTON_LEFT ||
                                  g_dragBtn == SDL_BUTTON_RIGHT )
@@ -2231,10 +2415,19 @@ int main( int argc, char **argv )
         g_winH = winH;
         menuH = gui_main_menu_bar_height();
 
+        /* keep panel widths sane for the current window */
+        if( g_rightW < 200.0f ) g_rightW = 200.0f;
+        if( g_rightW > winW - 160.0f - 120.0f ) g_rightW = winW - 160.0f - 120.0f;
+        if( g_rightW < 200.0f ) g_rightW = 200.0f;
+        if( g_leftW < 160.0f ) g_leftW = 160.0f;
+        if( g_leftW > winW - g_rightW - 120.0f )
+            g_leftW = winW - g_rightW - 120.0f;
+        if( g_leftW < 160.0f ) g_leftW = 160.0f;
+
         /* 3D view occupies the middle strip between the two side panels */
-        g_viewX = 240;
+        g_viewX = (int)g_leftW;
         g_viewY = (int)menuH;
-        g_viewW = winW - 240 - 300;
+        g_viewW = winW - (int)g_leftW - (int)g_rightW;
         g_viewH = winH - (int)menuH - 26;
         if( g_viewW < 1 ) g_viewW = 1;
         if( g_viewH < 1 ) g_viewH = 1;
@@ -2262,6 +2455,22 @@ int main( int argc, char **argv )
         buildRightPanel( menuH, winH - menuH - 26.0f, (float)winW );
         buildStatusBar( (float)winW, (float)winH );
         buildDialogs();
+
+        /* draggable splitter handles at each panel/view boundary (drawn on the
+         * foreground; the drag itself is handled in the SDL event loop) */
+        { int mx, my, hotL, hotR;
+          float sy = menuH, sh = winH - menuH - 26.0f;
+          SDL_GetMouseState( &mx, &my );
+          hotL = ( g_splitDrag == 1 ) ||
+                 ( mx >= (int)g_leftW - 6 && mx < (int)g_leftW );
+          hotR = ( g_splitDrag == 2 ) ||
+                 ( mx >= winW - (int)g_rightW && mx < winW - (int)g_rightW + 6 );
+          gui_overlay_rect( g_leftW - 6.0f, sy, g_leftW, sy + sh,
+                            hotL?120:66, hotL?145:70, hotL?190:80, 255 );
+          gui_overlay_rect( (float)winW - g_rightW, sy,
+                            (float)winW - g_rightW + 6.0f, sy + sh,
+                            hotR?120:66, hotR?145:70, hotR?190:80, 255 );
+        }
         gui_render();
 
         SDL_GL_SwapWindow( window );

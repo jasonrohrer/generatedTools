@@ -1,68 +1,21 @@
 Great work!
 
 
-Some things to work on:
+Still needed:
 
---There's currently no way to see the pixel rendering from differnt views (front, back, left, right).
+--Scribble Select (see below).
 
---None of the saving, loading, or export functions seem to do anything, currently.
+--The marquee currently sticks to the FRONT of the surface you click on.  This makes sense.  However, it should also have a depth param with a slider, similar to the box tool.  So you can click a surface and drag to select a bunch of stuff below that surface too.  And I guess another slider for how much gets selected above the marquee surface too?
 
---Boy is placing and removing blocks one at a time slow!   We definitely need a line tool, a rectangle tool, and a solid rectangular prism tool.
+--We need to be able to drage the separator between the sidebar and the view area.  Some palettes have ramps that want to all be on one line, and we need to make the sidebar wider so the palettes wrap better.
 
---All of these other draw tools should work in both DRAW and ERASE mode, so you can erase a whole line, or a whole rectangle, etc.
+--Flat and Quick Light don't work at all if the blocks in quesiton have a ramp on them, and black is the first color in the ramp.  I guess those shading methods take the first color as the color for flat shading... should probably pick a color in the middle of the ramp instead, if there's more than one color in the ramp.... but definitely never black, if the ramp has another color besides black.
 
---Maybe the rectangular prisim tool will have to show you all 3 views to specify its faces or something, as a transparent ghost, and then you can apply it?  Maybe the same for the rectangle tool... you specify it's shape in one view and then slide its depth through a perpendicular view...  Not sure how else it could work, though maybe there's a way you can make these work just by draging in the 3d perspective view, without it being too confusing.
+--The local near-by light sources are fine, but we should also have the option to make them... infinitely far away with parallel rays or something, like the sun.  The current local lights make a very circular halo pattern on the object, and we don't always want that look, which is like there's a desk lamp nearby.  Lights should have toggles for infinite-distance sun mode, or something like that.
 
---We need some way to select blocks with a marquee, and then the ability to delete them all, or change all the selected blocks colors or ramps, etc.
+--It's probably time for real file pickers, when loading, saving, exporting, etc.  These should filter by desired file extension, and hide files and folders that start with . (except up dir).
+
+
+Left over from last time:
 
 --Maybe we could also have a "scribble select" tool, that adds every draged-over voxel to the slection, and then in erase mode, it would remove voxels from the selection
-
---Probably some way to copy-paste selected blocks.  Not sure how this would work for positioning when pasting... maybe you need to specify reference points.  A lot of cad programs do this.  You specify arbitrary reference points in space, and then paste places a copy that amount from the origin of the selection.
-
---Something weird about the 3D view... the shading should be probably mimic what is shown in the pixel view, at least surface-by-surface.   Currently it's a kind of preview shading.  But you're obviously computing the true light-sorced shading of each of those faces (to render the pixel version) so use it!
-
-
-=====================================================================
-RESPONSE (2026-07-11) -- everything above addressed:
-
-- Different render views: the "view dir" combo in the Oblique Render panel
-  now reads Front / Right / Back / Left (was the cryptic 0/90/180/270).  The
-  top-front oblique projection can only look down one of the 4 horizontal
-  directions -- that combo IS the view switch.
-
-- Save / Load / Export were BROKEN: the menu opened its popups from inside
-  the menu's ImGui id-scope, so the modal (opened at root scope) never
-  matched and silently never appeared.  Now deferred to root scope; File >
-  Save/Open/Export/Load-palette all work.  (Also fixed a related bug where a
-  click landing the instant the cursor reached a side panel could leak a
-  stray voxel into the 3D view -- clicks are now gated on the actual viewport
-  rect, not ImGui's one-frame-late hover flag.)
-
-- New tools: Pencil / Line / Rect / Box / Select (keys 1-5).  Line/Rect/Box
-  are left-drag in the 3D view with a live translucent ghost, committed as a
-  single undo step.  They lock to the plane of whatever face (or the ground)
-  you started on.  A "thickness" slider extrudes them along the face normal,
-  so Box is a true solid rectangular prism in one drag.
-
-- Draw / Erase is now a separate mode (keys B / E) that ALL tools obey, so
-  you can erase a whole line/rect/box, or scribble-erase.
-
-- Selection: the Select tool marquee-drags to add voxels (erase mode removes
-  them); single-click toggles one voxel (a light "scribble" select).  The
-  Selection panel + Select menu do All / Clear / Delete / Recolor / Copy /
-  Paste.  Paste drops the clipboard at an editable (x,y,z) offset from the
-  current selection's min corner (Ctrl+C / Ctrl+V, Del, Ctrl+A, Esc).
-
-- 3D preview shading: Display menu now offers "match render", which shades
-  every 3D face with the exact same Lambert + colored-point-light + shadow
-  math the oblique renderer bakes, so preview and pixel art agree
-  surface-by-surface.  ("quick light" and "flat" remain for fast orbiting.)
-  The lit faces are cached and only recomputed on edits, so orbiting is snappy.
-
-Orbit is now right-drag (left-drag belongs to the region tools); middle-drag
-pans; wheel zooms.  Pencil still left-clicks to place / erase.
-
-Still open / possible future work: a dedicated drag-over "scribble select"
-(current select is marquee + single-click), and reference-point paste picking
-in the view rather than numeric offsets.
-

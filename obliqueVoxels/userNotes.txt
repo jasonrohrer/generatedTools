@@ -2,7 +2,14 @@ Astounding!
 
 Next:
 
---The soft shadow (light source size) implementation slows things down quite a bit.  First, the 3D vew is still fast to rotate, b/c I'm assuming you're computing the shading globally only when a voxel changes, which is good.  But placing a voxel, or editing things, becomes too slow, and so does manipulating any pixel-generating parameters that causes the shading to be recomputed.   Maybe you can just give us control over the NUMBER of nearby light sources and the radius?  So you just place them around in a circle at that radius, and you let us determine how many, and what the spread is.  I'm assuming that when the "size" param gets big, currently, you're making a lot of light sources, which probably isn't needed.  At least give us control of that process.
+--[DONE] The soft shadow (light source size) implementation slows things down quite a bit.  First, the 3D vew is still fast to rotate, b/c I'm assuming you're computing the shading globally only when a voxel changes, which is good.  But placing a voxel, or editing things, becomes too slow, and so does manipulating any pixel-generating parameters that causes the shading to be recomputed.   Maybe you can just give us control over the NUMBER of nearby light sources and the radius?  So you just place them around in a circle at that radius, and you let us determine how many, and what the spread is.  I'm assuming that when the "size" param gets big, currently, you're making a lot of light sources, which probably isn't needed.  At least give us control of that process.
+    Decoupled ray count from radius.  "size (soft)" now controls ONLY the
+    penumbra radius; a new "soft rays" slider (1..64, per light) sets exactly how
+    many shadow rays are spread over that sphere -- previously the count auto-
+    scaled with size (up to 32), doing far more work than needed.  Now a big soft
+    radius can cost as little as 1 ray, or you dial up rays only where you want a
+    smooth penumbra.  Saved to the .ovox L line as a trailing field (older files
+    default to 8).
 
 --[FIXED] The front and back view in the 3D view vs the pixel view are swapped (front in pixel shows back in 3d view).  Same for left and right.
     The oblique orientations now match the 3D-view presets face-for-face.

@@ -300,6 +300,9 @@ typedef struct {
                          * Then (x,y,z) is read as a direction, not a position. */
     float size;         /* soft-light radius: 0 = hard point/sun; larger casts
                          * a penumbra by sampling a sphere of source points. */
+    int   samples;      /* number of shadow rays spread over that sphere when
+                         * size > 0.  User-controlled so a big soft radius need
+                         * not cost many rays (1 = as cheap as a hard light). */
 } Light;
 
 static Light g_lights[ MAX_LIGHTS ];
@@ -317,6 +320,7 @@ static void lightAdd( float x, float y, float z, int color, float inten )
     g_lights[ g_numLights ].enabled = 1;
     g_lights[ g_numLights ].infinite = 0;
     g_lights[ g_numLights ].size = 0.0f;
+    g_lights[ g_numLights ].samples = 8;
     g_numLights++;
 }
 
@@ -1552,7 +1556,7 @@ static void drawGesturePreview( void )
 /* Evenly-spread unit-sphere sample offsets (Fibonacci sphere), used to spread a
  * soft light's shadow rays over a sphere of source points so edges get a
  * penumbra instead of a hard step.  Filled once at startup. */
-#define SOFT_MAX_SAMPLES 32
+#define SOFT_MAX_SAMPLES 64
 static double g_sphereOff[ SOFT_MAX_SAMPLES ][3];
 static int    g_sphereOffN = 0;
 
@@ -1571,35 +1575,26 @@ static void initSoftSamples( void )
     g_sphereOffN = SOFT_MAX_SAMPLES;
 }
 
-/* Number of shadow rays to spend on a light of the given size (1 for a hard
- * point light; scales up with size for a smoother penumbra, capped). */
-static int softSampleCount( double size )
-{
-    int n;
-    if( size <= 1e-4 ) return 1;
-    n = (int)( 5.0 + size * 2.5 );
-    if( n > g_sphereOffN ) n = g_sphereOffN;
-    if( n < 4 ) n = 4;
-    return n;
-}
-
 /* Fraction (0..1) of a light visible from P.  For a hard light this is a single
  * shadow ray (1 or 0).  For a soft light we jitter the target over a sphere of
- * radius `size` (a jittered direction for an infinite sun) and average.
+ * radius `size` (a jittered direction for an infinite sun) and average over the
+ * caller-chosen number of rays -- so a wide soft radius costs only as many rays
+ * as the user asks for, decoupling penumbra spread from render cost.
  * shadowFn is shadowedUVW or shadowedWorld -- identical signatures, so the same
  * soft logic serves both the oblique renderer and the 3D match preview. */
 static int shadowedUVW( double, double, double, double, double, double );
 static double softVisible( double px, double py, double pz,
                            double lx, double ly, double lz,
                            double dirx, double diry, double dirz,
-                           int infinite, double size,
+                           int infinite, double size, int samples,
                            int (*shadowFn)( double,double,double,
                                             double,double,double ) )
 {
     int i, ns, blocked = 0;
-    if( size <= 1e-4 )
+    if( size <= 1e-4 || samples <= 1 )
         return shadowFn( px, py, pz, lx, ly, lz ) ? 0.0 : 1.0;
-    ns = softSampleCount( size );
+    ns = samples;
+    if( ns > g_sphereOffN ) ns = g_sphereOffN;
     for( i = 0; i < ns; i++ ) {
         double ox = g_sphereOff[i][0], oy = g_sphereOff[i][1], oz = g_sphereOff[i][2];
         double sx, sy, sz;
@@ -1696,7 +1691,7 @@ static void shadeSample( double px, double py, double pz,
          * spread the rays over a sphere to get a penumbra. */
         vis = softVisible( px + nx*0.02, py + ny*0.02, pz + nz*0.02, lu, lv, lw,
                            ldx, ldy, ldz, g_lights[i].infinite,
-                           g_lights[i].size, shadowedUVW );
+                           g_lights[i].size, g_lights[i].samples, shadowedUVW );
         if( vis <= 0.0 ) continue;
         atten = g_lights[i].infinite ? g_lights[i].intensity
                                      : g_lights[i].intensity / ( 1.0 + 0.03 * len );
@@ -1962,7 +1957,7 @@ static void shadeWorld( double px, double py, double pz,
         if( nl <= 0 ) continue;
         vis = softVisible( px + nx*0.02, py + ny*0.02, pz + nz*0.02, lx, ly, lz,
                            ldx, ldy, ldz, g_lights[i].infinite,
-                           g_lights[i].size, shadowedWorld );
+                           g_lights[i].size, g_lights[i].samples, shadowedWorld );
         if( vis <= 0.0 ) continue;
         atten = g_lights[i].infinite ? g_lights[i].intensity
                                      : g_lights[i].intensity / ( 1.0 + 0.03 * len );
@@ -2161,10 +2156,10 @@ static void saveSculpture( const char *path )
         fprintf( f, "C %d %d %d\n", g_pal[i*3+0], g_pal[i*3+1], g_pal[i*3+2] );
     fprintf( f, "AMBIENT %.4f\n", g_ambient );
     for( i = 0; i < g_numLights; i++ )
-        fprintf( f, "L %.4f %.4f %.4f %d %.4f %d %d %.4f\n",
+        fprintf( f, "L %.4f %.4f %.4f %d %.4f %d %d %.4f %d\n",
                  g_lights[i].x, g_lights[i].y, g_lights[i].z,
                  g_lights[i].color, g_lights[i].intensity, g_lights[i].enabled,
-                 g_lights[i].infinite, g_lights[i].size );
+                 g_lights[i].infinite, g_lights[i].size, g_lights[i].samples );
     fprintf( f, "RENDER %d %d %d %d %d\n", g_shadingMode, g_voxPx,
              g_frontScrunch, g_topScrunch, g_orient );
     /* one voxel per line: V x y z color rampStart rampLen */
@@ -2219,9 +2214,9 @@ static int loadSculpture( const char *path )
         } else if( line[0] == 'A' ) {
             float a; if( sscanf( line, "AMBIENT %f", &a ) == 1 ) g_ambient = a;
         } else if( line[0] == 'L' && line[1] == ' ' ) {
-            float x,y,z,inten,sz=0.0f; int col,en,inf=0,got;
-            got = sscanf( line, "L %f %f %f %d %f %d %d %f",
-                          &x,&y,&z,&col,&inten,&en,&inf,&sz );
+            float x,y,z,inten,sz=0.0f; int col,en,inf=0,smp=8,got;
+            got = sscanf( line, "L %f %f %f %d %f %d %d %f %d",
+                          &x,&y,&z,&col,&inten,&en,&inf,&sz,&smp );
             if( got >= 6 && g_numLights < MAX_LIGHTS ) {
                 g_lights[g_numLights].x=x; g_lights[g_numLights].y=y;
                 g_lights[g_numLights].z=z; g_lights[g_numLights].color=col;
@@ -2229,6 +2224,7 @@ static int loadSculpture( const char *path )
                 g_lights[g_numLights].enabled=en;
                 g_lights[g_numLights].infinite = ( got >= 7 ) ? inf : 0;
                 g_lights[g_numLights].size = ( got >= 8 ) ? sz : 0.0f;
+                g_lights[g_numLights].samples = ( got >= 9 ) ? smp : 8;
                 g_numLights++;
             }
         } else if( line[0] == 'R' ) {
@@ -2277,14 +2273,15 @@ static int importLighting( const char *path )
         if( line[0] == 'A' ) {
             float a; if( sscanf( line, "AMBIENT %f", &a ) == 1 ) { amb=a; haveAmb=1; }
         } else if( line[0] == 'L' && line[1] == ' ' ) {
-            float x,y,z,inten,sz=0.0f; int col,en,inf=0,got;
-            got = sscanf( line, "L %f %f %f %d %f %d %d %f",
-                          &x,&y,&z,&col,&inten,&en,&inf,&sz );
+            float x,y,z,inten,sz=0.0f; int col,en,inf=0,smp=8,got;
+            got = sscanf( line, "L %f %f %f %d %f %d %d %f %d",
+                          &x,&y,&z,&col,&inten,&en,&inf,&sz,&smp );
             if( got >= 6 && n < MAX_LIGHTS ) {
                 tmp[n].x=x; tmp[n].y=y; tmp[n].z=z; tmp[n].color=col;
                 tmp[n].intensity=inten; tmp[n].enabled=en;
                 tmp[n].infinite = ( got >= 7 ) ? inf : 0;
                 tmp[n].size = ( got >= 8 ) ? sz : 0.0f;
+                tmp[n].samples = ( got >= 9 ) ? smp : 8;
                 n++;
             }
         }
@@ -2606,8 +2603,15 @@ static void buildLeftPanel( float top, float h )
             g_renderDirty=1;
         if( gui_slider_float( "size (soft)", &L->size, 0.0f, 12.0f, "%.1f" ) )
             g_renderDirty=1;
-        gui_text( L->size > 0.05f ? "soft shadows (slower)"
-                                  : "0 = hard point/sun" );
+        if( L->size > 0.05f ) {
+            if( gui_slider_int( "soft rays", &L->samples, 1, SOFT_MAX_SAMPLES ) ) {
+                if( L->samples < 1 ) L->samples = 1;
+                g_renderDirty = 1;
+            }
+            gui_text( "more rays = smoother penumbra, slower" );
+        } else {
+            gui_text( "0 = hard point/sun" );
+        }
         if( gui_checkbox( "enabled", &L->enabled ) ) g_renderDirty=1;
         if( gui_button( "Set light color from paint" ) ) {
             L->color = g_pick; g_renderDirty = 1;

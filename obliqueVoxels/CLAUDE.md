@@ -42,7 +42,9 @@ Per output pixel the renderer finds the world point on the face, then does
 Lambert + point-light attenuation + a DDA shadow ray per light (in the rotated
 view frame).  A light's **size** slider (0 = hard point/sun) spreads its shadow
 rays over a sphere of source points (a jittered direction for a sun), producing
-a soft penumbra like a soft-box; the ray count scales with size and is capped.
+a soft penumbra like a soft-box.  A separate **soft rays** slider (1..64) sets
+exactly how many rays are spent — radius and cost are decoupled, so a wide
+penumbra can stay cheap.
 Two modes:
 
 1. **Natural** — base color × accumulated (colored) light; may go off-palette.
@@ -123,10 +125,11 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 
 Human-readable, one record per line: a header, the embedded palette (`C r g b`),
 `AMBIENT`, `L` lights, a `RENDER` params line, then `V x y z color rampStart
-rampLen` per voxel.  A light line is `L x y z color intensity enabled [infinite [size]]`
+rampLen` per voxel.  A light line is `L x y z color intensity enabled [infinite [size [samples]]]`
 — the trailing `infinite` flag (1 = directional "sun", parallel rays and no
-distance falloff, with x,y,z read as a direction) and `size` (soft-light radius,
-0 = hard) are optional so older files still load.  Trailing `S x y z` lines record smoother cells.  **File ▸ Import
+distance falloff, with x,y,z read as a direction), `size` (soft-light radius,
+0 = hard) and `samples` (soft-shadow ray count, default 8) are optional so older
+files still load.  Trailing `S x y z` lines record smoother cells.  **File ▸ Import
 lighting** reads just the `AMBIENT`/`L` lines from another `.ovox` and replaces
 the current scene's lighting (for lighting a matched set identically).
 

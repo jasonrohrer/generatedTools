@@ -76,6 +76,8 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   (C++), so the app stays C89.  Adds a color-swatch and drag-to-select palette
   grid widget.
 * `stbiw.c` — stb_image_write PNG encoder as its own object (relaxed std).
+* `stbi.c` — stb_image PNG *reader* (PNG-only) as its own object (relaxed
+  std), used by the "import PNG as voxel wall" tool.
 * `fs.c` / `fs.h` — POSIX directory listing (opendir/stat/getcwd) for the file
   browser, in its own relaxed-std unit so the main app stays C89.
 * `imgui/` — vendored Dear ImGui (only `.o` files are gitignored).
@@ -87,7 +89,8 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   region gesture with a live ghost, committed as one undo step.
 * Tools **1** Pencil · **2** Line · **3** Rect · **4** Box · **5** Select ·
   **6** Scribble (paint a selection over whatever voxels the drag touches;
-  erase mode un-paints) · **7** Cylinder · **8** Sphere · **9** Smoothers.
+  erase mode un-paints) · **7** Cylinder · **8** Sphere · **9** Smoothers ·
+  **Image wall** (no shortcut; armed by File ▸ Import PNG as voxel wall).
 * Modes **B** draw · **E** erase — every tool obeys the mode (erase a whole
   line/box, marquee-deselect, etc.).
 * **thickness** slider extrudes Line/Rect/Box/Cylinder along the started face's
@@ -103,8 +106,18 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   bright-top/dark-front stripes on curved surfaces.  They only show while the
   Smoothers tool is active, and vanish if a voxel later covers them.  The effect
   appears in both the oblique render and the "match render" 3D preview.
-* Region tools lock to the plane of the started face (or ground y=0); a drag
-  glides across that single layer.
+* **Image wall** imports a PNG (with alpha) as a flat wall of voxels, one flat
+  single-colour voxel per opaque pixel (nearest-palette colour; alpha < 128 is
+  skipped).  Placement is a three-click gesture: click 1 fixes the bottom-left
+  corner cell, click 2 aims the image-width axis, click 3 aims a perpendicular
+  image-height axis and commits.  Both axes snap to one of the six face
+  directions by matching the cursor's on-screen direction away from the corner
+  (a `worldToScreen` gizmo projection), so a vertical +Y wall or a flat floor
+  is reachable from any camera.  Stage 1 ghosts a translucent column of
+  image-width voxels; stage 2 ghosts the whole wall tinted per pixel.  The
+  wall commits as one undo step; **Esc** resets the placement, and the image
+  stays loaded so you can stamp more copies.  The image itself is not saved in
+  `.ovox` — only the placed voxels are.
 * Selection: marquee-drag adds voxels (erase mode removes), single-click
   toggles one.  The Select tool has **below/above** depth sliders that sweep the
   marquee down into the solid (and up out of it) from the clicked surface.

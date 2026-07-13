@@ -28,6 +28,12 @@
 extern int stbi_write_png( char const *filename, int w, int h, int comp,
                            const void *data, int stride_in_bytes );
 
+/* stb_image reader (implementation lives in stbi.o) -- used to import a PNG
+ * (with alpha) as a flat wall of voxels. */
+extern unsigned char *stbi_load( char const *filename, int *x, int *y,
+                                 int *comp, int req_comp );
+extern void stbi_image_free( void *retval_from_stbi_load );
+
 /* ------------------------------------------------------------------ */
 /* small helpers                                                       */
 /* ------------------------------------------------------------------ */
@@ -344,13 +350,24 @@ static float cam_tx = 0.0f, cam_ty = 2.0f, cam_tz = 0.0f;
 
 /* tool + current paint color/ramp */
 static int g_tool = 0;             /* 0 pencil,1 line,2 rect,3 box,4 select,
-                                    * 5 scribble,6 cylinder,7 sphere,8 smoothers */
+                                    * 5 scribble,6 cylinder,7 sphere,8 smoothers,
+                                    * 9 image wall */
 static int g_mode = 0;             /* 0 draw, 1 erase */
 static int g_thickness = 1;        /* extrude depth for line/rect/box/cyl (>=1) */
 static int g_sphereDepth = 0;      /* voxels the sphere sinks into the surface */
 static int g_pick = 15;            /* current palette index */
 static int g_rampStart = 15;
 static int g_rampEnd   = 15;
+
+/* ---- image-wall import tool (g_tool == 9) ---- */
+static unsigned char *g_impPix = NULL; /* decoded RGBA image, g_impW*g_impH*4 */
+static int  *g_impIdx = NULL;          /* per-pixel palette index, -1 = transparent */
+static int   g_impW = 0, g_impH = 0;
+static int   g_impStage = -1;          /* -1 idle, 0 pick corner, 1 pick U, 2 pick V */
+static int   g_impHaveHover = 0;       /* current hover produced a valid cell */
+static int   g_impOx, g_impOy, g_impOz;   /* bottom-left corner cell (live in stage 0) */
+static int   g_impUx = 1, g_impUy = 0, g_impUz = 0; /* image-width axis (live in stage 1) */
+static int   g_impVx = 0, g_impVy = 1, g_impVz = 0; /* image-height axis (live in stage 2) */
 
 /* preview toggles */
 static int g_previewShade = 1;     /* 0 flat, 1 quick preview, 2 match render */
@@ -684,6 +701,7 @@ static void drawGrid( void )
 
 /* forward decls for preview overlays defined later */
 static void drawGesturePreview( void );
+static void importWallDrawPreview( void );
 
 /* Emit one shaded unit-square face at cell (x,y,z) given its normal & color. */
 static void emitFace( float x, float y, float z,
@@ -890,6 +908,40 @@ static void mouseRay( int mx, int my,
     *dx = fx - nx; *dy = fy - ny; *dz = fz - nz;
     { double len = sqrt( (*dx)*(*dx) + (*dy)*(*dy) + (*dz)*(*dz) );
       if( len > 1e-9 ) { *dx/=len; *dy/=len; *dz/=len; } }
+}
+
+/* Project a world point to window pixel coords (top-down y, matching mouse
+ * coords).  Returns 0 if the point is behind the camera.  Rebuilds the 3D-view
+ * camera matrices like mouseRay(), so it is safe during event handling. */
+static int worldToScreen( double wx, double wy, double wz,
+                          double *sx, double *sy )
+{
+    GLdouble model[16], proj[16];
+    GLint    view[4];
+    GLdouble px, py, pz;
+    double   ex, ey, ez;
+
+    glMatrixMode( GL_PROJECTION ); glPushMatrix(); glLoadIdentity();
+    gluPerspective( 42.0, g_viewH ? (double)g_viewW / (double)g_viewH : 1.0,
+                    0.1, 2000.0 );
+    glGetDoublev( GL_PROJECTION_MATRIX, proj );
+    glPopMatrix();
+    glMatrixMode( GL_MODELVIEW ); glPushMatrix(); glLoadIdentity();
+    camEye( &ex, &ey, &ez );
+    gluLookAt( ex, ey, ez, cam_tx, cam_ty, cam_tz, 0.0, 1.0, 0.0 );
+    glGetDoublev( GL_MODELVIEW_MATRIX, model );
+    glPopMatrix();
+
+    view[0] = g_viewX;
+    view[1] = g_winH - ( g_viewY + g_viewH );
+    view[2] = g_viewW;
+    view[3] = g_viewH;
+
+    if( !gluProject( wx, wy, wz, model, proj, view, &px, &py, &pz ) ) return 0;
+    if( pz < 0.0 || pz > 1.0 ) return 0;   /* clipped / behind the eye */
+    *sx = px;
+    *sy = (double)g_winH - 1.0 - py;       /* GL y-up -> window y-down */
+    return 1;
 }
 
 /* Amanatides-Woo voxel DDA.  On hit returns 1 and fills the hit cell plus the
@@ -1518,6 +1570,8 @@ static void cbGhost( int x, int y, int z, void *ud )
 static void drawGesturePreview( void )
 {
     int tool;
+    /* image-wall placement has its own multi-stage ghost overlay */
+    if( g_tool == 9 ) { importWallDrawPreview(); return; }
     /* sphere gesture previews as a translucent ghost ball */
     if( g_sphActive && g_sphR >= 0.5 ) {
         glEnable( GL_BLEND );
@@ -1547,6 +1601,241 @@ static void drawGesturePreview( void )
     glEnd();
     glDepthMask( GL_TRUE );
     glDisable( GL_BLEND );
+}
+
+/* ------------------------------------------------------------------ */
+/* image-wall import tool                                              */
+/*                                                                     */
+/* Import a PNG (with alpha) as a flat wall of voxels, one voxel per   */
+/* opaque pixel, coloured by nearest palette match.  Placement is a    */
+/* three-click gesture in the 3D view: click 1 fixes the bottom-left   */
+/* corner cell, click 2 chooses the image-width axis (one of the six   */
+/* face directions), click 3 chooses a perpendicular image-height axis */
+/* and commits.  Translucent ghosts preview each stage.                */
+/* ------------------------------------------------------------------ */
+
+/* Nearest palette index to an arbitrary RGB (squared distance, ties to
+ * the brighter sample so ramps that start black don't win by luminance). */
+static int nearestPaletteIndex( int r, int g, int b )
+{
+    int i, best = 0, bestLum = -1;
+    double bestD = 1e30;
+    for( i = 0; i < g_palCount; i++ ) {
+        double dr = g_pal[i*3+0] - r;
+        double dg = g_pal[i*3+1] - g;
+        double db = g_pal[i*3+2] - b;
+        double d  = dr*dr + dg*dg + db*db;
+        int lum   = g_pal[i*3+0] + g_pal[i*3+1] + g_pal[i*3+2];
+        if( d < bestD - 1e-6 || ( d < bestD + 1e-6 && lum > bestLum ) ) {
+            bestD = d; best = i; bestLum = lum;
+        }
+    }
+    return best;
+}
+
+/* Free any loaded image and go idle. */
+static void importWallFree( void )
+{
+    if( g_impPix ) { stbi_image_free( g_impPix ); g_impPix = NULL; }
+    if( g_impIdx ) { free( g_impIdx ); g_impIdx = NULL; }
+    g_impW = g_impH = 0;
+    g_impStage = -1;
+    g_impHaveHover = 0;
+}
+
+/* Load a PNG, precompute its palette-index map, and arm the placement tool. */
+static int importWallLoad( const char *path )
+{
+    int w = 0, h = 0, comp = 0, i, n;
+    unsigned char *data = stbi_load( path, &w, &h, &comp, 4 );
+    char m[128];
+    if( !data ) { setStatus( "PNG load failed" ); return 0; }
+    if( w < 1 || h < 1 || w > 512 || h > 512 ) {
+        stbi_image_free( data );
+        setStatus( "Image must be 1..512 px on a side" );
+        return 0;
+    }
+    importWallFree();
+    n = w * h;
+    g_impIdx = (int*)malloc( (size_t)n * sizeof(int) );
+    if( !g_impIdx ) { stbi_image_free( data ); setStatus( "Out of memory" );
+                      return 0; }
+    g_impPix = data; g_impW = w; g_impH = h;
+    for( i = 0; i < n; i++ ) {
+        if( data[i*4+3] < 128 ) g_impIdx[i] = -1;   /* transparent */
+        else g_impIdx[i] = nearestPaletteIndex( data[i*4+0],
+                                                data[i*4+1], data[i*4+2] );
+    }
+    g_impStage = 0;
+    g_impHaveHover = 0;
+    g_impUx = 1; g_impUy = 0; g_impUz = 0;
+    g_impVx = 0; g_impVy = 1; g_impVz = 0;
+    g_tool = 9;
+    sprintf( m, "Image %dx%d loaded -- click to place bottom-left corner", w, h );
+    setStatus( m );
+    return 1;
+}
+
+/* Choose the face-direction axis whose *on-screen* projection best matches the
+ * cursor's screen direction away from the corner cell.  Using screen space
+ * (rather than a picked world point) lets the user aim the vertical +Y axis
+ * even in an empty scene, where any picked point would collapse onto the
+ * ground plane.  If excludeParallel is set, the two axes parallel to
+ * (ux,uy,uz) are skipped so the height axis stays perpendicular to the width
+ * axis. */
+static int importSnapAxis( int mx, int my, int excludeParallel,
+                           int ux, int uy, int uz,
+                           int *ax, int *ay, int *az )
+{
+    static const int DIRS[6][3] = {
+        { 1,0,0 }, { -1,0,0 }, { 0,1,0 }, { 0,-1,0 }, { 0,0,1 }, { 0,0,-1 } };
+    double ocx = g_impOx + 0.5, ocy = g_impOy + 0.5, ocz = g_impOz + 0.5;
+    double sox, soy, mvx, mvy, mlen, best = -2.0;
+    int i, bi = -1;
+    if( !worldToScreen( ocx, ocy, ocz, &sox, &soy ) ) return 0;
+    mvx = mx - sox; mvy = my - soy;
+    mlen = sqrt( mvx*mvx + mvy*mvy );
+    if( mlen < 1.0 ) return 0;              /* cursor sitting on the corner */
+    mvx /= mlen; mvy /= mlen;
+    for( i = 0; i < 6; i++ ) {
+        double ex, ey, dlen, score;
+        if( excludeParallel &&
+            ( DIRS[i][0]*ux + DIRS[i][1]*uy + DIRS[i][2]*uz ) != 0 ) continue;
+        if( !worldToScreen( ocx + DIRS[i][0], ocy + DIRS[i][1],
+                            ocz + DIRS[i][2], &ex, &ey ) ) continue;
+        ex -= sox; ey -= soy;
+        dlen = sqrt( ex*ex + ey*ey );
+        if( dlen < 1e-6 ) continue;          /* axis points at/away from eye */
+        score = ( ex*mvx + ey*mvy ) / dlen;  /* cosine of screen-angle match */
+        if( score > best ) { best = score; bi = i; }
+    }
+    if( bi < 0 ) return 0;
+    *ax = DIRS[bi][0]; *ay = DIRS[bi][1]; *az = DIRS[bi][2];
+    return 1;
+}
+
+/* Enumerate every voxel cell of the placed wall (opaque pixels only),
+ * calling cb with the cell and its palette index.  Image bottom row maps to
+ * V=0 so the picture stands upright from the clicked corner. */
+static void importWallForEach( void (*cb)( int, int, int, int, void* ),
+                               void *ud )
+{
+    int px, py;
+    if( !g_impIdx ) return;
+    for( py = 0; py < g_impH; py++ )
+    for( px = 0; px < g_impW; px++ ) {
+        int idx = g_impIdx[ py*g_impW + px ];
+        int u, v, cx, cy, cz;
+        if( idx < 0 ) continue;                  /* transparent pixel */
+        u = px; v = g_impH - 1 - py;
+        cx = g_impOx + g_impUx*u + g_impVx*v;
+        cy = g_impOy + g_impUy*u + g_impVy*v;
+        cz = g_impOz + g_impUz*u + g_impVz*v;
+        cb( cx, cy, cz, idx, ud );
+    }
+}
+
+/* ghost callback: one translucent cube tinted with the pixel's colour
+ * (must run inside an open glBegin(GL_QUADS)). */
+static void cbImpGhost( int x, int y, int z, int idx, void *ud )
+{
+    int i = clampi( idx, 0, g_palCount-1 );
+    (void)ud;
+    glColor4f( g_pal[i*3+0]/255.0f, g_pal[i*3+1]/255.0f,
+               g_pal[i*3+2]/255.0f, 0.6f );
+    cbGhost( x, y, z, NULL );
+}
+
+static void cbImpPlace( int x, int y, int z, int idx, void *ud )
+{
+    int *count = (int*)ud;
+    editVoxel( x, y, z, 1, idx, idx, 1 );   /* flat single-colour voxel */
+    (*count)++;
+}
+
+static void importWallDrawPreview( void )
+{
+    if( !g_impPix || g_impStage < 0 ) return;
+    glEnable( GL_BLEND );
+    glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+    glDepthMask( GL_FALSE );
+    if( g_impStage == 0 ) {
+        /* single ghost cube where the corner would land */
+        if( g_impHaveHover ) {
+            glColor4f( 0.3f, 0.8f, 1.0f, 0.5f );
+            glBegin( GL_QUADS );
+            cbGhost( g_impOx, g_impOy, g_impOz, NULL );
+            glEnd();
+        }
+    } else if( g_impStage == 1 ) {
+        /* translucent column of image-width voxels along the chosen U axis */
+        int i;
+        glColor4f( 0.3f, 0.8f, 1.0f, 0.45f );
+        glBegin( GL_QUADS );
+        for( i = 0; i < g_impW; i++ )
+            cbGhost( g_impOx + g_impUx*i, g_impOy + g_impUy*i,
+                     g_impOz + g_impUz*i, NULL );
+        glEnd();
+    } else {
+        /* full preview wall, tinted per pixel */
+        glBegin( GL_QUADS );
+        importWallForEach( cbImpGhost, NULL );
+        glEnd();
+    }
+    glDepthMask( GL_TRUE );
+    glDisable( GL_BLEND );
+}
+
+/* Update the live hover state for the current placement stage. */
+static void importWallHover( int mx, int my )
+{
+    if( !g_impPix ) return;
+    if( g_impStage == 0 ) {
+        int cx, cy, cz, axis, dir, onGround;
+        int savedMode = g_mode;
+        g_mode = 0;   /* corner is always a placement (draw) cell */
+        g_impHaveHover = pickCell( mx, my, &cx, &cy, &cz,
+                                   &axis, &dir, &onGround );
+        g_mode = savedMode;
+        if( g_impHaveHover ) { g_impOx = cx; g_impOy = cy; g_impOz = cz; }
+    } else if( g_impStage == 1 ) {
+        int ax, ay, az;
+        if( importSnapAxis( mx, my, 0, 0, 0, 0, &ax, &ay, &az ) ) {
+            g_impUx = ax; g_impUy = ay; g_impUz = az;
+        }
+    } else if( g_impStage == 2 ) {
+        int ax, ay, az;
+        if( importSnapAxis( mx, my, 1, g_impUx, g_impUy, g_impUz,
+                            &ax, &ay, &az ) ) {
+            g_impVx = ax; g_impVy = ay; g_impVz = az;
+        }
+    }
+}
+
+/* Advance the three-click gesture, committing on the third click. */
+static void importWallClick( int mx, int my )
+{
+    if( !g_impPix ) return;
+    importWallHover( mx, my );   /* fold in the click position first */
+    if( g_impStage == 0 ) {
+        if( !g_impHaveHover ) return;
+        g_impStage = 1;
+        setStatus( "Corner set -- click to choose the image-width axis" );
+    } else if( g_impStage == 1 ) {
+        g_impStage = 2;
+        setStatus( "Width axis set -- click to choose the height axis" );
+    } else if( g_impStage == 2 ) {
+        int count = 0;
+        char m[64];
+        groupBegin();
+        importWallForEach( cbImpPlace, &count );
+        groupEnd();
+        g_renderDirty = 1;
+        sprintf( m, "Placed %d voxels from image", count );
+        setStatus( m );
+        g_impStage = 0;   /* ready to stamp another copy */
+        g_impHaveHover = 0;
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2371,6 +2660,7 @@ static void openFileDialog( const char *id )
     g_fbAction = id;
     if( g_fbDir[0] == 0 ) fs_cwd( g_fbDir, sizeof g_fbDir );
     if( strcmp( id, "PNG" ) == 0 )          { strcpy( g_fbExt, ".png" );  setFbFile( "render.png" ); }
+    else if( strcmp( id, "ImportPNG" ) == 0 ) { strcpy( g_fbExt, ".png" ); setFbFile( "" ); }
     else if( strcmp( id, "Palette" ) == 0 ) { strcpy( g_fbExt, ".gpl" );  setFbFile( "" ); }
     else if( strcmp( id, "ImportLight" ) == 0 ) { strcpy( g_fbExt, ".ovox" ); setFbFile( "" ); }
     else                                    { strcpy( g_fbExt, ".ovox" ); setFbFile( "sculpture.ovox" ); }
@@ -2393,6 +2683,8 @@ static void buildMenuBar( int *quit )
         gui_separator();
         if( gui_menu_item( "Load palette (.gpl)...", NULL, 1 ) )
             openFileDialog( "Palette" );
+        if( gui_menu_item( "Import PNG as voxel wall...", NULL, 1 ) )
+            openFileDialog( "ImportPNG" );
         if( gui_menu_item( "Export PNG...", NULL, 1 ) ) openFileDialog( "PNG" );
         gui_separator();
         if( gui_menu_item( "Quit", NULL, 1 ) ) *quit = 1;
@@ -2414,6 +2706,9 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Cylinder", "7", 1 ) ) g_tool = 6;
         if( gui_menu_item( "Sphere",   "8", 1 ) ) g_tool = 7;
         if( gui_menu_item( "Smoothers","9", 1 ) ) g_tool = 8;
+        if( gui_menu_item( "Image wall", NULL, g_impPix ? 1 : 0 ) ) {
+            g_tool = 9; g_impStage = 0; g_impHaveHover = 0;
+        }
         gui_end_menu();
     }
     if( gui_begin_menu( "Select" ) ) {
@@ -2476,6 +2771,7 @@ static void buildLeftPanel( float top, float h )
     gui_radio_int( "Smoothers", &g_tool, 8 );
     gui_radio_int( "Select", &g_tool, 4 ); gui_same_line();
     gui_radio_int( "Scribble", &g_tool, 5 );
+    if( g_impPix ) gui_radio_int( "Image wall", &g_tool, 9 );
 
     gui_separator_text( "Mode" );
     gui_radio_int( "Draw",  &g_mode, 0 ); gui_same_line();
@@ -2488,6 +2784,22 @@ static void buildLeftPanel( float top, float h )
     }
     if( g_tool == 8 )
         gui_text( "drag a line to place smoothers;\nerase mode removes them" );
+    if( g_tool == 9 ) {
+        gui_separator_text( "Image wall" );
+        if( g_impPix ) {
+            sprintf( buf, "%dx%d image loaded", g_impW, g_impH );
+            gui_text( buf );
+            if( g_impStage == 0 )
+                gui_text( "1. click the bottom-left corner cell" );
+            else if( g_impStage == 1 )
+                gui_text( "2. click to aim the image-width axis" );
+            else
+                gui_text( "3. click to aim the height axis\n   (commits the wall)" );
+            gui_text( "Esc resets placement." );
+        } else {
+            gui_text( "File > Import PNG as voxel wall..." );
+        }
+    }
 
     if( g_tool == 4 || g_tool == 5 ) {
         int nsel;
@@ -2668,6 +2980,8 @@ static void fbDoAction( void )
         saveSculpture( full );
     } else if( strcmp( g_fbAction, "PNG" ) == 0 ) {
         savePNG( full );
+    } else if( strcmp( g_fbAction, "ImportPNG" ) == 0 ) {
+        importWallLoad( full );
     } else if( strcmp( g_fbAction, "ImportLight" ) == 0 ) {
         importLighting( full );
     } else if( strcmp( g_fbAction, "Palette" ) == 0 ) {
@@ -2693,6 +3007,7 @@ static void buildDialogs( void )
     act = g_fbAction ? g_fbAction : "Open";
     if( strcmp( act, "Save" ) == 0 )         { title = "Save sculpture (.ovox)";  actLabel = "Save"; }
     else if( strcmp( act, "PNG" ) == 0 )     { title = "Export render (.png)";    actLabel = "Export"; }
+    else if( strcmp( act, "ImportPNG" ) == 0 ) { title = "Import PNG as voxel wall"; actLabel = "Import"; }
     else if( strcmp( act, "ImportLight" ) == 0 ) { title = "Import lighting from (.ovox)"; actLabel = "Import"; }
     else if( strcmp( act, "Palette" ) == 0 ) { title = "Load palette (.gpl)";     actLabel = "Load"; }
     else                                     { title = "Open sculpture (.ovox)";  actLabel = "Open"; }
@@ -2867,7 +3182,12 @@ int main( int argc, char **argv )
                         else if( k == SDLK_8 ) g_tool = 7;
                         else if( k == SDLK_9 ) g_tool = 8;
                         else if( k == SDLK_DELETE || k == SDLK_BACKSPACE ) selDelete();
-                        else if( k == SDLK_ESCAPE ) { selClear(); setStatus("Selection cleared"); }
+                        else if( k == SDLK_ESCAPE ) {
+                            if( g_tool == 9 && g_impPix && g_impStage > 0 ) {
+                                g_impStage = 0; g_impHaveHover = 0;
+                                setStatus( "Placement reset -- click a new corner" );
+                            } else { selClear(); setStatus("Selection cleared"); }
+                        }
                     }
                     break;
                 case SDL_MOUSEBUTTONDOWN:
@@ -2895,7 +3215,8 @@ int main( int argc, char **argv )
                             scribbleAt( ev.button.x, ev.button.y );
                         } else if( g_dragBtn == SDL_BUTTON_LEFT && g_tool == 7 )
                             sphereBegin( ev.button.x, ev.button.y );
-                        else if( g_dragBtn == SDL_BUTTON_LEFT && g_tool != 0 )
+                        else if( g_dragBtn == SDL_BUTTON_LEFT &&
+                                 g_tool != 0 && g_tool != 9 )
                             gestureBegin( ev.button.x, ev.button.y );
                     }
                     break;
@@ -2915,11 +3236,17 @@ int main( int argc, char **argv )
                             }
                             else if( !g_moved && g_tool == 0 )
                                 applyToolAt( ev.button.x, ev.button.y );
+                            else if( !g_moved && g_tool == 9 )
+                                importWallClick( ev.button.x, ev.button.y );
                         }
                         g_dragBtn = 0;
                     }
                     break;
                 case SDL_MOUSEMOTION:
+                    /* image-wall placement tracks the cursor with no button held */
+                    if( g_tool == 9 && g_impStage >= 0 && !overGui &&
+                        inView( ev.motion.x, ev.motion.y ) )
+                        importWallHover( ev.motion.x, ev.motion.y );
                     if( g_splitDrag == 1 )      g_leftW  += ev.motion.xrel;
                     else if( g_splitDrag == 2 ) g_rightW -= ev.motion.xrel;
                     else if( g_dragBtn ) {

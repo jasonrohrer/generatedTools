@@ -19,7 +19,19 @@ Next:
 --[DONE] The infinite light source is working great, but it is creating such harsh shadows and shading.  I'm actually having better results from a cluster of nearby light sources, but its a pain to set up.  Can we get a "size" slider for light sources, that goes down to 0 for point light sources, but can get much bigger for soft-box type effects.  This might be implemented internally as a spehere of light sources... though maybe there's some other way to compute shading from a non-point source?
     Added a per-light "size (soft)" slider: 0 = hard point/sun, larger spreads the shadow rays over a sphere for a penumbra (works for point and sun lights).
 
---[TODO] We need to be able to import a PNG (with transparency!) as a flat wall of voxels.  During import, we should click three times...  first time sets the location of the bottom left corner, next click specifies one axis, other click specifies other axis... we should see previews of these axes as translucent columns of voxels, and they should be forced to be straight lines and perpendicular to each other.  While placing the last axis, we should see a translucent preview of where the image wall of voxels will land.
+--[DONE] We need to be able to import a PNG (with transparency!) as a flat wall of voxels.  During import, we should click three times...  first time sets the location of the bottom left corner, next click specifies one axis, other click specifies other axis... we should see previews of these axes as translucent columns of voxels, and they should be forced to be straight lines and perpendicular to each other.  While placing the last axis, we should see a translucent preview of where the image wall of voxels will land.
+    File > Import PNG as voxel wall... loads a PNG (RGBA; pixels with alpha <
+    128 are skipped) via stb_image and arms the new "Image wall" tool.  Three
+    clicks place it: (1) the bottom-left corner cell, (2) the image-width axis,
+    (3) a perpendicular image-height axis (commits).  The two axes snap to one
+    of the six face directions by matching the cursor's on-screen direction
+    away from the corner (screen-space/gizmo style), so you can aim a vertical
+    +Y wall or a flat floor from any camera -- axis 2 is constrained
+    perpendicular to axis 1.  Stage 1 previews a translucent column of
+    image-width voxels; stage 2 previews the whole wall tinted with each
+    pixel's nearest-palette colour.  Each opaque pixel becomes one flat
+    single-colour voxel; the whole wall is one undo step.  Esc resets
+    placement, and you can stamp another copy without reloading.
 
 --[DONE] There should just be a generic "extrude" function, where you select a bunch of voxels and extrude them in some direction by some distance.
     Select tool -> "Extrude selection": pick an axis (+/-X/Y/Z) and a distance, then Extrude.

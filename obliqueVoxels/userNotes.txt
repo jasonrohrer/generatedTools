@@ -3,19 +3,26 @@ Nice work!
 Wow, face smoothing is pretty much perfect now.  The pixel art that is coming out of this thing is amazing.
 
 
---When using Delete mode with various tools, and drawing on a face of existing voxels, the "thickness" setting digs down into the face (good).  However, as you draw the delete region (sphere, line, box, etc), it appears as red translucent cubes (good), but where those cubes intersect voxels, it's impossible to see (the voxels block it).  What about putting little red outlines on any hit voxels, and putting red X marks on their faces, during the live delete drag, to be crystal clear about what will be deleted?
+--[DONE] When using Delete mode with various tools, and drawing on a face of existing voxels, the "thickness" setting digs down into the face (good).  However, as you draw the delete region (sphere, line, box, etc), it appears as red translucent cubes (good), but where those cubes intersect voxels, it's impossible to see (the voxels block it).  What about putting little red outlines on any hit voxels, and putting red X marks on their faces, during the live delete drag, to be crystal clear about what will be deleted?
+    Done: existing voxels a delete drag intersects now get a red wire outline + face X (works for line/rect/box/cylinder/sphere in Erase mode).
 
---The same is true when dragging a selection marquee that passes through multiple voxels... the ones that are being hit by the live marquee don't take on a special visual appearance.  You don't want to put yellow outlines around them, because that shows what's in the current selection.... how about yellow outlines with X marks on their faces during live select drag?
+--[DONE] The same is true when dragging a selection marquee that passes through multiple voxels... the ones that are being hit by the live marquee don't take on a special visual appearance.  You don't want to put yellow outlines around them, because that shows what's in the current selection.... how about yellow outlines with X marks on their faces during live select drag?
+    Done: the live select marquee draws a yellow outline + face X on every voxel it currently covers.
 
---We need the ability to MOVE selected voxels without copying and pasting them... just select them and move them around, somehow.  Not sure what happens if we move them to collide with other voxels... maybe there are move sliders for the 3 directions, and a COMMIT MOVE button under them, so we can test the move live and not perma-delete collision voxels as we are testing.
+--[DONE] We need the ability to MOVE selected voxels without copying and pasting them... just select them and move them around, somehow.  Not sure what happens if we move them to collide with other voxels... maybe there are move sliders for the 3 directions, and a COMMIT MOVE button under them, so we can test the move live and not perma-delete collision voxels as we are testing.
+    Done: Selection panel > "Move selection" has mx/my/mz sliders (live green ghost preview), a "Commit Move" button (one undo step, overwrites collisions which undo restores, preserves color/ramp/smooth), and "Reset Move".
 
---We need the ability to have planes of symmetry, where all operations (draw, delete, select, smooth, etc) are mirrored across the line.  There should be little checkboxes in the sidebar for these, along with sliders for position.  We can have them in the XY plane, the YZ plane, and the XZ plane.  There should also be checkboxes for +0.5 for each one, b/c sometimes we want them mid-voxel, when we're drawing symmetrical odd-dimensioned items.
+--[DONE] We need the ability to have planes of symmetry, where all operations (draw, delete, select, smooth, etc) are mirrored across the line.  There should be little checkboxes in the sidebar for these, along with sliders for position.  We can have them in the XY plane, the YZ plane, and the XZ plane.  There should also be checkboxes for +0.5 for each one, b/c sometimes we want them mid-voxel, when we're drawing symmetrical odd-dimensioned items.
+    Done: Tools panel > "Symmetry" has mirror X/Y/Z checkboxes (combine for up to 8-fold), each with a pos slider and a +0.5 (mid-voxel) checkbox.  Mirrors draw/erase/select/smooth/sphere.  (Not yet saved in .ovox -- they are transient editing aids.)
 
---Is there a way for us to type a value in any of the sliders?  Would be nice if there was some way to do this, especially if we want to override the max value provided by the slider.
+--[DONE] Is there a way for us to type a value in any of the sliders?  Would be nice if there was some way to do this, especially if we want to override the max value provided by the slider.
+    Yes -- Ctrl+click any slider to type an exact value (typed values may exceed the slider's max).  Added a hint line in the Tools panel.
 
---We need an eyedropper mode to sample the color (or ramp) of an existing voxel.
+--[DONE] We need an eyedropper mode to sample the color (or ramp) of an existing voxel.
+    Done: Eyedropper tool (key 0 / Tools panel / Tools menu) -- click a voxel to load its color and full ramp into the current paint color.
 
---It's time for LAYERS, where we can toggle layers on and off, draw voxels in the layers, create and delete layers, etc.  In the case there are voxels in the same spot in two visible layers, the higher-up layer wins.  This is something like a union operation, which should be performed before shading and rendering.
+--[DEFERRED] It's time for LAYERS, where we can toggle layers on and off, draw voxels in the layers, create and delete layers, etc.  In the case there are voxels in the same spot in two visible layers, the higher-up layer wins.  This is something like a union operation, which should be performed before shading and rendering.
+    Deferred to a follow-up session: layers are the largest change (voxel model, undo, .ovox format, render union all need a layer index) and are best done as their own focused pass rather than bundled with the above.
 
 --SELECTIONS made in one layer should stay live when switching to another layer, which will allow us to do some boolean operations (select some sphere in one layer, switch to a layer with a box that intersects the sphere... now a sphere-shaped region inside the box is selected, which will allow us to do intersetions and difference operations.  We can do a UNION by copying in one layer, keeping the selection live as we switch layers, and pasting with 0 offset in the other layer.
 

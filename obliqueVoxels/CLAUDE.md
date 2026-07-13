@@ -91,8 +91,28 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   **6** Scribble (paint a selection over whatever voxels the drag touches;
   erase mode un-paints) · **7** Cylinder · **8** Sphere · **9** Smoother
   (paint per-face smoothness over whatever faces the drag touches; erase
-  un-smooths) · **Image wall** (no shortcut; armed by File ▸ Import PNG as
-  voxel wall).
+  un-smooths) · **0** Eyedropper (click a voxel to load its color/ramp into the
+  current paint color) · **Image wall** (no shortcut; armed by File ▸ Import PNG
+  as voxel wall).
+* **Symmetry planes** (Tools panel): checkboxes **mirror X/Y/Z** mirror every
+  edit — draw, erase, select, smooth, sphere — across up to three planes at
+  once (so up to 8-fold symmetry).  Each enabled axis gets a **pos** slider (the
+  plane sits at that integer cell boundary) and a **+0.5** checkbox that shifts
+  it to the centre of that column of cells, so an odd-width shape stays
+  symmetric about its middle voxel.  A smoothed face mirrors to the correct
+  opposite face; a cell that maps to itself (centre column) is edited only once.
+* **Move selection** (Selection panel): **mx/my/mz** sliders translate the
+  selection live — a green ghost previews where it lands while the originals
+  stay put — and **Commit Move** bakes it as one undo step (overwriting any
+  colliding voxels, which undo restores), carrying each voxel's color/ramp and
+  per-face smooth mask.  **Reset Move** zeroes the offset without committing.
+* **Live drag hit-marks**: while dragging a delete region (line/rect/box/
+  cylinder/sphere in Erase mode) or a Select marquee, every *existing* voxel the
+  region intersects gets a wire outline plus an X across its faces — red for
+  delete, yellow for select — so what will be affected reads clearly even where
+  the translucent ghost hides it behind solid voxels.
+* Any slider accepts **Ctrl+click to type** an exact value (and typed values may
+  exceed the slider's range).
 * Modes **B** draw · **E** erase — every tool obeys the mode (erase a whole
   line/box, marquee-deselect, etc.).
 * **thickness** slider extrudes Line/Rect/Box/Cylinder along the started face's

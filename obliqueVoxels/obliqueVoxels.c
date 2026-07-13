@@ -375,7 +375,8 @@ static float cam_tx = 0.0f, cam_ty = 2.0f, cam_tz = 0.0f;
 /* tool + current paint color/ramp */
 static int g_tool = 0;             /* 0 pencil,1 line,2 rect,3 box,4 select,
                                     * 5 scribble,6 cylinder,7 sphere,
-                                    * 8 smoother (per-face), 9 image wall */
+                                    * 8 smoother (per-face), 9 image wall,
+                                    * 10 eyedropper */
 static int g_mode = 0;             /* 0 draw, 1 erase */
 static int g_autoSmooth = 0;       /* if set, drawing tools mark every face of
                                     * placed voxels smooth (and erasing marks the
@@ -385,6 +386,21 @@ static int g_sphereDepth = 0;      /* voxels the sphere sinks into the surface *
 static int g_pick = 15;            /* current palette index */
 static int g_rampStart = 15;
 static int g_rampEnd   = 15;
+
+/* ---- symmetry planes ---- every editing operation (draw / erase / select /
+ * smooth / sphere / eyedrop-excepted) is mirrored across each enabled plane, so
+ * up to 8-fold symmetry is possible.  A plane perpendicular to axis a sits at
+ * world coordinate g_symPos[a] (a cell boundary) or g_symPos[a]+0.5 (through the
+ * centre of that column of cells) when g_symHalf[a] is set -- the latter lets an
+ * odd-width shape stay symmetric about its middle voxel. */
+static int g_symOn[3]   = { 0, 0, 0 };   /* mirror across X(0)/Y(1)/Z(2)? */
+static int g_symPos[3]  = { 0, 0, 0 };   /* plane position (integer cell coord) */
+static int g_symHalf[3] = { 0, 0, 0 };   /* +0.5: plane through cell centres    */
+
+/* ---- pending selection move ---- a live, uncommitted translation of the
+ * current selection.  The originals stay put and a green ghost previews the
+ * moved copy until "Commit Move" bakes it (overwriting collisions, undoable). */
+static int g_moveDX = 0, g_moveDY = 0, g_moveDZ = 0;
 
 /* ---- image-wall import tool (g_tool == 9) ---- */
 static unsigned char *g_impPix = NULL; /* decoded RGBA image, g_impW*g_impH*4 */
@@ -775,6 +791,7 @@ static void drawGrid( void )
 
 /* forward decls for preview overlays defined later */
 static void drawGesturePreview( void );
+static void cbGhostCube( float fx, float fy, float fz );
 static void importWallDrawPreview( void );
 static void shadingNormalForFace( const Voxel *v,
                                   double fx, double fy, double fz,
@@ -915,6 +932,24 @@ static void drawScene3D( void )
     }
 
     drawGesturePreview();
+
+    /* pending selection move: a green translucent ghost of the selection at the
+     * current offset, previewing where "Commit Move" will drop it. */
+    if( g_moveDX || g_moveDY || g_moveDZ ) {
+        glEnable( GL_BLEND );
+        glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+        glDepthMask( GL_FALSE );
+        glColor4f( 0.3f, 1.0f, 0.5f, 0.40f );
+        glBegin( GL_QUADS );
+        for( i = 0; i < g_voxCap; i++ )
+            if( g_vox[i].used == 1 && g_vox[i].sel )
+                cbGhostCube( (float)( g_vox[i].x + g_moveDX ),
+                             (float)( g_vox[i].y + g_moveDY ),
+                             (float)( g_vox[i].z + g_moveDZ ) );
+        glEnd();
+        glDepthMask( GL_TRUE );
+        glDisable( GL_BLEND );
+    }
 
     /* voxel edges */
     if( g_previewEdges ) {
@@ -1189,12 +1224,103 @@ static int rayVoxel( double ox, double oy, double oz,
     return 0;
 }
 
-/* Place or erase a single cell with the current paint color/ramp. */
-static void putCell( int x, int y, int z )
+/* ---- symmetry helpers ---- */
+static int symActive( void ) { return g_symOn[0] || g_symOn[1] || g_symOn[2]; }
+
+/* Reflect coordinate v across symmetry axis a's plane. */
+static int symReflect( int a, int v )
+{
+    return g_symHalf[a] ? ( 2 * g_symPos[a] - v )
+                        : ( 2 * g_symPos[a] - v - 1 );
+}
+
+/* Fill out[][3] with the up-to-8 unique mirror images of cell (x,y,z) under the
+ * enabled planes (out[0] is always the original).  Returns the count (>=1). */
+static int symImages( int x, int y, int z, int out[8][3] )
+{
+    int vals[3][2], cnt[3], base[3], i0, i1, i2, n = 0, a;
+    base[0] = x; base[1] = y; base[2] = z;
+    for( a = 0; a < 3; a++ ) {
+        vals[a][0] = base[a]; cnt[a] = 1;
+        if( g_symOn[a] ) {
+            int r = symReflect( a, base[a] );
+            if( r != base[a] ) { vals[a][1] = r; cnt[a] = 2; }
+        }
+    }
+    for( i0 = 0; i0 < cnt[0]; i0++ )
+      for( i1 = 0; i1 < cnt[1]; i1++ )
+        for( i2 = 0; i2 < cnt[2]; i2++ ) {
+            out[n][0] = vals[0][i0];
+            out[n][1] = vals[1][i1];
+            out[n][2] = vals[2][i2];
+            n++;
+        }
+    return n;
+}
+
+/* Like symImages, but each image also carries the face normal (nx,ny,nz) with
+ * the reflected axis' component negated.  out[][6] holds {x,y,z, nx,ny,nz} per
+ * image.  Used by the Smoother so a smoothed face mirrors to the correct
+ * opposite face.  Reflection is enumerated independently of symImages so a
+ * mid-voxel (+0.5) center column -- whose cell maps to itself but whose +A and
+ * -A faces mirror to each other -- still yields both face images. */
+static int symFaceImages( int x, int y, int z, int nx, int ny, int nz,
+                          int out[8][6] )
+{
+    int coord[3], nrm[3], opt[3], i0, i1, i2, n = 0, k;
+    coord[0] = x; coord[1] = y; coord[2] = z;
+    nrm[0] = nx; nrm[1] = ny; nrm[2] = nz;
+    for( k = 0; k < 3; k++ ) opt[k] = g_symOn[k] ? 2 : 1;
+    for( i0 = 0; i0 < opt[0]; i0++ )
+      for( i1 = 0; i1 < opt[1]; i1++ )
+        for( i2 = 0; i2 < opt[2]; i2++ ) {
+            int im[3], nn[3], sel[3], a, dup, j;
+            sel[0]=i0; sel[1]=i1; sel[2]=i2;
+            for( a = 0; a < 3; a++ ) {
+                if( sel[a] ) { im[a] = symReflect( a, coord[a] ); nn[a] = -nrm[a]; }
+                else         { im[a] = coord[a];                  nn[a] =  nrm[a]; }
+            }
+            /* skip a duplicate (cell,normal) already emitted */
+            dup = 0;
+            for( j = 0; j < n; j++ )
+                if( out[j][0]==im[0] && out[j][1]==im[1] && out[j][2]==im[2] &&
+                    out[j][3]==nn[0] && out[j][4]==nn[1] && out[j][5]==nn[2] )
+                    { dup = 1; break; }
+            if( dup ) continue;
+            out[n][0]=im[0]; out[n][1]=im[1]; out[n][2]=im[2];
+            out[n][3]=nn[0]; out[n][4]=nn[1]; out[n][5]=nn[2];
+            n++;
+        }
+    return n;
+}
+
+/* Place or erase one cell (no symmetry) with the current paint color/ramp. */
+static void putCell1( int x, int y, int z )
 {
     if( g_mode == 1 ) editVoxel( x, y, z, 0, 0, 0, 0 );
     else              editVoxel( x, y, z, 1, g_pick, g_rampStart,
                                  g_rampEnd - g_rampStart + 1 );
+}
+
+/* Place or erase a cell and all of its symmetry images. */
+static void putCell( int x, int y, int z )
+{
+    int out[8][3], n, i;
+    if( !symActive() ) { putCell1( x, y, z ); return; }
+    n = symImages( x, y, z, out );
+    for( i = 0; i < n; i++ ) putCell1( out[i][0], out[i][1], out[i][2] );
+}
+
+/* Select (or, in erase mode, deselect) a cell and all its symmetry images. */
+static void selectCell( int x, int y, int z, int *counter )
+{
+    int out[8][3], n, i;
+    n = symActive() ? symImages( x, y, z, out )
+                    : ( out[0][0]=x, out[0][1]=y, out[0][2]=z, 1 );
+    for( i = 0; i < n; i++ ) {
+        Voxel *v = voxAt( out[i][0], out[i][1], out[i][2] );
+        if( v ) { v->sel = ( g_mode == 1 ) ? 0 : 1; if( counter ) (*counter)++; }
+    }
 }
 
 /* Pick the cell under (mx,my) that the current mode acts on, plus the plane it
@@ -1357,9 +1483,8 @@ static void cbPut( int x, int y, int z, void *ud )
 { (void)ud; putCell( x, y, z ); g_regCount++; }
 static void cbSelect( int x, int y, int z, void *ud )
 {
-    Voxel *v = voxAt( x, y, z );
     (void)ud;
-    if( v ) { v->sel = ( g_mode == 1 ) ? 0 : 1; g_regCount++; }
+    selectCell( x, y, z, &g_regCount );
 }
 /* Commit the active region gesture into the model (or the selection). */
 static void regionCommit( void )
@@ -1388,10 +1513,10 @@ static void applyToolAt( int mx, int my )
     int cx, cy, cz, axis, dir, ground;
     if( !pickCell( mx, my, &cx, &cy, &cz, &axis, &dir, &ground ) ) return;
     if( g_tool == 4 ) {
-        Voxel *v = voxAt( cx, cy, cz );
-        if( v ) { v->sel = ( g_mode == 1 ) ? 0 : 1;
-                  setStatus( g_mode == 1 ? "Deselected voxel"
-                                         : "Selected voxel" ); }
+        int nsel = 0;
+        selectCell( cx, cy, cz, &nsel );
+        if( nsel ) setStatus( g_mode == 1 ? "Deselected voxel"
+                                          : "Selected voxel" );
         return;
     }
     putCell( cx, cy, cz );
@@ -1435,9 +1560,34 @@ static void scribbleAt( int mx, int my )
     int hx, hy, hz, px, py, pz, ax;
     mouseRay( mx, my, &ox, &oy, &oz, &dx, &dy, &dz );
     if( rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz, &px, &py, &pz, &ax ) ) {
-        Voxel *v = voxAt( hx, hy, hz );
-        if( v ) v->sel = ( g_mode == 1 ) ? 0 : 1;
+        selectCell( hx, hy, hz, NULL );
     }
+}
+
+/* Eyedropper: sample the color / ramp of the voxel under the cursor into the
+ * current paint color, so a subsequent stroke reuses it. */
+static void eyedropAt( int mx, int my )
+{
+    double ox, oy, oz, dx, dy, dz;
+    int hx, hy, hz, px, py, pz, ax;
+    Voxel *v;
+    char m[80];
+    mouseRay( mx, my, &ox, &oy, &oz, &dx, &dy, &dz );
+    if( !rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz, &px, &py, &pz, &ax ) ) {
+        setStatus( "Eyedropper: no voxel under cursor" );
+        return;
+    }
+    v = voxAt( hx, hy, hz );
+    if( !v ) return;
+    g_pick      = v->color;
+    g_rampStart = v->rampStart;
+    g_rampEnd   = v->rampStart + v->rampLen - 1;
+    if( g_rampEnd < g_rampStart ) g_rampEnd = g_rampStart;
+    if( v->rampLen > 1 )
+        sprintf( m, "Picked ramp %d..%d", g_rampStart, g_rampEnd );
+    else
+        sprintf( m, "Picked color %d", g_pick );
+    setStatus( m );
 }
 
 /* Smoother tool: mark (draw) or clear (erase) the single visible face the cursor
@@ -1445,18 +1595,16 @@ static void scribbleAt( int mx, int my )
  * dragging paints face-smoothness across whatever the cursor sweeps.  Each real
  * change is one undo record; the whole drag shares an open group. */
 static int g_smoothing = 0;
-static void smoothFaceAt( int mx, int my )
+
+/* Mark (draw) or clear (erase) one face of the voxel at (cx,cy,cz) whose
+ * outward normal is (nx,ny,nz).  Records one undo Edit if the mask changes. */
+static void smoothOneFace( int cx, int cy, int cz, int nx, int ny, int nz )
 {
-    double ox, oy, oz, dx, dy, dz;
-    int hx, hy, hz, px, py, pz, ax, bit, newMask;
-    Voxel *v;
+    int bit, newMask;
+    Voxel *v = voxAt( cx, cy, cz );
     Edit e;
-    mouseRay( mx, my, &ox, &oy, &oz, &dx, &dy, &dz );
-    if( !rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz, &px, &py, &pz, &ax ) )
-        return;
-    v = voxAt( hx, hy, hz );
     if( !v ) return;
-    bit = 1 << faceDir6( px - hx, py - hy, pz - hz );
+    bit = 1 << faceDir6( nx, ny, nz );
     newMask = ( g_mode == 1 ) ? ( v->smoothFaces & ~bit )
                               : ( v->smoothFaces |  bit );
     if( newMask == v->smoothFaces ) return;          /* no change -> no record */
@@ -1468,6 +1616,26 @@ static void smoothFaceAt( int mx, int my )
     e.group = g_curGroup;
     histPush( e );
     g_renderDirty = 1;
+}
+
+static void smoothFaceAt( int mx, int my )
+{
+    double ox, oy, oz, dx, dy, dz;
+    int hx, hy, hz, px, py, pz, ax, nx, ny, nz;
+    mouseRay( mx, my, &ox, &oy, &oz, &dx, &dy, &dz );
+    if( !rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz, &px, &py, &pz, &ax ) )
+        return;
+    if( !voxAt( hx, hy, hz ) ) return;
+    nx = px - hx; ny = py - hy; nz = pz - hz;
+    if( symActive() ) {
+        int out[8][6], n, i;
+        n = symFaceImages( hx, hy, hz, nx, ny, nz, out );
+        for( i = 0; i < n; i++ )
+            smoothOneFace( out[i][0], out[i][1], out[i][2],
+                           out[i][3], out[i][4], out[i][5] );
+    } else {
+        smoothOneFace( hx, hy, hz, nx, ny, nz );
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1679,6 +1847,63 @@ static void selExtrude( void )
       setStatus( m ); }
 }
 
+/* Write full voxel contents (color/ramp/smoothFaces/sel) at (x,y,z), or erase
+ * it when nd==NULL, recording one undo Edit.  Unlike editVoxel this preserves
+ * the smooth-face mask, which a move must carry along. */
+static void recordVoxelWrite( int x, int y, int z, const Voxel *nd )
+{
+    Edit e;
+    Voxel *ex = voxAt( x, y, z );
+    memset( &e, 0, sizeof e );
+    e.x = x; e.y = y; e.z = z;
+    e.hadBefore = ex ? 1 : 0;
+    if( ex ) e.before = *ex;
+    if( nd ) {
+        Voxel *v;
+        voxSet( x, y, z, nd->color, nd->rampStart, nd->rampLen );
+        v = voxAt( x, y, z );
+        if( v ) { v->smoothFaces = nd->smoothFaces; v->sel = nd->sel; }
+        e.hadAfter = 1; e.after = *v;
+    } else {
+        if( !ex ) return;
+        voxErase( x, y, z );
+        e.hadAfter = 0;
+    }
+    e.group = g_curGroup;
+    histPush( e );
+    g_renderDirty = 1;
+}
+
+/* Commit the pending selection move: translate every selected voxel by
+ * (g_moveDX,DY,DZ), overwriting whatever occupies the destinations, as one undo
+ * group.  Colliding voxels not in the selection are overwritten (recoverable by
+ * undo).  The moved copy becomes the new selection and the offset resets. */
+static void selMoveCommit( void )
+{
+    int i, n = 0, cap = selCount();
+    int dx = g_moveDX, dy = g_moveDY, dz = g_moveDZ;
+    Voxel *src;
+    if( cap == 0 ) { setStatus( "Selection empty" ); return; }
+    if( dx == 0 && dy == 0 && dz == 0 ) { setStatus( "Move offset is 0" ); return; }
+    src = (Voxel*)malloc( (size_t)cap * sizeof( Voxel ) );
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 && g_vox[i].sel ) src[n++] = g_vox[i];
+    groupBegin();
+    /* erase all sources first so a move onto another source cell is clean */
+    for( i = 0; i < n; i++ )
+        recordVoxelWrite( src[i].x, src[i].y, src[i].z, NULL );
+    /* place the moved copies (selected) at their new homes */
+    for( i = 0; i < n; i++ ) {
+        Voxel nd = src[i];
+        nd.sel = 1;
+        recordVoxelWrite( src[i].x+dx, src[i].y+dy, src[i].z+dz, &nd );
+    }
+    groupEnd();
+    free( src );
+    g_moveDX = g_moveDY = g_moveDZ = 0;
+    { char m[64]; sprintf( m, "Moved %d voxels", n ); setStatus( m ); }
+}
+
 /* Delete every selected voxel as one undo group. */
 static void selDelete( void )
 {
@@ -1790,16 +2015,72 @@ static void selPaste( void )
 }
 
 /* ---- ghost preview of the in-progress region drag ---- */
-static void cbGhost( int x, int y, int z, void *ud )
+static void cbGhostCube( float fx, float fy, float fz )
 {
-    float fx=(float)x, fy=(float)y, fz=(float)z;
-    (void)ud;
     /* +Y */ glVertex3f(fx,fy+1,fz);   glVertex3f(fx,fy+1,fz+1); glVertex3f(fx+1,fy+1,fz+1); glVertex3f(fx+1,fy+1,fz);
     /* -Y */ glVertex3f(fx,fy,fz);     glVertex3f(fx+1,fy,fz);   glVertex3f(fx+1,fy,fz+1);   glVertex3f(fx,fy,fz+1);
     /* +Z */ glVertex3f(fx,fy,fz+1);   glVertex3f(fx+1,fy,fz+1); glVertex3f(fx+1,fy+1,fz+1); glVertex3f(fx,fy+1,fz+1);
     /* -Z */ glVertex3f(fx,fy,fz);     glVertex3f(fx,fy+1,fz);   glVertex3f(fx+1,fy+1,fz);   glVertex3f(fx+1,fy,fz);
     /* +X */ glVertex3f(fx+1,fy,fz);   glVertex3f(fx+1,fy,fz+1); glVertex3f(fx+1,fy+1,fz+1); glVertex3f(fx+1,fy+1,fz);
     /* -X */ glVertex3f(fx,fy,fz);     glVertex3f(fx,fy+1,fz);   glVertex3f(fx,fy+1,fz+1);   glVertex3f(fx,fy,fz+1);
+}
+static void cbGhost( int x, int y, int z, void *ud )
+{
+    int out[8][3], n, i;
+    (void)ud;
+    n = symActive() ? symImages( x, y, z, out )
+                    : ( out[0][0]=x, out[0][1]=y, out[0][2]=z, 1 );
+    for( i = 0; i < n; i++ )
+        cbGhostCube( (float)out[i][0], (float)out[i][1], (float)out[i][2] );
+}
+
+/* Wire cube + an X across all six faces of the voxel at (x,y,z), drawn in the
+ * current GL color.  Used during a delete/select drag to flag which existing
+ * voxels a region actually intersects (they'd otherwise hide inside the
+ * translucent ghost). */
+static void drawHitMarkCube( int x, int y, int z )
+{
+    float fx = (float)x, fy = (float)y, fz = (float)z;
+    glBegin( GL_LINES );
+    /* 12 cube edges */
+    glVertex3f(fx,fy,fz);     glVertex3f(fx+1,fy,fz);
+    glVertex3f(fx,fy,fz+1);   glVertex3f(fx+1,fy,fz+1);
+    glVertex3f(fx,fy+1,fz);   glVertex3f(fx+1,fy+1,fz);
+    glVertex3f(fx,fy+1,fz+1); glVertex3f(fx+1,fy+1,fz+1);
+    glVertex3f(fx,fy,fz);     glVertex3f(fx,fy+1,fz);
+    glVertex3f(fx+1,fy,fz);   glVertex3f(fx+1,fy+1,fz);
+    glVertex3f(fx,fy,fz+1);   glVertex3f(fx,fy+1,fz+1);
+    glVertex3f(fx+1,fy,fz+1); glVertex3f(fx+1,fy+1,fz+1);
+    glVertex3f(fx,fy,fz);     glVertex3f(fx,fy,fz+1);
+    glVertex3f(fx+1,fy,fz);   glVertex3f(fx+1,fy,fz+1);
+    glVertex3f(fx,fy+1,fz);   glVertex3f(fx,fy+1,fz+1);
+    glVertex3f(fx+1,fy+1,fz); glVertex3f(fx+1,fy+1,fz+1);
+    /* X on each of the six faces (both diagonals) */
+    glVertex3f(fx,fy,fz);       glVertex3f(fx+1,fy+1,fz);      /* -Z */
+    glVertex3f(fx+1,fy,fz);     glVertex3f(fx,fy+1,fz);
+    glVertex3f(fx,fy,fz+1);     glVertex3f(fx+1,fy+1,fz+1);    /* +Z */
+    glVertex3f(fx+1,fy,fz+1);   glVertex3f(fx,fy+1,fz+1);
+    glVertex3f(fx,fy,fz);       glVertex3f(fx,fy+1,fz+1);      /* -X */
+    glVertex3f(fx,fy+1,fz);     glVertex3f(fx,fy,fz+1);
+    glVertex3f(fx+1,fy,fz);     glVertex3f(fx+1,fy+1,fz+1);    /* +X */
+    glVertex3f(fx+1,fy+1,fz);   glVertex3f(fx+1,fy,fz+1);
+    glVertex3f(fx,fy,fz);       glVertex3f(fx+1,fy,fz+1);      /* -Y */
+    glVertex3f(fx+1,fy,fz);     glVertex3f(fx,fy,fz+1);
+    glVertex3f(fx,fy+1,fz);     glVertex3f(fx+1,fy+1,fz+1);    /* +Y */
+    glVertex3f(fx+1,fy+1,fz);   glVertex3f(fx,fy+1,fz+1);
+    glEnd();
+}
+/* Region/sphere callback: mark every existing voxel the cell (and its symmetry
+ * images) lands on. */
+static void cbHitMark( int x, int y, int z, void *ud )
+{
+    int out[8][3], n, i;
+    (void)ud;
+    n = symActive() ? symImages( x, y, z, out )
+                    : ( out[0][0]=x, out[0][1]=y, out[0][2]=z, 1 );
+    for( i = 0; i < n; i++ )
+        if( voxAt( out[i][0], out[i][1], out[i][2] ) )
+            drawHitMarkCube( out[i][0], out[i][1], out[i][2] );
 }
 
 static void drawGesturePreview( void )
@@ -1818,6 +2099,13 @@ static void drawGesturePreview( void )
         sphereForEach( cbGhost, NULL );
         glEnd();
         glDepthMask( GL_TRUE );
+        /* in erase mode, X-mark the existing voxels this ball will carve */
+        if( g_mode == 1 ) {
+            glLineWidth( 2.0f );
+            glColor3f( 1.0f, 0.3f, 0.25f );
+            sphereForEach( cbHitMark, NULL );
+            glLineWidth( 1.0f );
+        }
         glDisable( GL_BLEND );
         return;
     }
@@ -1835,6 +2123,15 @@ static void drawGesturePreview( void )
     regionForEach( tool, cbGhost, NULL );
     glEnd();
     glDepthMask( GL_TRUE );
+    /* flag existing voxels the region intersects with an outline + face X:
+     * red for a delete drag, yellow for a select marquee. */
+    if( g_tool == 4 || g_mode == 1 ) {
+        glLineWidth( 2.0f );
+        if( g_tool == 4 ) glColor3f( 1.0f, 0.9f, 0.15f );
+        else              glColor3f( 1.0f, 0.3f, 0.25f );
+        regionForEach( tool, cbHitMark, NULL );
+        glLineWidth( 1.0f );
+    }
     glDisable( GL_BLEND );
 }
 
@@ -2900,6 +3197,7 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Cylinder", "7", 1 ) ) g_tool = 6;
         if( gui_menu_item( "Sphere",   "8", 1 ) ) g_tool = 7;
         if( gui_menu_item( "Smoother (faces)", "9", 1 ) ) g_tool = 8;
+        if( gui_menu_item( "Eyedropper", "0", 1 ) ) g_tool = 10;
         if( gui_menu_item( "Image wall", NULL, g_impPix ? 1 : 0 ) ) {
             g_tool = 9; g_impStage = 0; g_impHaveHover = 0;
         }
@@ -2968,7 +3266,28 @@ static void buildLeftPanel( float top, float h )
     gui_radio_int( "Select", &g_tool, 4 ); gui_same_line();
     gui_radio_int( "Scribble", &g_tool, 5 );
     gui_radio_int( "Smoother (faces)", &g_tool, 8 );
+    gui_radio_int( "Eyedropper", &g_tool, 10 );
     if( g_impPix ) gui_radio_int( "Image wall", &g_tool, 9 );
+    gui_text( "(ctrl+click any slider to type a value)" );
+
+    if( g_tool == 10 )
+        gui_text( "click a voxel to sample its color/ramp" );
+
+    /* symmetry planes: mirror every edit across the enabled planes */
+    gui_separator_text( "Symmetry" );
+    { static const char *axLabel[3] = { "mirror X", "mirror Y", "mirror Z" };
+      int a;
+      for( a = 0; a < 3; a++ ) {
+          gui_push_id( 700 + a );
+          gui_checkbox( axLabel[a], &g_symOn[a] );
+          if( g_symOn[a] ) {
+              gui_same_line();
+              gui_checkbox( "+0.5", &g_symHalf[a] );
+              gui_slider_int( "pos", &g_symPos[a], -64, 64 );
+          }
+          gui_pop_id();
+      }
+    }
 
     gui_separator_text( "Mode" );
     gui_radio_int( "Draw",  &g_mode, 0 ); gui_same_line();
@@ -3034,6 +3353,14 @@ static void buildLeftPanel( float top, float h )
         gui_slider_int( "px", &g_pasteDX, -32, 32 );
         gui_slider_int( "py", &g_pasteDY, -32, 32 );
         gui_slider_int( "pz", &g_pasteDZ, -32, 32 );
+        gui_separator_text( "Move selection" );
+        gui_text( "green ghost previews the move;\ncommit overwrites collisions." );
+        gui_slider_int( "mx", &g_moveDX, -64, 64 );
+        gui_slider_int( "my", &g_moveDY, -64, 64 );
+        gui_slider_int( "mz", &g_moveDZ, -64, 64 );
+        if( gui_button( "Commit Move" ) ) selMoveCommit();
+        gui_same_line();
+        if( gui_button( "Reset Move" ) ) { g_moveDX=g_moveDY=g_moveDZ=0; }
         { static const char *dirItems[6] =
               { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
           gui_separator_text( "Extrude selection" );
@@ -3364,6 +3691,38 @@ int main( int argc, char **argv )
     setStatus( "Pencil: left-click paints.  Line/Rect/Box/Select: left-drag.  "
                "Right-drag: orbit  |  Mid-drag: pan  |  Wheel: zoom" );
 
+    if( getenv( "OV_SELFTEST" ) ) {
+        int ok = 1;
+        /* symmetry: boundary mirror across X at pos 0 -> x' = -x-1 */
+        voxClear();
+        g_symOn[0]=1; g_symOn[1]=0; g_symOn[2]=0;
+        g_symPos[0]=0; g_symHalf[0]=0; g_mode=0;
+        putCell( 2, 3, 4 );
+        if( !voxAt(2,3,4) || !voxAt(-3,3,4) ) { ok=0; fprintf(stderr,"FAIL sym-boundary\n"); }
+        /* mid-voxel mirror across X centred on cell 0 -> x' = -x */
+        voxClear();
+        g_symPos[0]=0; g_symHalf[0]=1;
+        putCell( 2, 0, 0 );
+        if( !voxAt(2,0,0) || !voxAt(-2,0,0) ) { ok=0; fprintf(stderr,"FAIL sym-half\n"); }
+        /* self-mapped centre cell places just one voxel */
+        voxClear(); putCell( 0, 0, 0 );
+        if( g_voxUsed != 1 ) { ok=0; fprintf(stderr,"FAIL sym-center dup (%d)\n",g_voxUsed); }
+        /* move selection */
+        voxClear(); g_symOn[0]=0;
+        voxSet(0,0,0,5,5,1); voxSet(1,0,0,6,6,1);
+        { Voxel*a=voxAt(0,0,0),*b=voxAt(1,0,0); a->sel=1; b->sel=1; }
+        g_moveDX=10; g_moveDY=0; g_moveDZ=0;
+        selMoveCommit();
+        if( voxAt(0,0,0) || voxAt(1,0,0) ) { ok=0; fprintf(stderr,"FAIL move-src-remain\n"); }
+        if( !voxAt(10,0,0) || !voxAt(11,0,0) ) { ok=0; fprintf(stderr,"FAIL move-dst\n"); }
+        if( voxAt(10,0,0) && voxAt(10,0,0)->color!=5 ) { ok=0; fprintf(stderr,"FAIL move-color\n"); }
+        if( g_moveDX!=0 ) { ok=0; fprintf(stderr,"FAIL move-reset\n"); }
+        fprintf( stderr, ok ? "SELFTEST OK\n" : "SELFTEST FAILED\n" );
+        gui_shutdown(); SDL_GL_DeleteContext(glctx); SDL_DestroyWindow(window);
+        SDL_Quit();
+        return ok ? 0 : 1;
+    }
+
     while( running ) {
         SDL_Event ev;
         int winW, winH;
@@ -3396,6 +3755,7 @@ int main( int argc, char **argv )
                         else if( k == SDLK_7 ) g_tool = 6;
                         else if( k == SDLK_8 ) g_tool = 7;
                         else if( k == SDLK_9 ) g_tool = 8;
+                        else if( k == SDLK_0 ) g_tool = 10;
                         else if( k == SDLK_DELETE || k == SDLK_BACKSPACE ) selDelete();
                         else if( k == SDLK_ESCAPE ) {
                             if( g_tool == 9 && g_impPix && g_impStage > 0 ) {
@@ -3435,7 +3795,7 @@ int main( int argc, char **argv )
                         } else if( g_dragBtn == SDL_BUTTON_LEFT && g_tool == 7 )
                             sphereBegin( ev.button.x, ev.button.y );
                         else if( g_dragBtn == SDL_BUTTON_LEFT &&
-                                 g_tool != 0 && g_tool != 9 )
+                                 g_tool != 0 && g_tool != 9 && g_tool != 10 )
                             gestureBegin( ev.button.x, ev.button.y );
                     }
                     break;
@@ -3461,6 +3821,8 @@ int main( int argc, char **argv )
                             }
                             else if( !g_moved && g_tool == 0 )
                                 applyToolAt( ev.button.x, ev.button.y );
+                            else if( !g_moved && g_tool == 10 )
+                                eyedropAt( ev.button.x, ev.button.y );
                             else if( !g_moved && g_tool == 9 )
                                 importWallClick( ev.button.x, ev.button.y );
                         }

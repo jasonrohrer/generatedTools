@@ -132,8 +132,22 @@ typedef struct {
     int rampStart;          /* first palette index of shading ramp */
     int rampLen;            /* number of ramp colors (>=1) */
     int sel;                /* 1 if part of the current selection */
-    int smooth;             /* 0 flat, 1 fitted-normal smooth, 2 smooth corner */
+    int smoothFaces;        /* per-face smooth bitmask; bit (1<<faceDir6) set =
+                             * that face is shaded with a fitted surface normal.
+                             * faceDir6 order: +Y0 -Y1 +Z2 -Z3 +X4 -X5. */
 } Voxel;
+
+/* Map a face's (axis) outward normal to its 0..5 direction index.  Order is
+ * shared with the NR[6] face table used elsewhere: +Y0 -Y1 +Z2 -Z3 +X4 -X5. */
+static int faceDir6( double nx, double ny, double nz )
+{
+    if( ny >  0.5 ) return 0;
+    if( ny < -0.5 ) return 1;
+    if( nz >  0.5 ) return 2;
+    if( nz < -0.5 ) return 3;
+    if( nx >  0.5 ) return 4;
+    return 5;
+}
 
 static Voxel *g_vox = NULL;
 static int    g_voxCap  = 0;    /* power of two, or 0 */
@@ -203,7 +217,7 @@ static void voxGrow( void )
                           old[i].color, old[i].rampStart, old[i].rampLen );
             /* voxInsertRaw resets sel/smooth on a fresh slot; carry them over */
             nv = voxAt( old[i].x, old[i].y, old[i].z );
-            if( nv ) { nv->sel = old[i].sel; nv->smooth = old[i].smooth; }
+            if( nv ) { nv->sel = old[i].sel; nv->smoothFaces = old[i].smoothFaces; }
         }
     free( old );
 }
@@ -225,7 +239,7 @@ static void voxInsertRaw( int x, int y, int z, int color, int rs, int rl )
             g_vox[slot].rampStart = rs;
             g_vox[slot].rampLen = rl < 1 ? 1 : rl;
             g_vox[slot].sel = 0;
-            g_vox[slot].smooth = 0;
+            g_vox[slot].smoothFaces = 0;
             g_voxUsed++;
             return;
         }
@@ -266,12 +280,9 @@ static float g_smoothAmt    = 1.0f; /* 0 = blocky face normal, 1 = fully fitted 
  * The result is the local "curve of best fit" normal.  Returns 0 (leaving
  * *nx,*ny,*nz untouched) when the neighbourhood is degenerate/flat.
  *
- * When smoothOnly is set only cells that are themselves part of the smooth
- * surface (smooth flag != 0) count -- so a "smooth corner" voxel's fitted
- * surface ignores adjacent flat/unsmoothed blocks and stays sharp against
- * them, and only bends where it meets other smooth voxels. */
-static int voxSmoothNormalEx( const Voxel *v, int smoothOnly,
-                              double *nx, double *ny, double *nz )
+ * This is the local "curve of best fit" surface normal for a smooth face. */
+static int voxSmoothNormal( const Voxel *v,
+                            double *nx, double *ny, double *nz )
 {
     int di, dj, dk, R = g_smoothRadius;
     double ax = 0.0, ay = 0.0, az = 0.0, len;
@@ -286,7 +297,6 @@ static int voxSmoothNormalEx( const Voxel *v, int smoothOnly,
             if( d2 > (double)( R*R ) + 0.5 ) continue;   /* keep it spherical */
             n = voxAt( v->x + di, v->y + dj, v->z + dk );
             if( !n ) continue;
-            if( smoothOnly && !n->smooth ) continue;
             w = 1.0 / d2;                 /* nearer solids weigh more */
             ax -= di * w; ay -= dj * w; az -= dk * w;   /* away from solid */
         }
@@ -296,10 +306,13 @@ static int voxSmoothNormalEx( const Voxel *v, int smoothOnly,
     return 1;
 }
 
-static int voxSmoothNormal( const Voxel *v,
-                            double *nx, double *ny, double *nz )
+/* Is the face of the voxel at (x,y,z) whose outward normal is (nx,ny,nz)
+ * flagged smooth?  Returns 0 if there is no voxel there. */
+static int faceIsSmoothAt( int x, int y, int z, double nx, double ny, double nz )
 {
-    return voxSmoothNormalEx( v, 0, nx, ny, nz );
+    Voxel *v = voxAt( x, y, z );
+    if( !v ) return 0;
+    return ( v->smoothFaces >> faceDir6( nx, ny, nz ) ) & 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -362,8 +375,11 @@ static float cam_tx = 0.0f, cam_ty = 2.0f, cam_tz = 0.0f;
 /* tool + current paint color/ramp */
 static int g_tool = 0;             /* 0 pencil,1 line,2 rect,3 box,4 select,
                                     * 5 scribble,6 cylinder,7 sphere,
-                                    * 9 image wall */
+                                    * 8 smoother (per-face), 9 image wall */
 static int g_mode = 0;             /* 0 draw, 1 erase */
+static int g_autoSmooth = 0;       /* if set, drawing tools mark every face of
+                                    * placed voxels smooth (and erasing marks the
+                                    * newly-exposed cavity faces smooth). */
 static int g_thickness = 1;        /* extrude depth for line/rect/box/cyl (>=1) */
 static int g_sphereDepth = 0;      /* voxels the sphere sinks into the surface */
 static int g_pick = 15;            /* current palette index */
@@ -383,7 +399,7 @@ static int   g_impVx = 0, g_impVy = 1, g_impVz = 0; /* image-height axis (live i
 /* preview toggles */
 static int g_previewShade = 1;     /* 0 flat, 1 quick preview, 2 match render */
 static int g_previewEdges = 1;
-static int g_showSmoothWire = 1;   /* cyan wire boxes around smoothed voxels    */
+static int g_showSmoothWire = 1;   /* cyan outline + X on smoothed voxel faces   */
 static int g_showSurfNormals = 0;  /* draw fitted surface normals (best-fit viz) */
 static int g_hideVoxels      = 0;  /* hide solid faces so the fitted surface
                                     * tiles/normals can be seen by themselves   */
@@ -492,10 +508,16 @@ static void editVoxel( int x, int y, int z, int place,
     e.hadBefore = ex ? 1 : 0;
     if( ex ) e.before = *ex;
     if( place ) {
-        /* skip no-op: same contents already present */
+        /* skip no-op: same contents already present (unless auto-smooth still
+         * has faces to flip on) */
         if( ex && ex->color == color && ex->rampStart == rs &&
-            ex->rampLen == ( rl < 1 ? 1 : rl ) ) return;
+            ex->rampLen == ( rl < 1 ? 1 : rl ) &&
+            ( !g_autoSmooth || ex->smoothFaces == 0x3F ) ) return;
         voxSet( x, y, z, color, rs, rl );
+        if( g_autoSmooth ) {
+            Voxel *nv = voxAt( x, y, z );   /* mark all 6 faces smooth */
+            if( nv ) nv->smoothFaces = 0x3F;
+        }
         e.hadAfter = 1;
         e.after = *voxAt( x, y, z );
     } else {
@@ -507,6 +529,33 @@ static void editVoxel( int x, int y, int z, int place,
     e.group = g_curGroup;
     histPush( e );
     g_renderDirty = 1;
+
+    /* auto-smooth on erase: the six neighbours around the removed cell now
+     * expose a face toward the cavity -- flag those faces smooth, each as its
+     * own undo record sharing this edit's group so they undo together. */
+    if( !place && g_autoSmooth ) {
+        static const int D[6][3] = { {1,0,0},{-1,0,0},{0,1,0},
+                                     {0,-1,0},{0,0,1},{0,0,-1} };
+        int d;
+        for( d = 0; d < 6; d++ ) {
+            Voxel *n = voxAt( x+D[d][0], y+D[d][1], z+D[d][2] );
+            int bit;
+            if( !n ) continue;
+            /* the neighbour's face pointing back at (x,y,z) is -D */
+            bit = 1 << faceDir6( -D[d][0], -D[d][1], -D[d][2] );
+            if( n->smoothFaces & bit ) continue;
+            {
+                Edit se;
+                memset( &se, 0, sizeof se );
+                se.x = n->x; se.y = n->y; se.z = n->z;
+                se.hadBefore = 1; se.before = *n;
+                n->smoothFaces |= bit;
+                se.hadAfter = 1; se.after = *n;
+                se.group = g_curGroup;
+                histPush( se );
+            }
+        }
+    }
 }
 
 static void applyUndo( Edit *e )
@@ -515,8 +564,8 @@ static void applyUndo( Edit *e )
         Voxel *v;
         voxSet( e->x, e->y, e->z, e->before.color,
                 e->before.rampStart, e->before.rampLen );
-        v = voxAt( e->x, e->y, e->z );   /* voxSet doesn't touch the smooth flag */
-        if( v ) v->smooth = e->before.smooth;
+        v = voxAt( e->x, e->y, e->z );   /* voxSet doesn't touch the smooth mask */
+        if( v ) v->smoothFaces = e->before.smoothFaces;
     }
     else               voxErase( e->x, e->y, e->z );
 }
@@ -527,7 +576,7 @@ static void applyRedo( Edit *e )
         voxSet( e->x, e->y, e->z, e->after.color,
                 e->after.rampStart, e->after.rampLen );
         v = voxAt( e->x, e->y, e->z );
-        if( v ) v->smooth = e->after.smooth;
+        if( v ) v->smoothFaces = e->after.smoothFaces;
     }
     else              voxErase( e->x, e->y, e->z );
 }
@@ -727,6 +776,9 @@ static void drawGrid( void )
 /* forward decls for preview overlays defined later */
 static void drawGesturePreview( void );
 static void importWallDrawPreview( void );
+static void shadingNormalForFace( const Voxel *v,
+                                  double fx, double fy, double fz,
+                                  double *ox, double *oy, double *oz );
 
 /* Emit one shaded unit-square face at cell (x,y,z) given its normal & color. */
 static void emitFace( float x, float y, float z,
@@ -753,6 +805,41 @@ static void emitFace( float x, float y, float z,
         glVertex3f( x, y,   z   ); glVertex3f( x, y+1, z   );
         glVertex3f( x, y+1, z+1 ); glVertex3f( x, y,   z+1 );
     }
+}
+
+/* Fill c[4][3] with the four corners of the unit face of cell (x,y,z) whose
+ * outward normal is (nx,ny,nz), each pushed out by `push` along that normal so
+ * overlays sit just clear of the solid face and don't z-fight. */
+static void faceCorners( int x, int y, int z, int nx, int ny, int nz,
+                         float push, float c[4][3] )
+{
+    float fx=(float)x, fy=(float)y, fz=(float)z;
+    float px=nx*push, py=ny*push, pz=nz*push;
+    if( ny > 0 )      { c[0][0]=fx;   c[0][1]=fy+1; c[0][2]=fz;
+                        c[1][0]=fx;   c[1][1]=fy+1; c[1][2]=fz+1;
+                        c[2][0]=fx+1; c[2][1]=fy+1; c[2][2]=fz+1;
+                        c[3][0]=fx+1; c[3][1]=fy+1; c[3][2]=fz; }
+    else if( ny < 0 ) { c[0][0]=fx;   c[0][1]=fy;   c[0][2]=fz;
+                        c[1][0]=fx+1; c[1][1]=fy;   c[1][2]=fz;
+                        c[2][0]=fx+1; c[2][1]=fy;   c[2][2]=fz+1;
+                        c[3][0]=fx;   c[3][1]=fy;   c[3][2]=fz+1; }
+    else if( nz > 0 ) { c[0][0]=fx;   c[0][1]=fy;   c[0][2]=fz+1;
+                        c[1][0]=fx+1; c[1][1]=fy;   c[1][2]=fz+1;
+                        c[2][0]=fx+1; c[2][1]=fy+1; c[2][2]=fz+1;
+                        c[3][0]=fx;   c[3][1]=fy+1; c[3][2]=fz+1; }
+    else if( nz < 0 ) { c[0][0]=fx;   c[0][1]=fy;   c[0][2]=fz;
+                        c[1][0]=fx;   c[1][1]=fy+1; c[1][2]=fz;
+                        c[2][0]=fx+1; c[2][1]=fy+1; c[2][2]=fz;
+                        c[3][0]=fx+1; c[3][1]=fy;   c[3][2]=fz; }
+    else if( nx > 0 ) { c[0][0]=fx+1; c[0][1]=fy;   c[0][2]=fz;
+                        c[1][0]=fx+1; c[1][1]=fy;   c[1][2]=fz+1;
+                        c[2][0]=fx+1; c[2][1]=fy+1; c[2][2]=fz+1;
+                        c[3][0]=fx+1; c[3][1]=fy+1; c[3][2]=fz; }
+    else              { c[0][0]=fx;   c[0][1]=fy;   c[0][2]=fz;
+                        c[1][0]=fx;   c[1][1]=fy+1; c[1][2]=fz;
+                        c[2][0]=fx;   c[2][1]=fy+1; c[2][2]=fz+1;
+                        c[3][0]=fx;   c[3][1]=fy;   c[3][2]=fz+1; }
+    { int k; for( k=0;k<4;k++ ){ c[k][0]+=px; c[k][1]+=py; c[k][2]+=pz; } }
 }
 
 static void drawScene3D( void )
@@ -855,106 +942,100 @@ static void drawScene3D( void )
         glEnd();
     }
 
-    /* smoothed voxels: cyan wire boxes so you can see the smoothing group while
-     * building a selection (Select / Scribble tools).  Toggleable in Display. */
-    if( g_showSmoothWire && ( g_tool == 4 || g_tool == 5 ) ) {
-        int any = 0;
-        for( i = 0; i < g_voxCap; i++ )
-            if( g_vox[i].used==1 && g_vox[i].smooth ) { any=1; break; }
-        if( any ) {
-            glLineWidth( 2.0f );
-            glBegin( GL_LINES );
-            for( i = 0; i < g_voxCap; i++ ) {
-                float x, y, z;
-                if( g_vox[i].used != 1 || !g_vox[i].smooth ) continue;
-                /* cyan for plain smooth, orange for smooth-corner voxels */
-                if( g_vox[i].smooth == 2 ) glColor3f( 1.0f, 0.6f, 0.15f );
-                else                        glColor3f( 0.25f, 0.95f, 1.0f );
-                x=(float)g_vox[i].x; y=(float)g_vox[i].y; z=(float)g_vox[i].z;
-                glVertex3f(x,y,z);     glVertex3f(x+1,y,z);
-                glVertex3f(x,y,z+1);   glVertex3f(x+1,y,z+1);
-                glVertex3f(x,y+1,z);   glVertex3f(x+1,y+1,z);
-                glVertex3f(x,y+1,z+1); glVertex3f(x+1,y+1,z+1);
-                glVertex3f(x,y,z);     glVertex3f(x,y+1,z);
-                glVertex3f(x+1,y,z);   glVertex3f(x+1,y+1,z);
-                glVertex3f(x,y,z+1);   glVertex3f(x,y+1,z+1);
-                glVertex3f(x+1,y,z+1); glVertex3f(x+1,y+1,z+1);
-                glVertex3f(x,y,z);     glVertex3f(x,y,z+1);
-                glVertex3f(x+1,y,z);   glVertex3f(x+1,y,z+1);
-                glVertex3f(x,y+1,z);   glVertex3f(x,y+1,z+1);
-                glVertex3f(x+1,y+1,z); glVertex3f(x+1,y+1,z+1);
+    /* smoothed faces: a cyan outline with an X across every *visible* face that
+     * is flagged smooth, so you can see exactly which faces are marked.
+     * Toggleable in Display. */
+    if( g_showSmoothWire ) {
+        static const int NB[6][3] = { {0,1,0},{0,-1,0},{0,0,1},
+                                      {0,0,-1},{1,0,0},{-1,0,0} };
+        glLineWidth( 1.5f );
+        glColor3f( 0.25f, 0.95f, 1.0f );
+        for( i = 0; i < g_voxCap; i++ ) {
+            int f;
+            Voxel *v = &g_vox[i];
+            if( v->used != 1 || v->smoothFaces == 0 ) continue;
+            for( f = 0; f < 6; f++ ) {
+                float c[4][3];
+                if( !( ( v->smoothFaces >> f ) & 1 ) ) continue;
+                if( voxAt( v->x+NB[f][0], v->y+NB[f][1], v->z+NB[f][2] ) )
+                    continue;                        /* hidden face */
+                faceCorners( v->x, v->y, v->z,
+                             NB[f][0], NB[f][1], NB[f][2], 0.02f, c );
+                glBegin( GL_LINE_LOOP );
+                glVertex3fv( c[0] ); glVertex3fv( c[1] );
+                glVertex3fv( c[2] ); glVertex3fv( c[3] );
+                glEnd();
+                glBegin( GL_LINES );                 /* the X */
+                glVertex3fv( c[0] ); glVertex3fv( c[2] );
+                glVertex3fv( c[1] ); glVertex3fv( c[3] );
+                glEnd();
             }
-            glEnd();
-            glLineWidth( 1.0f );
         }
+        glLineWidth( 1.0f );
     }
 
-    /* fitted-surface visualization: for every smoothed voxel draw a little tile
-     * lying in the plane perpendicular to its fitted normal, plus a short spike
-     * along that normal.  Together the tiles read as the "curve of best fit"
-     * surface, so its response to the smooth radius/amount can be seen. */
+    /* surface-normal visualization: for every *visible* face draw a small tile
+     * lying in the plane perpendicular to the shading normal it will actually be
+     * shaded with (flat for a plain face, fitted+constrained for a smooth one),
+     * plus a spike along that normal.  This answers "how is this face shaded?"
+     * for every face -- smooth faces tilt, flat faces stay square. */
     if( g_showSurfNormals ) {
-        /* The tile sits on the voxel surface (pushed out along the normal) and
-         * the spike stands well clear of the voxel so it reads even when the
-         * solid voxels are drawn; in "hide voxels" mode the tiles alone form
-         * the fitted surface. */
-        float sp = 1.25f, tile = 0.45f, base = 0.5f;
+        static const int NB[6][3] = { {0,1,0},{0,-1,0},{0,0,1},
+                                      {0,0,-1},{1,0,0},{-1,0,0} };
+        static const double NR[6][3] = { {0,1,0},{0,-1,0},{0,0,1},
+                                         {0,0,-1},{1,0,0},{-1,0,0} };
+        float sp = 1.1f, tile = 0.42f, base = 0.5f;
         glDisable( GL_DEPTH_TEST );
         for( i = 0; i < g_voxCap; i++ ) {
-            double nx, ny, nz, t1x, t1y, t1z, t2x, t2y, t2z, hx, hy, hz, hl;
-            float cx, cy, cz, ox, oy, oz;
-            if( g_vox[i].used != 1 || !g_vox[i].smooth ) continue;
-            if( !voxSmoothNormal( &g_vox[i], &nx, &ny, &nz ) ) continue;
-            cx = (float)g_vox[i].x + 0.5f;
-            cy = (float)g_vox[i].y + 0.5f;
-            cz = (float)g_vox[i].z + 0.5f;
-            /* tile centre pushed out to the voxel surface along the normal */
-            ox = cx + (float)( nx*base );
-            oy = cy + (float)( ny*base );
-            oz = cz + (float)( nz*base );
-            /* tangent basis: cross the normal with whichever axis is least
-             * aligned so the helper is never parallel to n. */
-            if( fabs( nx ) <= fabs( ny ) && fabs( nx ) <= fabs( nz ) )
-                { hx = 1.0; hy = 0.0; hz = 0.0; }
-            else if( fabs( ny ) <= fabs( nz ) )
-                { hx = 0.0; hy = 1.0; hz = 0.0; }
-            else
-                { hx = 0.0; hy = 0.0; hz = 1.0; }
-            t1x = hy*nz - hz*ny; t1y = hz*nx - hx*nz; t1z = hx*ny - hy*nx;
-            hl = sqrt( t1x*t1x + t1y*t1y + t1z*t1z ); if( hl < 1e-6 ) hl = 1.0;
-            t1x /= hl; t1y /= hl; t1z /= hl;
-            t2x = ny*t1z - nz*t1y; t2y = nz*t1x - nx*t1z; t2z = nx*t1y - ny*t1x;
-            /* filled tile (translucent) so the surface reads as a patch, plus a
-             * bright outline.  Orange = smooth, redder = smooth-corner. */
-            if( g_vox[i].smooth == 2 ) glColor4f( 1.0f, 0.35f, 0.05f, 0.45f );
-            else                        glColor4f( 1.0f, 0.62f, 0.12f, 0.40f );
-            glBegin( GL_QUADS );
-            glVertex3f( ox + (float)(( t1x+t2x)*tile), oy + (float)(( t1y+t2y)*tile), oz + (float)(( t1z+t2z)*tile) );
-            glVertex3f( ox + (float)(( t1x-t2x)*tile), oy + (float)(( t1y-t2y)*tile), oz + (float)(( t1z-t2z)*tile) );
-            glVertex3f( ox + (float)((-t1x-t2x)*tile), oy + (float)((-t1y-t2y)*tile), oz + (float)((-t1z-t2z)*tile) );
-            glVertex3f( ox + (float)((-t1x+t2x)*tile), oy + (float)((-t1y+t2y)*tile), oz + (float)((-t1z+t2z)*tile) );
-            glEnd();
-            glLineWidth( 1.5f );
-            glColor3f( 1.0f, 0.7f, 0.15f );
-            glBegin( GL_LINE_LOOP );
-            glVertex3f( ox + (float)(( t1x+t2x)*tile), oy + (float)(( t1y+t2y)*tile), oz + (float)(( t1z+t2z)*tile) );
-            glVertex3f( ox + (float)(( t1x-t2x)*tile), oy + (float)(( t1y-t2y)*tile), oz + (float)(( t1z-t2z)*tile) );
-            glVertex3f( ox + (float)((-t1x-t2x)*tile), oy + (float)((-t1y-t2y)*tile), oz + (float)((-t1z-t2z)*tile) );
-            glVertex3f( ox + (float)((-t1x+t2x)*tile), oy + (float)((-t1y+t2y)*tile), oz + (float)((-t1z+t2z)*tile) );
-            glEnd();
-            /* outward normal spike: from the voxel centre out well past the
-             * surface so it is clearly visible poking out of the voxel. */
-            glLineWidth( 2.5f );
-            glColor3f( 1.0f, 0.9f, 0.25f );
-            glBegin( GL_LINES );
-            glVertex3f( cx, cy, cz );
-            glVertex3f( cx + (float)(nx*sp), cy + (float)(ny*sp), cz + (float)(nz*sp) );
-            glEnd();
-            /* a little tip cross so the spike end reads as an arrowhead */
-            glBegin( GL_LINES );
-            glVertex3f( ox + (float)(nx*(sp-base)) + (float)(t1x*0.12), oy + (float)(ny*(sp-base)) + (float)(t1y*0.12), oz + (float)(nz*(sp-base)) + (float)(t1z*0.12) );
-            glVertex3f( ox + (float)(nx*(sp-base)) - (float)(t1x*0.12), oy + (float)(ny*(sp-base)) - (float)(t1y*0.12), oz + (float)(nz*(sp-base)) - (float)(t1z*0.12) );
-            glEnd();
+            int f;
+            Voxel *v = &g_vox[i];
+            if( v->used != 1 ) continue;
+            for( f = 0; f < 6; f++ ) {
+                double nx, ny, nz, t1x, t1y, t1z, t2x, t2y, t2z, hx, hy, hz, hl;
+                float cx, cy, cz, ox, oy, oz;
+                int smoothF;
+                if( voxAt( v->x+NB[f][0], v->y+NB[f][1], v->z+NB[f][2] ) )
+                    continue;                        /* hidden face */
+                smoothF = ( v->smoothFaces >> f ) & 1;
+                shadingNormalForFace( v, NR[f][0], NR[f][1], NR[f][2],
+                                      &nx, &ny, &nz );
+                /* face centre = cell centre + half a cell along the face axis */
+                cx = (float)v->x + 0.5f + (float)(NR[f][0]*base);
+                cy = (float)v->y + 0.5f + (float)(NR[f][1]*base);
+                cz = (float)v->z + 0.5f + (float)(NR[f][2]*base);
+                ox = cx + (float)( nx*0.06 );
+                oy = cy + (float)( ny*0.06 );
+                oz = cz + (float)( nz*0.06 );
+                /* tangent basis around the shading normal */
+                if( fabs( nx ) <= fabs( ny ) && fabs( nx ) <= fabs( nz ) )
+                    { hx = 1.0; hy = 0.0; hz = 0.0; }
+                else if( fabs( ny ) <= fabs( nz ) )
+                    { hx = 0.0; hy = 1.0; hz = 0.0; }
+                else
+                    { hx = 0.0; hy = 0.0; hz = 1.0; }
+                t1x = hy*nz - hz*ny; t1y = hz*nx - hx*nz; t1z = hx*ny - hy*nx;
+                hl = sqrt( t1x*t1x + t1y*t1y + t1z*t1z ); if( hl < 1e-6 ) hl = 1.0;
+                t1x /= hl; t1y /= hl; t1z /= hl;
+                t2x = ny*t1z - nz*t1y; t2y = nz*t1x - nx*t1z; t2z = nx*t1y - ny*t1x;
+                /* cyan-ish translucent tile for a smooth face, grey for a flat
+                 * one, so which faces round reads at a glance. */
+                if( smoothF ) glColor4f( 0.2f, 0.85f, 1.0f, 0.40f );
+                else          glColor4f( 0.7f, 0.7f, 0.7f, 0.28f );
+                glBegin( GL_QUADS );
+                glVertex3f( ox+(float)(( t1x+t2x)*tile), oy+(float)(( t1y+t2y)*tile), oz+(float)(( t1z+t2z)*tile) );
+                glVertex3f( ox+(float)(( t1x-t2x)*tile), oy+(float)(( t1y-t2y)*tile), oz+(float)(( t1z-t2z)*tile) );
+                glVertex3f( ox+(float)((-t1x-t2x)*tile), oy+(float)((-t1y-t2y)*tile), oz+(float)((-t1z-t2z)*tile) );
+                glVertex3f( ox+(float)((-t1x+t2x)*tile), oy+(float)((-t1y+t2y)*tile), oz+(float)((-t1z+t2z)*tile) );
+                glEnd();
+                /* outward spike along the shading normal */
+                glLineWidth( 2.0f );
+                if( smoothF ) glColor3f( 0.4f, 0.95f, 1.0f );
+                else          glColor3f( 0.85f, 0.85f, 0.85f );
+                glBegin( GL_LINES );
+                glVertex3f( cx, cy, cz );
+                glVertex3f( cx+(float)(nx*sp), cy+(float)(ny*sp), cz+(float)(nz*sp) );
+                glEnd();
+            }
         }
         glLineWidth( 1.0f );
         glEnable( GL_DEPTH_TEST );
@@ -1358,6 +1439,36 @@ static void scribbleAt( int mx, int my )
     }
 }
 
+/* Smoother tool: mark (draw) or clear (erase) the single visible face the cursor
+ * is over as smooth.  Called on the initial click and every move of the drag, so
+ * dragging paints face-smoothness across whatever the cursor sweeps.  Each real
+ * change is one undo record; the whole drag shares an open group. */
+static int g_smoothing = 0;
+static void smoothFaceAt( int mx, int my )
+{
+    double ox, oy, oz, dx, dy, dz;
+    int hx, hy, hz, px, py, pz, ax, bit, newMask;
+    Voxel *v;
+    Edit e;
+    mouseRay( mx, my, &ox, &oy, &oz, &dx, &dy, &dz );
+    if( !rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz, &px, &py, &pz, &ax ) )
+        return;
+    v = voxAt( hx, hy, hz );
+    if( !v ) return;
+    bit = 1 << faceDir6( px - hx, py - hy, pz - hz );
+    newMask = ( g_mode == 1 ) ? ( v->smoothFaces & ~bit )
+                              : ( v->smoothFaces |  bit );
+    if( newMask == v->smoothFaces ) return;          /* no change -> no record */
+    memset( &e, 0, sizeof e );
+    e.x = v->x; e.y = v->y; e.z = v->z;
+    e.hadBefore = 1; e.before = *v;
+    v->smoothFaces = newMask;
+    e.hadAfter = 1; e.after = *v;
+    e.group = g_curGroup;
+    histPush( e );
+    g_renderDirty = 1;
+}
+
 /* ------------------------------------------------------------------ */
 /* sphere gesture (grow a ball on a surface)                           */
 /* ------------------------------------------------------------------ */
@@ -1497,22 +1608,24 @@ static void selInvert( void )
     { char m[64]; sprintf( m, "%d selected", selCount() ); setStatus( m ); }
 }
 
-/* Flag (or unflag) every selected voxel for smooth shading, as one undo step.
- * The smooth flag is a per-voxel attribute, so this records a before/after Edit
- * per changed voxel (only voxels whose flag actually changes). */
+/* Mark (flag=1) or clear (flag=0) ALL six faces of every selected voxel as
+ * smooth, as one undo step.  Only visible faces actually affect shading, but we
+ * remember all six so a face that becomes exposed later is already smooth.
+ * Records a before/after Edit per voxel whose mask actually changes. */
 static void selSmooth( int flag )
 {
     int i, n = 0;
+    int newMask = flag ? 0x3F : 0;
     if( selCount() == 0 ) { setStatus( "Selection empty" ); return; }
     groupBegin();
     for( i = 0; i < g_voxCap; i++ ) {
         Voxel *v = &g_vox[i];
         Edit e;
-        if( v->used != 1 || !v->sel || v->smooth == flag ) continue;
+        if( v->used != 1 || !v->sel || v->smoothFaces == newMask ) continue;
         memset( &e, 0, sizeof e );
         e.x = v->x; e.y = v->y; e.z = v->z;
         e.hadBefore = 1; e.before = *v;
-        v->smooth = flag;
+        v->smoothFaces = newMask;
         e.hadAfter = 1; e.after = *v;
         e.group = g_curGroup;
         histPush( e );
@@ -2044,82 +2157,80 @@ static void blendSmoothN( int have, double wnx, double wny, double wnz,
     *ox = nx/len; *oy = ny/len; *oz = nz/len;
 }
 
-/* For a smooth-corner voxel, decide whether the exposed face whose outward axis
- * is faceAxis (0=x,1=y,2=z), pointing in sign adSign (+1/-1), should round along
- * tangent axis tAxis.  It rounds only where the surface genuinely CURVES along
- * that tangent -- i.e. somewhere within the smooth radius the face's surface
- * steps to a different level along the face axis.  Where the surface stays a
- * flat coplanar run along the tangent (like a cylinder's flat top cap) the face
- * keeps its sharp, flat normal along that tangent instead of tilting.  This is
- * what lets a rim's wall round while its top stays flat with a crisp edge: for
- * the top face both tangents are flat runs (drop them -> pure +Y), while for the
- * wall face the circumferential tangent steps as the cylinder curves (keep it ->
- * radial) but the vertical tangent is a flat run (drop -> no vertical tilt). */
-static int cornerRoundsAlong( const Voxel *v, int faceAxis, int adSign,
-                              int tAxis )
-{
-    int R = g_smoothRadius, s, t, ad[3];
-    if( R < 1 ) R = 1;
-    ad[0] = ad[1] = ad[2] = 0; ad[faceAxis] = adSign;
-    for( s = -1; s <= 1; s += 2 )
-      for( t = 1; t <= R; t++ ) {
-          int b[3];
-          b[0] = v->x; b[1] = v->y; b[2] = v->z; b[tAxis] += s*t;
-          /* surface steps toward +faceAxis (base solid, cell above it solid) */
-          if( voxAt( b[0], b[1], b[2] ) &&
-              voxAt( b[0]+ad[0], b[1]+ad[1], b[2]+ad[2] ) ) return 1;
-          /* surface steps toward -faceAxis (base air, cell below it solid) */
-          if( !voxAt( b[0], b[1], b[2] ) &&
-              voxAt( b[0]-ad[0], b[1]-ad[1], b[2]-ad[2] ) ) return 1;
-      }
-    return 0;
-}
-
-/* Shading normal for one *visible* world face of voxel v (fx,fy,fz is the face's
- * flat axis normal).  Both the oblique renderer and the 3D match preview call
- * this so they agree.  Handles the three smooth states:
+/* Shading normal for one *visible* world face of voxel v whose flat axis normal
+ * is (fx,fy,fz).  Both the oblique renderer and the 3D match preview call this
+ * so they agree.
  *
- *   0 unsmooth     -> the flat face normal.
- *   1 smooth       -> the fitted surface normal (blended by g_smoothAmt),
- *                     shared by every face; a voxel sphere shades round.
- *   2 smooth corner-> the fitted normal computed over *smooth* neighbours only,
- *                     then with its components along the voxel's OTHER exposed
- *                     (air-facing) axes removed.  That keeps this face bending
- *                     only along the surface it continues while the perpendicular
- *                     exposed face stays flat -- e.g. a cylinder's top rim shades
- *                     round on the wall but keeps a sharp, flat top edge.  Where a
- *                     corner meets air or an unsmoothed block it stays sharp. */
+ * Smoothing is now a per-FACE property (v->smoothFaces bitmask):
+ *
+ *   - A non-smooth face keeps its blocky axis normal (returned unchanged).
+ *
+ *   - A smooth face starts from the fitted surface normal (the negated gradient
+ *     of local occupancy -- what makes a voxel sphere shade round), then is
+ *     "met" to its neighbouring visible faces: for each of the four in-plane
+ *     neighbour directions we find the visible face that continues the surface
+ *     (coplanar if the next cell is solid & open above; a perpendicular face on
+ *     THIS voxel if the next cell is empty (convex edge); a perpendicular face
+ *     on the diagonal cell if the surface steps up (concave edge)).  Where that
+ *     neighbour face is *not* smooth we constrain our normal so the two faces
+ *     meet sanely:
+ *       * a non-smooth COPLANAR neighbour locks us fully flat (we abut a flat
+ *         run and must stay flat with it);
+ *       * a non-smooth PERPENDICULAR neighbour locks the tangent component along
+ *         its axis to zero, keeping us at 90 degrees to it while still free to
+ *         rotate about the other in-plane axis.
+ *     So a ring whose rim faces are smooth but whose flat top/bottom faces are
+ *     not rounds only circumferentially (the vertical tangent is pinned by the
+ *     flat caps), and a cylinder's top rim keeps a crisp flat cap edge. */
 static void shadingNormalForFace( const Voxel *v,
                                   double fx, double fy, double fz,
                                   double *ox, double *oy, double *oz )
 {
     double n[3];
+    int faceAxis, s, k, lock[3];
+    double len;
+
     *ox = fx; *oy = fy; *oz = fz;
-    if( v->smooth == 0 ) return;
-    if( v->smooth == 1 ) {
-        if( voxSmoothNormalEx( v, 0, &n[0], &n[1], &n[2] ) )
-            blendSmoothN( 1, n[0], n[1], n[2], fx, fy, fz, ox, oy, oz );
-        return;
-    }
-    /* smooth corner (state 2) */
-    if( !voxSmoothNormalEx( v, 1, &n[0], &n[1], &n[2] ) ) return;  /* flat */
-    {
-        int k, faceAxis = ( fy != 0.0 ) ? 1 : ( fz != 0.0 ? 2 : 0 );
-        double fa = ( faceAxis == 0 ) ? fx : ( faceAxis == 1 ? fy : fz );
-        int adSign = ( fa > 0.0 ) ? 1 : -1;
-        double len;
-        for( k = 0; k < 3; k++ ) {
-            if( k == faceAxis ) continue;          /* never drop our own axis */
-            /* keep this tangent's fitted component only where the surface
-             * actually curves along it; drop it on flat coplanar runs so a
-             * flat cap / crisp edge does not tilt (see cornerRoundsAlong). */
-            if( !cornerRoundsAlong( v, faceAxis, adSign, k ) )
-                n[k] = 0.0;
+    if( !( ( v->smoothFaces >> faceDir6( fx, fy, fz ) ) & 1 ) ) return;
+
+    if( !voxSmoothNormal( v, &n[0], &n[1], &n[2] ) ) return;  /* flat fit */
+
+    faceAxis = ( fy != 0.0 ) ? 1 : ( fz != 0.0 ? 2 : 0 );
+    lock[0] = lock[1] = lock[2] = 0;
+
+    /* examine the four axis-aligned in-plane neighbour faces */
+    for( k = 0; k < 3; k++ ) {
+        if( k == faceAxis ) continue;              /* only the two tangents */
+        for( s = -1; s <= 1; s += 2 ) {
+            int e[3], A[3], nsm, dr[3];
+            e[0]=e[1]=e[2]=0; e[k] = s;            /* the in-plane step */
+            A[0]=v->x+e[0]; A[1]=v->y+e[1]; A[2]=v->z+e[2];
+            dr[0]=(faceAxis==0)?(int)(fx>0?1:-1):0;
+            dr[1]=(faceAxis==1)?(int)(fy>0?1:-1):0;
+            dr[2]=(faceAxis==2)?(int)(fz>0?1:-1):0;
+            if( !voxAt( A[0], A[1], A[2] ) ) {
+                /* convex edge: the neighbour face is on THIS voxel, normal e */
+                nsm = faceIsSmoothAt( v->x, v->y, v->z,
+                                      (double)e[0],(double)e[1],(double)e[2] );
+                if( !nsm ) lock[k] = 1;            /* perpendicular -> lock tangent */
+            } else if( !voxAt( A[0]+dr[0], A[1]+dr[1], A[2]+dr[2] ) ) {
+                /* coplanar continuation: neighbour face (A, faceNormal) */
+                nsm = faceIsSmoothAt( A[0], A[1], A[2], fx, fy, fz );
+                if( !nsm ) { *ox=fx; *oy=fy; *oz=fz; return; }  /* full lock */
+            } else {
+                /* concave edge: neighbour face on cell A+dr, normal -e */
+                nsm = faceIsSmoothAt( A[0]+dr[0], A[1]+dr[1], A[2]+dr[2],
+                                      (double)-e[0],(double)-e[1],(double)-e[2] );
+                if( !nsm ) lock[k] = 1;            /* perpendicular -> lock tangent */
+            }
         }
-        len = sqrt( n[0]*n[0] + n[1]*n[1] + n[2]*n[2] );
-        if( len < 1e-6 ) return;                    /* nothing left -> flat */
-        n[0] /= len; n[1] /= len; n[2] /= len;
     }
+
+    for( k = 0; k < 3; k++ ) if( lock[k] ) n[k] = 0.0;
+    len = sqrt( n[0]*n[0] + n[1]*n[1] + n[2]*n[2] );
+    if( len < 1e-6 ) return;                       /* nothing left -> flat */
+    n[0] /= len; n[1] /= len; n[2] /= len;
+
     blendSmoothN( 1, n[0], n[1], n[2], fx, fy, fz, ox, oy, oz );
 }
 
@@ -2491,7 +2602,7 @@ static void saveSculpture( const char *path )
     FILE *f = fopen( path, "w" );
     int i;
     if( !f ) { setStatus( "Save failed" ); return; }
-    fprintf( f, "OBLIQUEVOXELS 1\n" );
+    fprintf( f, "OBLIQUEVOXELS 2\n" );
     fprintf( f, "PALETTE %s %d\n", g_palName, g_palCount );
     for( i = 0; i < g_palCount; i++ )
         fprintf( f, "C %d %d %d\n", g_pal[i*3+0], g_pal[i*3+1], g_pal[i*3+2] );
@@ -2504,14 +2615,17 @@ static void saveSculpture( const char *path )
     fprintf( f, "RENDER %d %d %d %d %d %d %.4f\n", g_shadingMode, g_voxPx,
              g_frontScrunch, g_topScrunch, g_orient,
              g_smoothRadius, g_smoothAmt );
-    /* one voxel per line: V x y z color rampStart rampLen [smooth] */
+    /* one voxel per line: V x y z color rampStart rampLen [smoothFaceMask]
+     * The trailing field is a 6-bit per-face smooth mask (order +Y +Z ... see
+     * faceDir6).  In the legacy version-1 format this field was a 0/1/2 whole-
+     * voxel smooth flag; loadSculpture migrates those. */
     for( i = 0; i < g_voxCap; i++ ) {
         Voxel *v;
         if( g_vox[i].used != 1 ) continue;
         v = &g_vox[i];
         fprintf( f, "V %d %d %d %d %d %d %d\n",
                  v->x, v->y, v->z, v->color, v->rampStart, v->rampLen,
-                 v->smooth );
+                 v->smoothFaces );
     }
     fclose( f );
     { char msg[1400]; sprintf( msg, "Saved %d voxels -> %s", g_voxUsed, path );
@@ -2522,12 +2636,13 @@ static int loadSculpture( const char *path )
 {
     FILE *f = fopen( path, "r" );
     char line[ 256 ];
-    int palIdx = 0, palExpected = 0;
+    int palIdx = 0, palExpected = 0, ver = 1;
     if( !f ) { setStatus( "Open failed" ); return 0; }
     if( !fgets( line, sizeof line, f ) ||
         strncmp( line, "OBLIQUEVOXELS", 13 ) != 0 ) {
         fclose( f ); setStatus( "Not an .ovox file" ); return 0;
     }
+    sscanf( line, "OBLIQUEVOXELS %d", &ver );
     voxClear();
     histClear();
     g_numLights = 0;
@@ -2579,7 +2694,12 @@ static int loadSculpture( const char *path )
                 Voxel *nv;
                 voxSet( x,y,z,col,rs,rl );
                 nv = voxAt( x,y,z );
-                if( nv ) nv->smooth = ( got >= 7 ) ? clampi( sm, 0, 2 ) : 0;
+                if( nv ) {
+                    if( got < 7 )      nv->smoothFaces = 0;
+                    else if( ver >= 2 ) nv->smoothFaces = sm & 0x3F;
+                    else                /* legacy 0/1/2 whole-voxel smooth flag */
+                        nv->smoothFaces = ( sm != 0 ) ? 0x3F : 0;
+                }
             }
         }
         /* older files may carry 'S x y z' smoother-cell lines; silently ignored */
@@ -2759,6 +2879,7 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Scribble select", "6", 1 ) ) g_tool = 5;
         if( gui_menu_item( "Cylinder", "7", 1 ) ) g_tool = 6;
         if( gui_menu_item( "Sphere",   "8", 1 ) ) g_tool = 7;
+        if( gui_menu_item( "Smoother (faces)", "9", 1 ) ) g_tool = 8;
         if( gui_menu_item( "Image wall", NULL, g_impPix ? 1 : 0 ) ) {
             g_tool = 9; g_impStage = 0; g_impHaveHover = 0;
         }
@@ -2792,7 +2913,7 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Preview: match render", NULL, 1 ) ) { g_previewShade=2; g_renderDirty=1; }
         gui_separator();
         gui_menu_item_check( "Voxel edges",        NULL, &g_previewEdges );
-        gui_menu_item_check( "Smooth voxel wire",  NULL, &g_showSmoothWire );
+        gui_menu_item_check( "Smooth faces (cyan X)", NULL, &g_showSmoothWire );
         gui_menu_item_check( "Surface normals",    NULL, &g_showSurfNormals );
         gui_menu_item_check( "Hide voxels (faces only)", NULL, &g_hideVoxels );
         gui_end_menu();
@@ -2826,11 +2947,15 @@ static void buildLeftPanel( float top, float h )
     gui_radio_int( "Sphere", &g_tool, 7 );
     gui_radio_int( "Select", &g_tool, 4 ); gui_same_line();
     gui_radio_int( "Scribble", &g_tool, 5 );
+    gui_radio_int( "Smoother (faces)", &g_tool, 8 );
     if( g_impPix ) gui_radio_int( "Image wall", &g_tool, 9 );
 
     gui_separator_text( "Mode" );
     gui_radio_int( "Draw",  &g_mode, 0 ); gui_same_line();
     gui_radio_int( "Erase", &g_mode, 1 );
+    /* auto-smooth: newly drawn (or erase-exposed) faces become smooth */
+    if( g_tool <= 7 )
+        gui_checkbox( "auto-smooth new faces", &g_autoSmooth );
     if( ( g_tool >= 1 && g_tool <= 3 ) || g_tool == 6 )
         gui_slider_int( "thickness", &g_thickness, 1, 32 );
     if( g_tool == 7 ) {
@@ -2852,6 +2977,15 @@ static void buildLeftPanel( float top, float h )
         } else {
             gui_text( "File > Import PNG as voxel wall..." );
         }
+    }
+
+    if( g_tool == 8 ) {
+        gui_separator_text( "Smoother (faces)" );
+        gui_text( "Drag over voxel faces to mark them\n"
+                  "smooth (Draw) or flat (Erase).  A\n"
+                  "smooth face rounds toward its\n"
+                  "neighbours but stays perpendicular\n"
+                  "to any flat face it meets." );
     }
 
     if( g_tool == 4 || g_tool == 5 ) {
@@ -2888,12 +3022,10 @@ static void buildLeftPanel( float top, float h )
           if( gui_button( "Extrude" ) ) selExtrude();
         }
         gui_separator_text( "Smooth shading" );
-        gui_text( "shade the selection with a fitted\nsurface normal (sphere-like)" );
+        gui_text( "mark ALL six faces of the selection\nsmooth (only visible ones shade round).\nUse the Smoother tool for single faces." );
         if( gui_button( "Smooth" ) ) selSmooth( 1 );
         gui_same_line();
         if( gui_button( "Unsmooth" ) ) selSmooth( 0 );
-        gui_text( "Smooth corner: each face rounds only\nwhere the surface curves; flat runs\n(a cap, a rim's top) stay sharp & flat" );
-        if( gui_button( "Smooth corner" ) ) selSmooth( 2 );
     }
 
     gui_separator_text( "Paint color / ramp" );
@@ -3243,6 +3375,7 @@ int main( int argc, char **argv )
                         else if( k == SDLK_6 ) g_tool = 5;
                         else if( k == SDLK_7 ) g_tool = 6;
                         else if( k == SDLK_8 ) g_tool = 7;
+                        else if( k == SDLK_9 ) g_tool = 8;
                         else if( k == SDLK_DELETE || k == SDLK_BACKSPACE ) selDelete();
                         else if( k == SDLK_ESCAPE ) {
                             if( g_tool == 9 && g_impPix && g_impStage > 0 ) {
@@ -3275,6 +3408,10 @@ int main( int argc, char **argv )
                         if( g_dragBtn == SDL_BUTTON_LEFT && g_tool == 5 ) {
                             g_scribbling = 1;
                             scribbleAt( ev.button.x, ev.button.y );
+                        } else if( g_dragBtn == SDL_BUTTON_LEFT && g_tool == 8 ) {
+                            g_smoothing = 1;
+                            groupBegin();
+                            smoothFaceAt( ev.button.x, ev.button.y );
                         } else if( g_dragBtn == SDL_BUTTON_LEFT && g_tool == 7 )
                             sphereBegin( ev.button.x, ev.button.y );
                         else if( g_dragBtn == SDL_BUTTON_LEFT &&
@@ -3295,6 +3432,12 @@ int main( int argc, char **argv )
                                     selCount() );
                                 setStatus( m );
                                 g_scribbling = 0;
+                            }
+                            else if( g_smoothing ) {
+                                groupEnd();
+                                g_smoothing = 0;
+                                setStatus( g_mode==1 ? "Faces unsmoothed"
+                                                     : "Faces smoothed" );
                             }
                             else if( !g_moved && g_tool == 0 )
                                 applyToolAt( ev.button.x, ev.button.y );
@@ -3319,6 +3462,8 @@ int main( int argc, char **argv )
                             abs( ev.motion.y - g_downY ) > 3 ) g_moved = 1;
                         if( g_scribbling && g_dragBtn == SDL_BUTTON_LEFT )
                             scribbleAt( ev.motion.x, ev.motion.y );
+                        else if( g_smoothing && g_dragBtn == SDL_BUTTON_LEFT )
+                            smoothFaceAt( ev.motion.x, ev.motion.y );
                         else if( g_sphActive && g_dragBtn == SDL_BUTTON_LEFT )
                             sphereUpdate( ev.motion.x, ev.motion.y );
                         else if( g_gActive && g_dragBtn == SDL_BUTTON_LEFT )

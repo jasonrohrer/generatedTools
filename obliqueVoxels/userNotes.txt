@@ -34,3 +34,32 @@ If I have a circular ring of voxels 1 thick, I could select just the inner and o
 And our Surface Normals view should show little facets and normals for ALL visible faces, both smooth and non-smooth.  After all, those facets and normals just answer "how do I shade this particular voxel face?"
 
 Even regular voxels techincally have a normal (the face of the voxel itself), so showing those for all visible faces when that Display mode is checked makes sense.
+
+
+----------------------------------------------------------------------
+[ADDRESSED] Smoothing reworked to be PER-FACE (not per-voxel).
+
+* Each voxel now stores a 6-bit smoothFaces mask instead of a single
+  0/1/2 flag.  Only visible faces shade; all six are remembered so a
+  face exposed by a later edit is already set.
+* New **Smoother** tool (key 9): drag over faces to mark them smooth
+  (Draw) or flat (Erase) -- picks the closest hit visible face, like a
+  face-level Scribble.
+* Selection panel **Smooth/Unsmooth** now set/clear all six faces of the
+  selected voxels at once (the old "Smooth corner" button is gone --
+  corners are now handled automatically, see below).
+* New **auto-smooth new faces** checkbox (under Draw/Erase) marks every
+  face of each drawn voxel smooth; on erase it marks the newly-exposed
+  cavity faces smooth (carve a smooth hollow).
+* Corners are automatic: a smooth face is constrained to "meet" its
+  neighbouring non-smooth faces -- a non-smooth coplanar neighbour locks
+  it flat, a non-smooth perpendicular neighbour pins the tangent along
+  its axis (stay at 90 degrees to it).  So the exampleRing case works:
+  smooth just the inner/outer circumference faces, leave top/bottom
+  flat, and the rim rounds circumferentially only (verified: rim-smooth
+  differs from all-smooth by keeping the flat caps flat).
+* Display > "Smooth faces (cyan X)" outlines every visible smooth face
+  with a cyan box + X.  "Surface normals" now shows a tile+spike for
+  ALL visible faces (tilted cyan = smooth, square grey = flat).
+* .ovox bumped to version 2 (per-face mask); version-1 files still load
+  (any nonzero whole-voxel smooth -> all six faces smooth).

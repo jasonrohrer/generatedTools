@@ -89,8 +89,10 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   region gesture with a live ghost, committed as one undo step.
 * Tools **1** Pencil · **2** Line · **3** Rect · **4** Box · **5** Select ·
   **6** Scribble (paint a selection over whatever voxels the drag touches;
-  erase mode un-paints) · **7** Cylinder · **8** Sphere ·
-  **Image wall** (no shortcut; armed by File ▸ Import PNG as voxel wall).
+  erase mode un-paints) · **7** Cylinder · **8** Sphere · **9** Smoother
+  (paint per-face smoothness over whatever faces the drag touches; erase
+  un-smooths) · **Image wall** (no shortcut; armed by File ▸ Import PNG as
+  voxel wall).
 * Modes **B** draw · **E** erase — every tool obeys the mode (erase a whole
   line/box, marquee-deselect, etc.).
 * **thickness** slider extrudes Line/Rect/Box/Cylinder along the started face's
@@ -99,45 +101,52 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 * **Sphere** drags a perfect ball out of the clicked surface; a **sphere depth**
   slider sinks the ball into the surface (dome at depth≈radius; erase digs a
   crater).  The ball grows with drag distance.
-* **Smooth shading** replaces the blocky per-face axis normal of selected voxels
-  with a *fitted surface normal* — the negated gradient of the local solid-
-  occupancy field over a `smooth radius` neighbourhood (a "curve of best fit"),
-  so a voxel sphere shades like a real sphere instead of showing bright-top/dark-
-  front stripes.  Select a group (Select or Scribble), then **Smooth** /
-  **Unsmooth** in the Selection panel toggles a per-voxel flag (undoable, saved
-  in `.ovox`).  Two global render params tune it: **smooth radius** (1–4) sets
-  how broad the fit is, **smooth amount** (0–1) blends between the flat face
-  normal and the fitted normal.  Smoothed voxels show cyan wire boxes while the
-  Select/Scribble tool is active (toggle in Display); the effect appears in both
-  the oblique render and the "match render" 3D preview.  (Only the *shading*
-  normal changes — the voxel geometry, occlusion and shadow-ray origins are
-  untouched.)
-* **Smooth corner** is a third voxel state (Selection panel button; drawn in
-  orange, not cyan) for the seam where a smooth surface meets a flat one — a
-  cylinder's top rim, a dome's base, or the rim of a hole punched through a
-  smooth wall.  A corner voxel fits its normal over *smooth* neighbours only
-  (ignoring adjacent flat/unsmoothed blocks, so it stays sharp against them),
-  then, per visible face, keeps a fitted tangent component **only where the
-  surface actually curves along it** — within the smooth radius the face's
-  surface must step to a different level along the face axis.  On a flat
-  coplanar run (a cylinder's top cap, the top of a rim) both tangents are flat,
-  so the face stays pure and flat with a crisp edge; on the wall the
-  circumferential tangent steps as the cylinder curves (that face rounds
-  radially) while the vertical tangent is a flat run (no vertical tilt).  This
-  fixes an earlier bug where a rim's *top* face kept a spurious circumferential
-  tilt and rendered as a dark patch in the middle of a flat cap.  The three
-  states are Unsmooth (0) / Smooth (1) / Smooth corner (2).
+* **Smooth shading is per-FACE.**  Each voxel carries a 6-bit mask
+  (`smoothFaces`) of which of its faces are smooth; only *visible* faces
+  actually shade, but all six are remembered so a face exposed later by an edit
+  is already set.  A **smooth** face is shaded not with its blocky axis normal
+  but with the *fitted surface normal* — the negated gradient of the local
+  solid-occupancy field over a `smooth radius` neighbourhood (a "curve of best
+  fit"), so a voxel sphere shades like a real sphere instead of showing
+  bright-top/dark-front stripes.  Two global render params tune it: **smooth
+  radius** (1–4) sets how broad the fit is, **smooth amount** (0–1) blends
+  between the flat face normal and the fitted normal.  The effect appears in
+  both the oblique render and the "match render" 3D preview.  (Only the
+  *shading* normal changes — the voxel geometry, occlusion and shadow-ray
+  origins are untouched.)
+* **Meeting constraints** are what make corners work automatically, with no
+  separate "corner" state.  A smooth face is "met" to its four in-plane
+  neighbour faces (found by the local surface: a *coplanar* face if the next
+  cell is solid & open, a *perpendicular* face on this voxel at a convex edge,
+  or a perpendicular face on the diagonal cell at a concave edge).  Where a
+  neighbour face is **not** smooth, the fitted normal is constrained so the two
+  faces meet sanely: a non-smooth **coplanar** neighbour locks us fully flat
+  (we abut a flat run); a non-smooth **perpendicular** neighbour zeroes the
+  tangent component along its axis (keeping us at 90° to it while free to rotate
+  about the other in-plane axis).  So a flat washer ring whose rim faces are
+  smooth but whose top/bottom faces are flat rounds only circumferentially (the
+  flat caps pin the vertical tangent), and a cylinder's top rim keeps a crisp
+  flat cap edge with no dark patch.
+* Set smoothness two ways: the **Smoother** tool (9) paints it face-by-face —
+  drag over faces to mark them smooth (Draw) or flat (Erase); or, in the
+  Selection panel, **Smooth** / **Unsmooth** set/clear *all six* faces of every
+  selected voxel at once.  Either way it is undoable and saved in `.ovox`.  An
+  **auto-smooth new faces** checkbox (under Draw/Erase, for the drawing tools)
+  marks every face of each placed voxel smooth as you draw — so you can rough
+  out a smooth sphere directly — and, on erase, marks the newly-exposed cavity
+  faces smooth (carve a smooth hollow).
 * Both the oblique renderer and the "match render" 3D preview now shade in true
   **world space** at the same surface point, so a voxel's baked pixels and its
   3D-preview faces always agree (an earlier mismatch came from the renderer
   shading in the negated-axis view frame, which shifted local-light distances).
-* **Display** menu toggles: preview shading mode, voxel edges, the cyan/orange
-  smooth wire boxes, **Surface normals** (each smoothed voxel gets a filled
-  translucent tile pushed out to sit *on* its surface plus a long bright spike
-  standing well clear of the voxel, so the best-fit surface reads clearly while
-  tuning smooth radius/amount — corner voxels tint redder), and **Hide voxels
-  (faces only)** which stops drawing the solid voxel faces so those surface
-  tiles/normals can be inspected on their own.
+* **Display** menu toggles: preview shading mode, voxel edges, **Smooth faces
+  (cyan X)** which draws a cyan outline and an X across every visible smooth
+  face, **Surface normals** (every visible face gets a translucent tile lying in
+  the plane perpendicular to the shading normal it will actually use — tilted
+  cyan for a smooth face, square grey for a flat one — plus a spike along that
+  normal, so "how is this face shaded?" reads at a glance while tuning smooth
+  radius/amount), and **Hide voxels (faces only)** which stops drawing the solid
+  voxel faces so those surface tiles/normals can be inspected on their own.
 * **Image wall** imports a PNG (with alpha) as a flat wall of voxels, one flat
   single-colour voxel per opaque pixel (nearest-palette colour; alpha < 128 is
   skipped).  Placement is a three-click gesture: click 1 fixes the bottom-left
@@ -168,11 +177,14 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 
 ## File format `.ovox`
 
-Human-readable, one record per line: a header, the embedded palette (`C r g b`),
-`AMBIENT`, `L` lights, a `RENDER` params line, then `V x y z color rampStart
-rampLen [smooth]` per voxel — the trailing `smooth` flag (0 flat, 1 fitted-
-normal smooth, 2 smooth corner) is optional so older 6-field voxel lines still
-load.  A light
+Human-readable, one record per line: a header (`OBLIQUEVOXELS <version>`), the
+embedded palette (`C r g b`), `AMBIENT`, `L` lights, a `RENDER` params line,
+then `V x y z color rampStart rampLen [smoothFaceMask]` per voxel — the trailing
+field is optional so older 6-field voxel lines still load.  In the current
+**version 2** format it is a 6-bit per-face smooth mask (bit = 1<<faceDir6,
+order +Y +Z −Z +X −X … i.e. +Y0 −Y1 +Z2 −Z3 +X4 −X5); in the legacy **version
+1** format it was a 0/1/2 whole-voxel smooth flag, which loads by mapping any
+nonzero value to "all six faces smooth" (`0x3F`).  A light
 line is `L x y z color intensity enabled [infinite [size [samples]]]` — the
 trailing `infinite` flag (1 = directional "sun", parallel rays and no distance
 falloff, with x,y,z read as a direction), `size` (soft-light radius, 0 = hard)

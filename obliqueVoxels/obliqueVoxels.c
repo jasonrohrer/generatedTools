@@ -385,6 +385,8 @@ static int g_previewShade = 1;     /* 0 flat, 1 quick preview, 2 match render */
 static int g_previewEdges = 1;
 static int g_showSmoothWire = 1;   /* cyan wire boxes around smoothed voxels    */
 static int g_showSurfNormals = 0;  /* draw fitted surface normals (best-fit viz) */
+static int g_hideVoxels      = 0;  /* hide solid faces so the fitted surface
+                                    * tiles/normals can be seen by themselves   */
 
 /* paste offset (voxels) applied by the "Paste" op */
 static int g_pasteDX = 2, g_pasteDY = 0, g_pasteDZ = 0;
@@ -763,8 +765,12 @@ static void drawScene3D( void )
     drawGrid();
 
     /* solid faces: from the lit cache (matches the oblique render) when we
-     * have one, else fall back to cheap per-normal preview shading */
-    if( g_pfaceCount > 0 ) {
+     * have one, else fall back to cheap per-normal preview shading.  Skipped
+     * entirely in "hide voxels" mode so the fitted-surface tiles/normals can
+     * be inspected on their own. */
+    if( g_hideVoxels ) {
+        /* nothing */
+    } else if( g_pfaceCount > 0 ) {
         glBegin( GL_QUADS );
         for( i = 0; i < g_pfaceCount; i++ ) {
             PFace *p = &g_pface[i];
@@ -888,15 +894,24 @@ static void drawScene3D( void )
      * along that normal.  Together the tiles read as the "curve of best fit"
      * surface, so its response to the smooth radius/amount can be seen. */
     if( g_showSurfNormals ) {
-        glLineWidth( 1.0f );
+        /* The tile sits on the voxel surface (pushed out along the normal) and
+         * the spike stands well clear of the voxel so it reads even when the
+         * solid voxels are drawn; in "hide voxels" mode the tiles alone form
+         * the fitted surface. */
+        float sp = 1.25f, tile = 0.45f, base = 0.5f;
+        glDisable( GL_DEPTH_TEST );
         for( i = 0; i < g_voxCap; i++ ) {
             double nx, ny, nz, t1x, t1y, t1z, t2x, t2y, t2z, hx, hy, hz, hl;
-            float cx, cy, cz, s = 0.42f;
+            float cx, cy, cz, ox, oy, oz;
             if( g_vox[i].used != 1 || !g_vox[i].smooth ) continue;
             if( !voxSmoothNormal( &g_vox[i], &nx, &ny, &nz ) ) continue;
             cx = (float)g_vox[i].x + 0.5f;
             cy = (float)g_vox[i].y + 0.5f;
             cz = (float)g_vox[i].z + 0.5f;
+            /* tile centre pushed out to the voxel surface along the normal */
+            ox = cx + (float)( nx*base );
+            oy = cy + (float)( ny*base );
+            oz = cz + (float)( nz*base );
             /* tangent basis: cross the normal with whichever axis is least
              * aligned so the helper is never parallel to n. */
             if( fabs( nx ) <= fabs( ny ) && fabs( nx ) <= fabs( nz ) )
@@ -909,21 +924,40 @@ static void drawScene3D( void )
             hl = sqrt( t1x*t1x + t1y*t1y + t1z*t1z ); if( hl < 1e-6 ) hl = 1.0;
             t1x /= hl; t1y /= hl; t1z /= hl;
             t2x = ny*t1z - nz*t1y; t2y = nz*t1x - nx*t1z; t2z = nx*t1y - ny*t1x;
-            /* the plane tile, brighter on the lit side of the normal */
-            glColor4f( 1.0f, 0.55f, 0.1f, 0.5f );
-            glBegin( GL_LINE_LOOP );
-            glVertex3f( cx + (float)(( t1x+t2x)*s), cy + (float)(( t1y+t2y)*s), cz + (float)(( t1z+t2z)*s) );
-            glVertex3f( cx + (float)(( t1x-t2x)*s), cy + (float)(( t1y-t2y)*s), cz + (float)(( t1z-t2z)*s) );
-            glVertex3f( cx + (float)((-t1x-t2x)*s), cy + (float)((-t1y-t2y)*s), cz + (float)((-t1z-t2z)*s) );
-            glVertex3f( cx + (float)((-t1x+t2x)*s), cy + (float)((-t1y+t2y)*s), cz + (float)((-t1z+t2z)*s) );
+            /* filled tile (translucent) so the surface reads as a patch, plus a
+             * bright outline.  Orange = smooth, redder = smooth-corner. */
+            if( g_vox[i].smooth == 2 ) glColor4f( 1.0f, 0.35f, 0.05f, 0.45f );
+            else                        glColor4f( 1.0f, 0.62f, 0.12f, 0.40f );
+            glBegin( GL_QUADS );
+            glVertex3f( ox + (float)(( t1x+t2x)*tile), oy + (float)(( t1y+t2y)*tile), oz + (float)(( t1z+t2z)*tile) );
+            glVertex3f( ox + (float)(( t1x-t2x)*tile), oy + (float)(( t1y-t2y)*tile), oz + (float)(( t1z-t2z)*tile) );
+            glVertex3f( ox + (float)((-t1x-t2x)*tile), oy + (float)((-t1y-t2y)*tile), oz + (float)((-t1z-t2z)*tile) );
+            glVertex3f( ox + (float)((-t1x+t2x)*tile), oy + (float)((-t1y+t2y)*tile), oz + (float)((-t1z+t2z)*tile) );
             glEnd();
-            /* outward normal spike */
-            glColor3f( 1.0f, 0.85f, 0.2f );
+            glLineWidth( 1.5f );
+            glColor3f( 1.0f, 0.7f, 0.15f );
+            glBegin( GL_LINE_LOOP );
+            glVertex3f( ox + (float)(( t1x+t2x)*tile), oy + (float)(( t1y+t2y)*tile), oz + (float)(( t1z+t2z)*tile) );
+            glVertex3f( ox + (float)(( t1x-t2x)*tile), oy + (float)(( t1y-t2y)*tile), oz + (float)(( t1z-t2z)*tile) );
+            glVertex3f( ox + (float)((-t1x-t2x)*tile), oy + (float)((-t1y-t2y)*tile), oz + (float)((-t1z-t2z)*tile) );
+            glVertex3f( ox + (float)((-t1x+t2x)*tile), oy + (float)((-t1y+t2y)*tile), oz + (float)((-t1z+t2z)*tile) );
+            glEnd();
+            /* outward normal spike: from the voxel centre out well past the
+             * surface so it is clearly visible poking out of the voxel. */
+            glLineWidth( 2.5f );
+            glColor3f( 1.0f, 0.9f, 0.25f );
             glBegin( GL_LINES );
             glVertex3f( cx, cy, cz );
-            glVertex3f( cx + (float)(nx*0.6), cy + (float)(ny*0.6), cz + (float)(nz*0.6) );
+            glVertex3f( cx + (float)(nx*sp), cy + (float)(ny*sp), cz + (float)(nz*sp) );
+            glEnd();
+            /* a little tip cross so the spike end reads as an arrowhead */
+            glBegin( GL_LINES );
+            glVertex3f( ox + (float)(nx*(sp-base)) + (float)(t1x*0.12), oy + (float)(ny*(sp-base)) + (float)(t1y*0.12), oz + (float)(nz*(sp-base)) + (float)(t1z*0.12) );
+            glVertex3f( ox + (float)(nx*(sp-base)) - (float)(t1x*0.12), oy + (float)(ny*(sp-base)) - (float)(t1y*0.12), oz + (float)(nz*(sp-base)) - (float)(t1z*0.12) );
             glEnd();
         }
+        glLineWidth( 1.0f );
+        glEnable( GL_DEPTH_TEST );
     }
 
     /* light markers */
@@ -2010,6 +2044,37 @@ static void blendSmoothN( int have, double wnx, double wny, double wnz,
     *ox = nx/len; *oy = ny/len; *oz = nz/len;
 }
 
+/* For a smooth-corner voxel, decide whether the exposed face whose outward axis
+ * is faceAxis (0=x,1=y,2=z), pointing in sign adSign (+1/-1), should round along
+ * tangent axis tAxis.  It rounds only where the surface genuinely CURVES along
+ * that tangent -- i.e. somewhere within the smooth radius the face's surface
+ * steps to a different level along the face axis.  Where the surface stays a
+ * flat coplanar run along the tangent (like a cylinder's flat top cap) the face
+ * keeps its sharp, flat normal along that tangent instead of tilting.  This is
+ * what lets a rim's wall round while its top stays flat with a crisp edge: for
+ * the top face both tangents are flat runs (drop them -> pure +Y), while for the
+ * wall face the circumferential tangent steps as the cylinder curves (keep it ->
+ * radial) but the vertical tangent is a flat run (drop -> no vertical tilt). */
+static int cornerRoundsAlong( const Voxel *v, int faceAxis, int adSign,
+                              int tAxis )
+{
+    int R = g_smoothRadius, s, t, ad[3];
+    if( R < 1 ) R = 1;
+    ad[0] = ad[1] = ad[2] = 0; ad[faceAxis] = adSign;
+    for( s = -1; s <= 1; s += 2 )
+      for( t = 1; t <= R; t++ ) {
+          int b[3];
+          b[0] = v->x; b[1] = v->y; b[2] = v->z; b[tAxis] += s*t;
+          /* surface steps toward +faceAxis (base solid, cell above it solid) */
+          if( voxAt( b[0], b[1], b[2] ) &&
+              voxAt( b[0]+ad[0], b[1]+ad[1], b[2]+ad[2] ) ) return 1;
+          /* surface steps toward -faceAxis (base air, cell below it solid) */
+          if( !voxAt( b[0], b[1], b[2] ) &&
+              voxAt( b[0]-ad[0], b[1]-ad[1], b[2]-ad[2] ) ) return 1;
+      }
+    return 0;
+}
+
 /* Shading normal for one *visible* world face of voxel v (fx,fy,fz is the face's
  * flat axis normal).  Both the oblique renderer and the 3D match preview call
  * this so they agree.  Handles the three smooth states:
@@ -2040,17 +2105,15 @@ static void shadingNormalForFace( const Voxel *v,
     if( !voxSmoothNormalEx( v, 1, &n[0], &n[1], &n[2] ) ) return;  /* flat */
     {
         int k, faceAxis = ( fy != 0.0 ) ? 1 : ( fz != 0.0 ? 2 : 0 );
+        double fa = ( faceAxis == 0 ) ? fx : ( faceAxis == 1 ? fy : fz );
+        int adSign = ( fa > 0.0 ) ? 1 : -1;
         double len;
         for( k = 0; k < 3; k++ ) {
-            int d[3];
             if( k == faceAxis ) continue;          /* never drop our own axis */
-            d[0] = d[1] = d[2] = 0;
-            d[k] = 1;
-            /* if this perpendicular axis is exposed to air on either side the
-             * surface does not continue that way -- drop that component so the
-             * face's normal cannot round over the sharp edge there. */
-            if( !voxAt( v->x + d[0], v->y + d[1], v->z + d[2] ) ||
-                !voxAt( v->x - d[0], v->y - d[1], v->z - d[2] ) )
+            /* keep this tangent's fitted component only where the surface
+             * actually curves along it; drop it on flat coplanar runs so a
+             * flat cap / crisp edge does not tilt (see cornerRoundsAlong). */
+            if( !cornerRoundsAlong( v, faceAxis, adSign, k ) )
                 n[k] = 0.0;
         }
         len = sqrt( n[0]*n[0] + n[1]*n[1] + n[2]*n[2] );
@@ -2731,6 +2794,7 @@ static void buildMenuBar( int *quit )
         gui_menu_item_check( "Voxel edges",        NULL, &g_previewEdges );
         gui_menu_item_check( "Smooth voxel wire",  NULL, &g_showSmoothWire );
         gui_menu_item_check( "Surface normals",    NULL, &g_showSurfNormals );
+        gui_menu_item_check( "Hide voxels (faces only)", NULL, &g_hideVoxels );
         gui_end_menu();
     }
     (void)g_showFront; (void)g_showTop;
@@ -2828,7 +2892,7 @@ static void buildLeftPanel( float top, float h )
         if( gui_button( "Smooth" ) ) selSmooth( 1 );
         gui_same_line();
         if( gui_button( "Unsmooth" ) ) selSmooth( 0 );
-        gui_text( "Smooth corner: round only where it\nmeets other smooth voxels; keep a\nsharp edge toward air/flat faces" );
+        gui_text( "Smooth corner: each face rounds only\nwhere the surface curves; flat runs\n(a cap, a rim's top) stay sharp & flat" );
         if( gui_button( "Smooth corner" ) ) selSmooth( 2 );
     }
 

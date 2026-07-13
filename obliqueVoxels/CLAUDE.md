@@ -117,20 +117,27 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   cylinder's top rim, a dome's base, or the rim of a hole punched through a
   smooth wall.  A corner voxel fits its normal over *smooth* neighbours only
   (ignoring adjacent flat/unsmoothed blocks, so it stays sharp against them),
-  then, per visible face, drops the normal components along the voxel's other
-  air-facing axes.  That lets each face round only along the surface it
-  continues while the perpendicular exposed face keeps its flat, sharp edge —
-  e.g. the wall of a rim shades round while its top stays flat with a crisp
-  edge, instead of the fitted normal tilting up into a bright rounded lip.  The
-  three states are Unsmooth (0) / Smooth (1) / Smooth corner (2).
+  then, per visible face, keeps a fitted tangent component **only where the
+  surface actually curves along it** — within the smooth radius the face's
+  surface must step to a different level along the face axis.  On a flat
+  coplanar run (a cylinder's top cap, the top of a rim) both tangents are flat,
+  so the face stays pure and flat with a crisp edge; on the wall the
+  circumferential tangent steps as the cylinder curves (that face rounds
+  radially) while the vertical tangent is a flat run (no vertical tilt).  This
+  fixes an earlier bug where a rim's *top* face kept a spurious circumferential
+  tilt and rendered as a dark patch in the middle of a flat cap.  The three
+  states are Unsmooth (0) / Smooth (1) / Smooth corner (2).
 * Both the oblique renderer and the "match render" 3D preview now shade in true
   **world space** at the same surface point, so a voxel's baked pixels and its
   3D-preview faces always agree (an earlier mismatch came from the renderer
   shading in the negated-axis view frame, which shifted local-light distances).
 * **Display** menu toggles: preview shading mode, voxel edges, the cyan/orange
-  smooth wire boxes, and **Surface normals** (draws each smoothed voxel's fitted
-  normal as a small tile + spike so the best-fit surface can be seen while
-  tuning smooth radius/amount).
+  smooth wire boxes, **Surface normals** (each smoothed voxel gets a filled
+  translucent tile pushed out to sit *on* its surface plus a long bright spike
+  standing well clear of the voxel, so the best-fit surface reads clearly while
+  tuning smooth radius/amount — corner voxels tint redder), and **Hide voxels
+  (faces only)** which stops drawing the solid voxel faces so those surface
+  tiles/normals can be inspected on their own.
 * **Image wall** imports a PNG (with alpha) as a flat wall of voxels, one flat
   single-colour voxel per opaque pixel (nearest-palette colour; alpha < 128 is
   skipped).  Placement is a three-click gesture: click 1 fixes the bottom-left

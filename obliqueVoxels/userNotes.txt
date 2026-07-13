@@ -14,7 +14,22 @@ Next:
 --[FIXED] The front and back view in the 3D view vs the pixel view are swapped (front in pixel shows back in 3d view).  Same for left and right.
     The oblique orientations now match the 3D-view presets face-for-face.
 
---[TODO] We need to rethink how smoothers work, because just averaging colors isn't working well enough.   Is there some way we can select a group of voxels and then say... "apply smoothing" to those, and there's a curve-of-best fit that's used for shading those pixels somehow?  For example, a voxel sphere should have sphere-like shading in the pixel view.
+--[DONE] We need to rethink how smoothers work, because just averaging colors isn't working well enough.   Is there some way we can select a group of voxels and then say... "apply smoothing" to those, and there's a curve-of-best fit that's used for shading those pixels somehow?  For example, a voxel sphere should have sphere-like shading in the pixel view.
+    Reworked completely.  The old averaging cell-smoothers are gone.  Now you
+    select a group of voxels (Select or Scribble tool) and click "Smooth" in the
+    Selection panel; each flagged voxel is then shaded with a FITTED SURFACE
+    NORMAL instead of its blocky per-face axis normal.  The normal is the negated
+    gradient of the local solid-occupancy field over a "smooth radius"
+    neighbourhood -- literally the curve-of-best-fit of the surrounding shape --
+    so a voxel sphere now shades like a real sphere (smooth highlight-to-shadow
+    gradient) in both the oblique render and the "match render" 3D preview,
+    instead of the flat bright-top/dark-front stripes.  "Unsmooth" clears the
+    flag.  Two global render sliders tune it: "smooth radius" (1..4, how broad
+    the fit is) and "smooth amount" (0..1, blend from flat face normal to fully
+    fitted).  The per-voxel flag is undoable and saved in the .ovox V line;
+    smoothed voxels get cyan wire boxes while the Select/Scribble tool is active.
+    (Only the shading normal changes -- geometry, occlusion and shadow rays are
+    untouched, so silhouettes stay crisp pixel art.)
 
 --[DONE] The infinite light source is working great, but it is creating such harsh shadows and shading.  I'm actually having better results from a cluster of nearby light sources, but its a pain to set up.  Can we get a "size" slider for light sources, that goes down to 0 for point light sources, but can get much bigger for soft-box type effects.  This might be implemented internally as a spehere of light sources... though maybe there's some other way to compute shading from a non-point source?
     Added a per-light "size (soft)" slider: 0 = hard point/sun, larger spreads the shadow rays over a sphere for a penumbra (works for point and sun lights).

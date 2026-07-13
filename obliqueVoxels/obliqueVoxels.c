@@ -132,6 +132,7 @@ typedef struct {
     int rampStart;          /* first palette index of shading ramp */
     int rampLen;            /* number of ramp colors (>=1) */
     int sel;                /* 1 if part of the current selection */
+    int smooth;             /* 1 = shade with a fitted surface normal */
 } Voxel;
 
 static Voxel *g_vox = NULL;
@@ -196,9 +197,14 @@ static void voxGrow( void )
     int    i;
     voxInit( newCap );
     for( i = 0; i < oldCap; i++ )
-        if( old[i].used == 1 )
+        if( old[i].used == 1 ) {
+            Voxel *nv;
             voxInsertRaw( old[i].x, old[i].y, old[i].z,
                           old[i].color, old[i].rampStart, old[i].rampLen );
+            /* voxInsertRaw resets sel/smooth on a fresh slot; carry them over */
+            nv = voxAt( old[i].x, old[i].y, old[i].z );
+            if( nv ) { nv->sel = old[i].sel; nv->smooth = old[i].smooth; }
+        }
     free( old );
 }
 
@@ -219,6 +225,7 @@ static void voxInsertRaw( int x, int y, int z, int color, int rs, int rl )
             g_vox[slot].rampStart = rs;
             g_vox[slot].rampLen = rl < 1 ? 1 : rl;
             g_vox[slot].sel = 0;
+            g_vox[slot].smooth = 0;
             g_voxUsed++;
             return;
         }
@@ -245,50 +252,40 @@ static void voxErase( int x, int y, int z )
 }
 
 /* ------------------------------------------------------------------ */
-/* smoothers -- translucent anti-stair-step markers living in empty    */
-/* cells; they average the voxel faces they touch into a uniform patch */
+/* smooth shading -- a voxel flagged "smooth" is shaded with a fitted    */
+/* surface normal (the local shape's normal) instead of its blocky per-  */
+/* face axis normal, so a voxel sphere shades like a real sphere.        */
 /* ------------------------------------------------------------------ */
 
-typedef struct { int x, y, z; } Cell;
-static Cell *g_smooth = NULL;
-static int   g_smoothCount = 0, g_smoothCap = 0;
+static int   g_smoothRadius = 2;    /* neighbourhood radius for fitted normals  */
+static float g_smoothAmt    = 1.0f; /* 0 = blocky face normal, 1 = fully fitted */
 
-static int smoothFind( int x, int y, int z )
+/* Estimate the outward surface normal at voxel v as the (negated) gradient
+ * of the solid-occupancy field over a (2R+1)^3 neighbourhood: sum the
+ * directions pointing away from every nearby solid cell, distance-weighted.
+ * The result is the local "curve of best fit" normal.  Returns 0 (leaving
+ * *nx,*ny,*nz untouched) when the neighbourhood is degenerate/flat. */
+static int voxSmoothNormal( const Voxel *v,
+                            double *nx, double *ny, double *nz )
 {
-    int i;
-    for( i = 0; i < g_smoothCount; i++ )
-        if( g_smooth[i].x==x && g_smooth[i].y==y && g_smooth[i].z==z ) return i;
-    return -1;
-}
-
-static void smoothAdd( int x, int y, int z )
-{
-    if( smoothFind( x, y, z ) >= 0 ) return;
-    if( g_smoothCount == g_smoothCap ) {
-        g_smoothCap = g_smoothCap ? g_smoothCap * 2 : 256;
-        g_smooth = (Cell*)realloc( g_smooth, (size_t)g_smoothCap*sizeof(Cell) );
-    }
-    g_smooth[g_smoothCount].x=x; g_smooth[g_smoothCount].y=y;
-    g_smooth[g_smoothCount].z=z; g_smoothCount++;
-}
-
-static int smoothRemoveAt( int x, int y, int z )
-{
-    int i = smoothFind( x, y, z );
-    if( i >= 0 ) { g_smooth[i] = g_smooth[ --g_smoothCount ]; return 1; }
-    return 0;
-}
-
-/* Drop any smoother that a voxel now occupies (a voxel covering a smoother
- * makes it disappear permanently). */
-static void smoothPrune( void )
-{
-    int i = 0;
-    while( i < g_smoothCount ) {
-        if( voxAt( g_smooth[i].x, g_smooth[i].y, g_smooth[i].z ) )
-            g_smooth[i] = g_smooth[ --g_smoothCount ];
-        else i++;
-    }
+    int di, dj, dk, R = g_smoothRadius;
+    double ax = 0.0, ay = 0.0, az = 0.0, len;
+    if( R < 1 ) R = 1;
+    for( di = -R; di <= R; di++ )
+      for( dj = -R; dj <= R; dj++ )
+        for( dk = -R; dk <= R; dk++ ) {
+            double d2, w;
+            if( di == 0 && dj == 0 && dk == 0 ) continue;
+            d2 = (double)( di*di + dj*dj + dk*dk );
+            if( d2 > (double)( R*R ) + 0.5 ) continue;   /* keep it spherical */
+            if( !voxAt( v->x + di, v->y + dj, v->z + dk ) ) continue;
+            w = 1.0 / d2;                 /* nearer solids weigh more */
+            ax -= di * w; ay -= dj * w; az -= dk * w;   /* away from solid */
+        }
+    len = sqrt( ax*ax + ay*ay + az*az );
+    if( len < 1e-6 ) return 0;
+    *nx = ax/len; *ny = ay/len; *nz = az/len;
+    return 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -350,7 +347,7 @@ static float cam_tx = 0.0f, cam_ty = 2.0f, cam_tz = 0.0f;
 
 /* tool + current paint color/ramp */
 static int g_tool = 0;             /* 0 pencil,1 line,2 rect,3 box,4 select,
-                                    * 5 scribble,6 cylinder,7 sphere,8 smoothers,
+                                    * 5 scribble,6 cylinder,7 sphere,
                                     * 9 image wall */
 static int g_mode = 0;             /* 0 draw, 1 erase */
 static int g_thickness = 1;        /* extrude depth for line/rect/box/cyl (>=1) */
@@ -496,14 +493,24 @@ static void editVoxel( int x, int y, int z, int place,
 
 static void applyUndo( Edit *e )
 {
-    if( e->hadBefore ) voxSet( e->x, e->y, e->z, e->before.color,
-                               e->before.rampStart, e->before.rampLen );
+    if( e->hadBefore ) {
+        Voxel *v;
+        voxSet( e->x, e->y, e->z, e->before.color,
+                e->before.rampStart, e->before.rampLen );
+        v = voxAt( e->x, e->y, e->z );   /* voxSet doesn't touch the smooth flag */
+        if( v ) v->smooth = e->before.smooth;
+    }
     else               voxErase( e->x, e->y, e->z );
 }
 static void applyRedo( Edit *e )
 {
-    if( e->hadAfter ) voxSet( e->x, e->y, e->z, e->after.color,
-                              e->after.rampStart, e->after.rampLen );
+    if( e->hadAfter ) {
+        Voxel *v;
+        voxSet( e->x, e->y, e->z, e->after.color,
+                e->after.rampStart, e->after.rampLen );
+        v = voxAt( e->x, e->y, e->z );
+        if( v ) v->smooth = e->after.smooth;
+    }
     else              voxErase( e->x, e->y, e->z );
 }
 
@@ -562,6 +569,20 @@ static void fromUVW( double u, double v, double w, double *x, double *y, double 
         case 1:  *x =  w; *z = -u; break;
         case 2:  *x =  u; *z =  w; break;
         default: *x = -w; *z =  u; break;
+    }
+}
+
+/* Rotate a world-frame *direction* into the view frame (same 90*orient yaw as
+ * toUVW, but for a continuous vector -- matches the light-vector rotation). */
+static void worldDirToUVW( double wx, double wy, double wz,
+                           double *u, double *v, double *w )
+{
+    *v = wy;
+    switch( g_orient & 3 ) {
+        case 0:  *u = -wx; *w = -wz; break;
+        case 1:  *u = -wz; *w =  wx; break;
+        case 2:  *u =  wx; *w =  wz; break;
+        default: *u =  wz; *w = -wx; break;
     }
 }
 
@@ -826,26 +847,36 @@ static void drawScene3D( void )
         glEnd();
     }
 
-    /* smoothers: translucent little boxes, only while the tool is active */
-    if( g_tool == 8 && g_smoothCount > 0 ) {
-        glEnable( GL_BLEND );
-        glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
-        glDepthMask( GL_FALSE );
-        glColor4f( 0.55f, 0.85f, 1.0f, 0.32f );
-        glBegin( GL_QUADS );
-        for( i = 0; i < g_smoothCount; i++ ) {
-            float x=(float)g_smooth[i].x+0.15f, y=(float)g_smooth[i].y+0.15f;
-            float z=(float)g_smooth[i].z+0.15f, s=0.7f;
-            /* +Y */ glVertex3f(x,y+s,z);   glVertex3f(x,y+s,z+s); glVertex3f(x+s,y+s,z+s); glVertex3f(x+s,y+s,z);
-            /* -Y */ glVertex3f(x,y,z);     glVertex3f(x+s,y,z);   glVertex3f(x+s,y,z+s);   glVertex3f(x,y,z+s);
-            /* +Z */ glVertex3f(x,y,z+s);   glVertex3f(x+s,y,z+s); glVertex3f(x+s,y+s,z+s); glVertex3f(x,y+s,z+s);
-            /* -Z */ glVertex3f(x,y,z);     glVertex3f(x,y+s,z);   glVertex3f(x+s,y+s,z);   glVertex3f(x+s,y,z);
-            /* +X */ glVertex3f(x+s,y,z);   glVertex3f(x+s,y,z+s); glVertex3f(x+s,y+s,z+s); glVertex3f(x+s,y+s,z);
-            /* -X */ glVertex3f(x,y,z);     glVertex3f(x,y+s,z);   glVertex3f(x,y+s,z+s);   glVertex3f(x,y,z+s);
+    /* smoothed voxels: cyan wire boxes so you can see the smoothing group while
+     * building a selection (Select / Scribble tools). */
+    if( g_tool == 4 || g_tool == 5 ) {
+        int any = 0;
+        for( i = 0; i < g_voxCap; i++ )
+            if( g_vox[i].used==1 && g_vox[i].smooth ) { any=1; break; }
+        if( any ) {
+            glLineWidth( 2.0f );
+            glColor3f( 0.25f, 0.95f, 1.0f );
+            glBegin( GL_LINES );
+            for( i = 0; i < g_voxCap; i++ ) {
+                float x, y, z;
+                if( g_vox[i].used != 1 || !g_vox[i].smooth ) continue;
+                x=(float)g_vox[i].x; y=(float)g_vox[i].y; z=(float)g_vox[i].z;
+                glVertex3f(x,y,z);     glVertex3f(x+1,y,z);
+                glVertex3f(x,y,z+1);   glVertex3f(x+1,y,z+1);
+                glVertex3f(x,y+1,z);   glVertex3f(x+1,y+1,z);
+                glVertex3f(x,y+1,z+1); glVertex3f(x+1,y+1,z+1);
+                glVertex3f(x,y,z);     glVertex3f(x,y+1,z);
+                glVertex3f(x+1,y,z);   glVertex3f(x+1,y+1,z);
+                glVertex3f(x,y,z+1);   glVertex3f(x,y+1,z+1);
+                glVertex3f(x+1,y,z+1); glVertex3f(x+1,y+1,z+1);
+                glVertex3f(x,y,z);     glVertex3f(x,y,z+1);
+                glVertex3f(x+1,y,z);   glVertex3f(x+1,y,z+1);
+                glVertex3f(x,y+1,z);   glVertex3f(x,y+1,z+1);
+                glVertex3f(x+1,y+1,z); glVertex3f(x+1,y+1,z+1);
+            }
+            glEnd();
+            glLineWidth( 1.0f );
         }
-        glEnd();
-        glDepthMask( GL_TRUE );
-        glDisable( GL_BLEND );
     }
 
     /* light markers */
@@ -1017,10 +1048,7 @@ static int pickCell( int mx, int my, int *cx, int *cy, int *cz,
     *onGround = 0;
 
     if( rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz, &px, &py, &pz, &ax ) ) {
-        /* Smoothers only ever live in empty cells, so even in erase mode we
-         * target the empty neighbour (where the smoother sits), not the solid
-         * voxel -- otherwise the removal misses and nothing disappears. */
-        if( g_mode == 1 && g_tool != 8 ) {
+        if( g_mode == 1 ) {
             /* erase acts on the hit cell; extrude burrows into the solid */
             *cx = hx; *cy = hy; *cz = hz;
             *dir = ( ax == 0 ) ? ( hx - px ) : ( ax == 1 ) ? ( hy - py )
@@ -1099,7 +1127,6 @@ static int g_regLayerLo = 0, g_regLayerHi = 0;
 static void setRegionLayers( void )
 {
     if( g_tool == 4 ) { g_regLayerLo = -g_selBelow; g_regLayerHi = g_selAbove; }
-    else if( g_tool == 8 ) { g_regLayerLo = 0; g_regLayerHi = 0; } /* 1-thick */
     else              { g_regLayerLo = 0; g_regLayerHi = g_thickness - 1; }
 }
 
@@ -1125,8 +1152,8 @@ static void regionForEach( int tool,
     for( k = g_regLayerLo; k <= g_regLayerHi; k++ ) {
         int layer = a[A] + k * g_gDir;
         c[A] = layer;
-        if( tool == 1 || tool == 8 ) {
-            /* line (or smoother line): integer Bresenham in the (i0,i1) plane */
+        if( tool == 1 ) {
+            /* line: integer Bresenham in the (i0,i1) plane */
             int x0 = a[i0], y0 = a[i1], x1 = b[i0], y1 = b[i1];
             int dx =  ( x1 > x0 ? x1-x0 : x0-x1 ), sx = x0 < x1 ? 1 : -1;
             int dy = -( y1 > y0 ? y1-y0 : y0-y1 ), sy = y0 < y1 ? 1 : -1;
@@ -1171,15 +1198,6 @@ static void cbSelect( int x, int y, int z, void *ud )
     (void)ud;
     if( v ) { v->sel = ( g_mode == 1 ) ? 0 : 1; g_regCount++; }
 }
-static void cbSmooth( int x, int y, int z, void *ud )
-{
-    (void)ud;
-    if( g_mode == 1 ) { if( smoothRemoveAt( x, y, z ) ) g_regCount++; }
-    else if( !voxAt( x, y, z ) ) {   /* can't place inside a voxel */
-        smoothAdd( x, y, z ); g_regCount++;
-    }
-}
-
 /* Commit the active region gesture into the model (or the selection). */
 static void regionCommit( void )
 {
@@ -1191,11 +1209,6 @@ static void regionCommit( void )
         regionForEach( 3, cbSelect, NULL );   /* select: filled marquee */
         sprintf( msg, "%s %d voxels",
                  g_mode == 1 ? "Deselected" : "Selected", g_regCount );
-    } else if( g_tool == 8 ) {
-        regionForEach( 8, cbSmooth, NULL );   /* smoothers along a line */
-        sprintf( msg, "%s %d smoothers",
-                 g_mode == 1 ? "Removed" : "Placed", g_regCount );
-        g_renderDirty = 1;
     } else {
         groupBegin();
         regionForEach( g_tool, cbPut, NULL );
@@ -1401,6 +1414,33 @@ static void selInvert( void )
     for( i = 0; i < g_voxCap; i++ )
         if( g_vox[i].used == 1 ) g_vox[i].sel = !g_vox[i].sel;
     { char m[64]; sprintf( m, "%d selected", selCount() ); setStatus( m ); }
+}
+
+/* Flag (or unflag) every selected voxel for smooth shading, as one undo step.
+ * The smooth flag is a per-voxel attribute, so this records a before/after Edit
+ * per changed voxel (only voxels whose flag actually changes). */
+static void selSmooth( int flag )
+{
+    int i, n = 0;
+    if( selCount() == 0 ) { setStatus( "Selection empty" ); return; }
+    groupBegin();
+    for( i = 0; i < g_voxCap; i++ ) {
+        Voxel *v = &g_vox[i];
+        Edit e;
+        if( v->used != 1 || !v->sel || v->smooth == flag ) continue;
+        memset( &e, 0, sizeof e );
+        e.x = v->x; e.y = v->y; e.z = v->z;
+        e.hadBefore = 1; e.before = *v;
+        v->smooth = flag;
+        e.hadAfter = 1; e.after = *v;
+        e.group = g_curGroup;
+        histPush( e );
+        n++;
+    }
+    groupEnd();
+    g_renderDirty = 1;
+    { char m[64]; sprintf( m, "%s %d voxels",
+        flag ? "Smoothed" : "Unsmoothed", n ); setStatus( m ); }
 }
 
 /* Extrude the selection along an axis: copy every selected voxel forward
@@ -1936,10 +1976,14 @@ static int shadowedUVW( double px, double py, double pz,
     return 0;
 }
 
-/* Shade one surface sample.  P and N are in the view frame.  Writes an RGBA
- * pixel (a=255). */
+/* Shade one surface sample.  P and N are in the view frame.  (nx,ny,nz) is the
+ * shading normal (Lambert); (gnx,gny,gnz) is the geometric face normal used to
+ * lift the shadow-ray origin off the true surface -- they differ only for
+ * smooth-shaded voxels, whose shading normal is the fitted surface normal.
+ * Writes an RGBA pixel (a=255). */
 static void shadeSample( double px, double py, double pz,
                          double nx, double ny, double nz,
+                         double gnx, double gny, double gnz,
                          const Voxel *v, unsigned char *out )
 {
     int i;
@@ -1978,7 +2022,7 @@ static void shadeSample( double px, double py, double pz,
         if( nl <= 0 ) continue;
         /* shadow test: nudge off the surface along the normal.  Soft lights
          * spread the rays over a sphere to get a penumbra. */
-        vis = softVisible( px + nx*0.02, py + ny*0.02, pz + nz*0.02, lu, lv, lw,
+        vis = softVisible( px + gnx*0.02, py + gny*0.02, pz + gnz*0.02, lu, lv, lw,
                            ldx, ldy, ldz, g_lights[i].infinite,
                            g_lights[i].size, g_lights[i].samples, shadowedUVW );
         if( vis <= 0.0 ) continue;
@@ -2024,14 +2068,25 @@ static void shadeSample( double px, double py, double pz,
     out[3] = 255;
 }
 
-/* Smoother-blend helper (defined after shadeWorld); computes the averaged
- * "uniform patch" colour for the faces touching the smoother at cell (sx,sy,sz),
- * mapped into forV's ramp when in palette mode. */
-static void smootherBlend( int sx, int sy, int sz, const Voxel *forV,
-                           unsigned char *out );
-
-/* World-frame direction of the oblique "front" (+w) neighbour per orient. */
-static const int g_frontDir[4][3] = { {0,0,-1}, {1,0,0}, {0,0,1}, {-1,0,0} };
+/* Blend a blocky face normal toward a precomputed fitted surface normal.
+ * When have==0 the face normal is returned unchanged.  (fnx,fny,fnz) and
+ * (wnx,wny,wnz) share a frame -- uvw in the oblique renderer, world in the 3D
+ * preview -- so this serves both.  g_smoothAmt sets how far to blend. */
+static void blendSmoothN( int have, double wnx, double wny, double wnz,
+                          double fnx, double fny, double fnz,
+                          double *ox, double *oy, double *oz )
+{
+    double a, nx, ny, nz, len;
+    *ox = fnx; *oy = fny; *oz = fnz;
+    if( !have ) return;
+    a = g_smoothAmt; if( a < 0.0 ) a = 0.0; if( a > 1.0 ) a = 1.0;
+    nx = fnx*(1.0-a) + wnx*a;
+    ny = fny*(1.0-a) + wny*a;
+    nz = fnz*(1.0-a) + wnz*a;
+    len = sqrt( nx*nx + ny*ny + nz*nz );
+    if( len < 1e-6 ) return;   /* keep the face normal on a degenerate blend */
+    *ox = nx/len; *oy = ny/len; *oz = nz/len;
+}
 
 /* Render the sculpture to the g_img RGBA buffer via the oblique projection. */
 static void renderOblique( void )
@@ -2104,25 +2159,31 @@ static void renderOblique( void )
         int u, v, w, x0, py, px, ny;
         long by;
         Voxel *vox;
+        int smHave = 0;
+        double smU = 0.0, smV = 0.0, smW = 0.0;
         if( g_vox[C].used != 1 ) continue;
         vox = &g_vox[C];
         toUVW( vox->x, vox->y, vox->z, &u, &v, &w );
         x0 = ( u - umin ) * W;
         by = - (long)v * frontH + (long)w * topH - topMin;  /* into image space */
 
+        /* smooth-shaded voxels get a fitted surface normal (rotated into uvw),
+         * shared by both faces; computed once per voxel. */
+        if( vox->smooth ) {
+            double wnx, wny, wnz;
+            if( voxSmoothNormal( vox, &wnx, &wny, &wnz ) ) {
+                worldDirToUVW( wnx, wny, wnz, &smU, &smV, &smW );
+                smHave = 1;
+            }
+        }
+
         /* ---- front face (+w side, normal (0,0,1)) ---- */
         {
             int fy0 = (int)( by - frontH ), fy1 = (int)by;
             /* visible only if nothing occupies the cell in front */
             int occFront = voxOccUVW( u, v, w + 1 );
-            /* smoother in the empty front neighbour -> uniform patch */
-            int fsm = smoothFind( vox->x + g_frontDir[g_orient&3][0],
-                                  vox->y + g_frontDir[g_orient&3][1],
-                                  vox->z + g_frontDir[g_orient&3][2] ) >= 0;
-            unsigned char fbl[4];
-            if( fsm ) smootherBlend( vox->x + g_frontDir[g_orient&3][0],
-                                     vox->y + g_frontDir[g_orient&3][1],
-                                     vox->z + g_frontDir[g_orient&3][2], vox, fbl );
+            double sfu, sfv, sfw;
+            blendSmoothN( smHave, smU, smV, smW, 0,0,1, &sfu, &sfv, &sfw );
             if( !occFront ) {
                 for( py = fy0; py < fy1; py++ ) {
                     if( py < 0 || py >= imgH ) continue;
@@ -2140,8 +2201,7 @@ static void renderOblique( void )
                         if( depth > zbuf[ py*imgW + px ] ) {
                             unsigned char *o = &g_img[ (py*imgW + px)*4 ];
                             zbuf[ py*imgW + px ] = depth;
-                            if( fsm ) { o[0]=fbl[0];o[1]=fbl[1];o[2]=fbl[2];o[3]=255; }
-                            else shadeSample( Px, Py, Pz, 0,0,1, vox, o );
+                            shadeSample( Px, Py, Pz, sfu, sfv, sfw, 0,0,1, vox, o );
                         }
                     }
                 }
@@ -2152,10 +2212,8 @@ static void renderOblique( void )
         {
             int ty1 = (int)( by - frontH ), ty0 = ty1 - topH;
             int occTop = voxOccUVW( u, v + 1, w );
-            /* smoother in the empty cell above -> uniform patch */
-            int tsm = smoothFind( vox->x, vox->y + 1, vox->z ) >= 0;
-            unsigned char tbl[4];
-            if( tsm ) smootherBlend( vox->x, vox->y + 1, vox->z, vox, tbl );
+            double stu, stv, stw;
+            blendSmoothN( smHave, smU, smV, smW, 0,1,0, &stu, &stv, &stw );
             if( !occTop ) {
                 for( py = ty0; py < ty1; py++ ) {
                     if( py < 0 || py >= imgH ) continue;
@@ -2173,8 +2231,7 @@ static void renderOblique( void )
                         if( depth > zbuf[ py*imgW + px ] ) {
                             unsigned char *o = &g_img[ (py*imgW + px)*4 ];
                             zbuf[ py*imgW + px ] = depth;
-                            if( tsm ) { o[0]=tbl[0];o[1]=tbl[1];o[2]=tbl[2];o[3]=255; }
-                            else shadeSample( Px, Py, Pz, 0,1,0, vox, o );
+                            shadeSample( Px, Py, Pz, stu, stv, stw, 0,1,0, vox, o );
                         }
                     }
                 }
@@ -2220,6 +2277,7 @@ static int shadowedWorld( double px, double py, double pz,
  * the baked pixel art agree surface-by-surface. */
 static void shadeWorld( double px, double py, double pz,
                         double nx, double ny, double nz,
+                        double gnx, double gny, double gnz,
                         const Voxel *v, unsigned char *out )
 {
     int i;
@@ -2244,7 +2302,7 @@ static void shadeWorld( double px, double py, double pz,
         }
         nl = nx*ldx + ny*ldy + nz*ldz;
         if( nl <= 0 ) continue;
-        vis = softVisible( px + nx*0.02, py + ny*0.02, pz + nz*0.02, lx, ly, lz,
+        vis = softVisible( px + gnx*0.02, py + gny*0.02, pz + gnz*0.02, lx, ly, lz,
                            ldx, ldy, ldz, g_lights[i].infinite,
                            g_lights[i].size, g_lights[i].samples, shadowedWorld );
         if( vis <= 0.0 ) continue;
@@ -2277,59 +2335,6 @@ static void shadeWorld( double px, double py, double pz,
         out[1] = (unsigned char)clampi( (int)( bg * accG * 255.0 + 0.5 ), 0, 255 );
         out[2] = (unsigned char)clampi( (int)( bb * accB * 255.0 + 0.5 ), 0, 255 );
     }
-}
-
-/* Average the shaded colours of the voxel faces touching the smoother at cell
- * (sx,sy,sz) into a single uniform-patch colour.  In natural mode this is the
- * plain RGB average; in palette-ramp mode it is snapped to the nearest colour
- * in forV's ramp (ties broken toward the brighter colour). */
-static void smootherBlend( int sx, int sy, int sz, const Voxel *forV,
-                           unsigned char *out )
-{
-    static const int D[6][3] =
-        { {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1} };
-    double aR=0.0, aG=0.0, aB=0.0;
-    int n=0, k;
-    for( k=0; k<6; k++ ) {
-        int nx=sx+D[k][0], ny=sy+D[k][1], nz=sz+D[k][2];
-        Voxel *nb = voxAt( nx, ny, nz );
-        unsigned char c[4];
-        double NX=-D[k][0], NY=-D[k][1], NZ=-D[k][2];  /* face normal toward S */
-        double fcx, fcy, fcz;
-        if( !nb ) continue;
-        fcx = nx+0.5 + NX*0.5; fcy = ny+0.5 + NY*0.5; fcz = nz+0.5 + NZ*0.5;
-        shadeWorld( fcx, fcy, fcz, NX, NY, NZ, nb, c );
-        aR += c[0]; aG += c[1]; aB += c[2]; n++;
-    }
-    if( n == 0 ) {   /* touches nothing: fall back to forV's own face shade */
-        shadeWorld( forV->x+0.5, forV->y+0.5, forV->z+0.5, 0,1,0, forV, out );
-        return;
-    }
-    aR/=n; aG/=n; aB/=n;
-    if( g_shadingMode == 1 ) {
-        int rl = forV->rampLen<1 ? 1 : forV->rampLen;
-        int start = clampi( forV->rampStart, 0, g_palCount-1 );
-        int best = start, i;
-        double bestD = 1e30;
-        if( start+rl > g_palCount ) rl = g_palCount-start;
-        if( rl < 1 ) rl = 1;
-        for( i=0; i<rl; i++ ) {
-            int idx = start+i;
-            double dr=g_pal[idx*3]-aR, dg=g_pal[idx*3+1]-aG, db=g_pal[idx*3+2]-aB;
-            double d = dr*dr+dg*dg+db*db;
-            int lum = g_pal[idx*3]+g_pal[idx*3+1]+g_pal[idx*3+2];
-            int bl  = g_pal[best*3]+g_pal[best*3+1]+g_pal[best*3+2];
-            if( d < bestD - 1e-6 || ( d < bestD + 1e-6 && lum > bl ) ) {
-                bestD = d; best = idx;
-            }
-        }
-        out[0]=g_pal[best*3]; out[1]=g_pal[best*3+1]; out[2]=g_pal[best*3+2];
-    } else {
-        out[0]=(unsigned char)clampi((int)(aR+0.5),0,255);
-        out[1]=(unsigned char)clampi((int)(aG+0.5),0,255);
-        out[2]=(unsigned char)clampi((int)(aB+0.5),0,255);
-    }
-    out[3]=255;
 }
 
 /* Quick (shadowless) preview shade used for the 3D view's non-match modes. */
@@ -2378,10 +2383,13 @@ static void rebuildPreviewFaces( void )
                 double cxp = v->x + 0.5 + NR[f][0]*0.5;
                 double cyp = v->y + 0.5 + NR[f][1]*0.5;
                 double czp = v->z + 0.5 + NR[f][2]*0.5;
-                if( smoothFind( nx, ny, nz ) >= 0 )   /* smoothed patch */
-                    smootherBlend( nx, ny, nz, v, c );
-                else
-                    shadeWorld( cxp, cyp, czp, NR[f][0],NR[f][1],NR[f][2], v, c );
+                double sx, sy, sz, wnx = 0.0, wny = 0.0, wnz = 0.0;
+                int have = v->smooth &&
+                           voxSmoothNormal( v, &wnx, &wny, &wnz );
+                blendSmoothN( have, wnx, wny, wnz,
+                              NR[f][0], NR[f][1], NR[f][2], &sx, &sy, &sz );
+                shadeWorld( cxp, cyp, czp, sx, sy, sz,
+                            NR[f][0], NR[f][1], NR[f][2], v, c );
             } else {
                 shadeQuick( NR[f][0],NR[f][1],NR[f][2], v, c );
             }
@@ -2409,7 +2417,6 @@ static void uploadRenderTexture( void )
 static void ensureRender( void )
 {
     if( g_renderDirty ) {
-        smoothPrune();   /* voxels may now cover some smoothers */
         renderOblique();
         uploadRenderTexture();
         rebuildPreviewFaces();
@@ -2449,20 +2456,18 @@ static void saveSculpture( const char *path )
                  g_lights[i].x, g_lights[i].y, g_lights[i].z,
                  g_lights[i].color, g_lights[i].intensity, g_lights[i].enabled,
                  g_lights[i].infinite, g_lights[i].size, g_lights[i].samples );
-    fprintf( f, "RENDER %d %d %d %d %d\n", g_shadingMode, g_voxPx,
-             g_frontScrunch, g_topScrunch, g_orient );
-    /* one voxel per line: V x y z color rampStart rampLen */
+    fprintf( f, "RENDER %d %d %d %d %d %d %.4f\n", g_shadingMode, g_voxPx,
+             g_frontScrunch, g_topScrunch, g_orient,
+             g_smoothRadius, g_smoothAmt );
+    /* one voxel per line: V x y z color rampStart rampLen [smooth] */
     for( i = 0; i < g_voxCap; i++ ) {
         Voxel *v;
         if( g_vox[i].used != 1 ) continue;
         v = &g_vox[i];
-        fprintf( f, "V %d %d %d %d %d %d\n",
-                 v->x, v->y, v->z, v->color, v->rampStart, v->rampLen );
+        fprintf( f, "V %d %d %d %d %d %d %d\n",
+                 v->x, v->y, v->z, v->color, v->rampStart, v->rampLen,
+                 v->smooth );
     }
-    /* smoothers: one per line, S x y z */
-    for( i = 0; i < g_smoothCount; i++ )
-        fprintf( f, "S %d %d %d\n",
-                 g_smooth[i].x, g_smooth[i].y, g_smooth[i].z );
     fclose( f );
     { char msg[1400]; sprintf( msg, "Saved %d voxels -> %s", g_voxUsed, path );
       setStatus( msg ); }
@@ -2481,7 +2486,6 @@ static int loadSculpture( const char *path )
     voxClear();
     histClear();
     g_numLights = 0;
-    g_smoothCount = 0;
 
     while( fgets( line, sizeof line, f ) ) {
         if( line[0] == 'P' && line[1] == 'A' ) {
@@ -2517,18 +2521,23 @@ static int loadSculpture( const char *path )
                 g_numLights++;
             }
         } else if( line[0] == 'R' ) {
-            sscanf( line, "RENDER %d %d %d %d %d", &g_shadingMode, &g_voxPx,
-                    &g_frontScrunch, &g_topScrunch, &g_orient );
+            float sa = g_smoothAmt; int sr = g_smoothRadius;
+            sscanf( line, "RENDER %d %d %d %d %d %d %f", &g_shadingMode, &g_voxPx,
+                    &g_frontScrunch, &g_topScrunch, &g_orient, &sr, &sa );
+            g_smoothRadius = clampi( sr, 1, 4 );
+            g_smoothAmt = clampf( sa, 0.0f, 1.0f );
         } else if( line[0] == 'V' && line[1] == ' ' ) {
-            int x,y,z,col,rs,rl;
-            if( sscanf( line, "V %d %d %d %d %d %d",
-                        &x,&y,&z,&col,&rs,&rl ) == 6 )
+            int x,y,z,col,rs,rl,sm=0;
+            int got = sscanf( line, "V %d %d %d %d %d %d %d",
+                              &x,&y,&z,&col,&rs,&rl,&sm );
+            if( got >= 6 ) {
+                Voxel *nv;
                 voxSet( x,y,z,col,rs,rl );
-        } else if( line[0] == 'S' && line[1] == ' ' ) {
-            int x,y,z;
-            if( sscanf( line, "S %d %d %d", &x,&y,&z ) == 3 )
-                smoothAdd( x,y,z );
+                nv = voxAt( x,y,z );
+                if( nv ) nv->smooth = ( got >= 7 ) ? ( sm ? 1 : 0 ) : 0;
+            }
         }
+        /* older files may carry 'S x y z' smoother-cell lines; silently ignored */
     }
     fclose( f );
     if( palIdx > 0 ) g_palCount = palIdx;
@@ -2673,7 +2682,7 @@ static void buildMenuBar( int *quit )
     if( gui_begin_menu( "File" ) ) {
         if( gui_menu_item( "New", NULL, 1 ) ) {
             voxClear(); g_numLights = 0; histClear();
-            g_smoothCount = 0; g_renderDirty = 1;
+            g_renderDirty = 1;
             setStatus( "New sculpture" );
         }
         if( gui_menu_item( "Open .ovox...", NULL, 1 ) ) openFileDialog( "Open" );
@@ -2705,7 +2714,6 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Scribble select", "6", 1 ) ) g_tool = 5;
         if( gui_menu_item( "Cylinder", "7", 1 ) ) g_tool = 6;
         if( gui_menu_item( "Sphere",   "8", 1 ) ) g_tool = 7;
-        if( gui_menu_item( "Smoothers","9", 1 ) ) g_tool = 8;
         if( gui_menu_item( "Image wall", NULL, g_impPix ? 1 : 0 ) ) {
             g_tool = 9; g_impStage = 0; g_impHaveHover = 0;
         }
@@ -2767,8 +2775,7 @@ static void buildLeftPanel( float top, float h )
     gui_radio_int( "Rect",   &g_tool, 2 );
     gui_radio_int( "Box",    &g_tool, 3 ); gui_same_line();
     gui_radio_int( "Cylinder", &g_tool, 6 );
-    gui_radio_int( "Sphere", &g_tool, 7 ); gui_same_line();
-    gui_radio_int( "Smoothers", &g_tool, 8 );
+    gui_radio_int( "Sphere", &g_tool, 7 );
     gui_radio_int( "Select", &g_tool, 4 ); gui_same_line();
     gui_radio_int( "Scribble", &g_tool, 5 );
     if( g_impPix ) gui_radio_int( "Image wall", &g_tool, 9 );
@@ -2782,8 +2789,6 @@ static void buildLeftPanel( float top, float h )
         gui_slider_int( "sphere depth", &g_sphereDepth, 0, 32 );
         gui_text( "drag on a surface to grow the ball" );
     }
-    if( g_tool == 8 )
-        gui_text( "drag a line to place smoothers;\nerase mode removes them" );
     if( g_tool == 9 ) {
         gui_separator_text( "Image wall" );
         if( g_impPix ) {
@@ -2834,6 +2839,11 @@ static void buildLeftPanel( float top, float h )
           gui_slider_int( "distance", &g_extrudeDist, 1, 64 );
           if( gui_button( "Extrude" ) ) selExtrude();
         }
+        gui_separator_text( "Smooth shading" );
+        gui_text( "shade the selection with a fitted\nsurface normal (sphere-like)" );
+        if( gui_button( "Smooth" ) ) selSmooth( 1 );
+        gui_same_line();
+        if( gui_button( "Unsmooth" ) ) selSmooth( 0 );
     }
 
     gui_separator_text( "Paint color / ramp" );
@@ -2947,6 +2957,9 @@ static void buildRightPanel( float top, float h, float winW )
     if( gui_slider_int( "front scrunch", &g_frontScrunch, 1, 3 ) ) g_renderDirty = 1;
     if( gui_slider_int( "top scrunch", &g_topScrunch, 1, 3 ) )     g_renderDirty = 1;
     if( gui_combo( "view dir", &g_orient, orientItems, 4 ) )  g_renderDirty = 1;
+    if( gui_slider_int( "smooth radius", &g_smoothRadius, 1, 4 ) ) g_renderDirty = 1;
+    if( gui_slider_float( "smooth amount", &g_smoothAmt, 0.0f, 1.0f, "%.2f" ) )
+        g_renderDirty = 1;
     gui_slider_int( "zoom", &g_renderZoom, 1, 12 );
 
     ensureRender();
@@ -3180,7 +3193,6 @@ int main( int argc, char **argv )
                         else if( k == SDLK_6 ) g_tool = 5;
                         else if( k == SDLK_7 ) g_tool = 6;
                         else if( k == SDLK_8 ) g_tool = 7;
-                        else if( k == SDLK_9 ) g_tool = 8;
                         else if( k == SDLK_DELETE || k == SDLK_BACKSPACE ) selDelete();
                         else if( k == SDLK_ESCAPE ) {
                             if( g_tool == 9 && g_impPix && g_impStage > 0 ) {

@@ -89,7 +89,7 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   region gesture with a live ghost, committed as one undo step.
 * Tools **1** Pencil · **2** Line · **3** Rect · **4** Box · **5** Select ·
   **6** Scribble (paint a selection over whatever voxels the drag touches;
-  erase mode un-paints) · **7** Cylinder · **8** Sphere · **9** Smoothers ·
+  erase mode un-paints) · **7** Cylinder · **8** Sphere ·
   **Image wall** (no shortcut; armed by File ▸ Import PNG as voxel wall).
 * Modes **B** draw · **E** erase — every tool obeys the mode (erase a whole
   line/box, marquee-deselect, etc.).
@@ -99,13 +99,18 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 * **Sphere** drags a perfect ball out of the clicked surface; a **sphere depth**
   slider sinks the ball into the surface (dome at depth≈radius; erase digs a
   crater).  The ball grows with drag distance.
-* **Smoothers** are translucent anti-stair-step markers placed like a 1-thick
-  Line into empty cells (skipping any voxel the line crosses; erase removes
-  them).  A smoother averages the voxel faces it touches into one uniform patch
-  (a mid-ramp color in palette mode, the brighter of two adjacent), killing the
-  bright-top/dark-front stripes on curved surfaces.  They only show while the
-  Smoothers tool is active, and vanish if a voxel later covers them.  The effect
-  appears in both the oblique render and the "match render" 3D preview.
+* **Smooth shading** replaces the blocky per-face axis normal of selected voxels
+  with a *fitted surface normal* — the negated gradient of the local solid-
+  occupancy field over a `smooth radius` neighbourhood (a "curve of best fit"),
+  so a voxel sphere shades like a real sphere instead of showing bright-top/dark-
+  front stripes.  Select a group (Select or Scribble), then **Smooth** /
+  **Unsmooth** in the Selection panel toggles a per-voxel flag (undoable, saved
+  in `.ovox`).  Two global render params tune it: **smooth radius** (1–4) sets
+  how broad the fit is, **smooth amount** (0–1) blends between the flat face
+  normal and the fitted normal.  Smoothed voxels show cyan wire boxes while the
+  Select/Scribble tool is active; the effect appears in both the oblique render
+  and the "match render" 3D preview.  (Only the *shading* normal changes — the
+  voxel geometry, occlusion and shadow-ray origins are untouched.)
 * **Image wall** imports a PNG (with alpha) as a flat wall of voxels, one flat
   single-colour voxel per opaque pixel (nearest-palette colour; alpha < 128 is
   skipped).  Placement is a three-click gesture: click 1 fixes the bottom-left
@@ -138,13 +143,18 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 
 Human-readable, one record per line: a header, the embedded palette (`C r g b`),
 `AMBIENT`, `L` lights, a `RENDER` params line, then `V x y z color rampStart
-rampLen` per voxel.  A light line is `L x y z color intensity enabled [infinite [size [samples]]]`
-— the trailing `infinite` flag (1 = directional "sun", parallel rays and no
-distance falloff, with x,y,z read as a direction), `size` (soft-light radius,
-0 = hard) and `samples` (soft-shadow ray count, default 8) are optional so older
-files still load.  Trailing `S x y z` lines record smoother cells.  **File ▸ Import
-lighting** reads just the `AMBIENT`/`L` lines from another `.ovox` and replaces
-the current scene's lighting (for lighting a matched set identically).
+rampLen [smooth]` per voxel — the trailing `smooth` flag (1 = fitted-normal
+smooth shading) is optional so older 6-field voxel lines still load.  A light
+line is `L x y z color intensity enabled [infinite [size [samples]]]` — the
+trailing `infinite` flag (1 = directional "sun", parallel rays and no distance
+falloff, with x,y,z read as a direction), `size` (soft-light radius, 0 = hard)
+and `samples` (soft-shadow ray count, default 8) are optional so older files
+still load.  The `RENDER` line is `RENDER shadingMode voxPx frontScrunch
+topScrunch orient [smoothRadius [smoothAmount]]` (the two smoothing params are
+optional trailing fields).  (Legacy `S x y z` smoother-cell lines from older
+builds are silently ignored.)  **File ▸ Import lighting** reads just the
+`AMBIENT`/`L` lines from another `.ovox` and replaces the current scene's
+lighting (for lighting a matched set identically).
 
 ## Notes
 

@@ -1,58 +1,24 @@
 Astounding!
 
-Next:
+Wow, smoothing is working great!
 
---[DONE] The soft shadow (light source size) implementation slows things down quite a bit.  First, the 3D vew is still fast to rotate, b/c I'm assuming you're computing the shading globally only when a voxel changes, which is good.  But placing a voxel, or editing things, becomes too slow, and so does manipulating any pixel-generating parameters that causes the shading to be recomputed.   Maybe you can just give us control over the NUMBER of nearby light sources and the radius?  So you just place them around in a circle at that radius, and you let us determine how many, and what the spread is.  I'm assuming that when the "size" param gets big, currently, you're making a lot of light sources, which probably isn't needed.  At least give us control of that process.
-    Decoupled ray count from radius.  "size (soft)" now controls ONLY the
-    penumbra radius; a new "soft rays" slider (1..64, per light) sets exactly how
-    many shadow rays are spread over that sphere -- previously the count auto-
-    scaled with size (up to 32), doing far more work than needed.  Now a big soft
-    radius can cost as little as 1 ray, or you dial up rays only where you want a
-    smooth penumbra.  Saved to the .ovox L line as a trailing field (older files
-    default to 8).
 
---[FIXED] The front and back view in the 3D view vs the pixel view are swapped (front in pixel shows back in 3d view).  Same for left and right.
-    The oblique orientations now match the 3D-view presets face-for-face.
+--Is it possible to view the surface, maybe as a wireframe or something?  Not sure you're actually constructing a mesh for it somewhere, but in the Display menu, it would be nice to have a checkbox for it, so we can see what the best fit surface is doing as we adjust the fitting parameters.
 
---[DONE] We need to rethink how smoothers work, because just averaging colors isn't working well enough.   Is there some way we can select a group of voxels and then say... "apply smoothing" to those, and there's a curve-of-best fit that's used for shading those pixels somehow?  For example, a voxel sphere should have sphere-like shading in the pixel view.
-    Reworked completely.  The old averaging cell-smoothers are gone.  Now you
-    select a group of voxels (Select or Scribble tool) and click "Smooth" in the
-    Selection panel; each flagged voxel is then shaded with a FITTED SURFACE
-    NORMAL instead of its blocky per-face axis normal.  The normal is the negated
-    gradient of the local solid-occupancy field over a "smooth radius"
-    neighbourhood -- literally the curve-of-best-fit of the surrounding shape --
-    so a voxel sphere now shades like a real sphere (smooth highlight-to-shadow
-    gradient) in both the oblique render and the "match render" 3D preview,
-    instead of the flat bright-top/dark-front stripes.  "Unsmooth" clears the
-    flag.  Two global render sliders tune it: "smooth radius" (1..4, how broad
-    the fit is) and "smooth amount" (0..1, blend from flat face normal to fully
-    fitted).  The per-voxel flag is undoable and saved in the .ovox V line;
-    smoothed voxels get cyan wire boxes while the Select/Scribble tool is active.
-    (Only the shading normal changes -- geometry, occlusion and shadow rays are
-    untouched, so silhouettes stay crisp pixel art.)
+--We should have a checkbox in the Display menu to turn the blue "smooth voxel" edges on and off.
 
---[DONE] The infinite light source is working great, but it is creating such harsh shadows and shading.  I'm actually having better results from a cluster of nearby light sources, but its a pain to set up.  Can we get a "size" slider for light sources, that goes down to 0 for point light sources, but can get much bigger for soft-box type effects.  This might be implemented internally as a spehere of light sources... though maybe there's some other way to compute shading from a non-point source?
-    Added a per-light "size (soft)" slider: 0 = hard point/sun, larger spreads the shadow rays over a sphere for a penumbra (works for point and sun lights).
+--Not sure if it's a new issue or not, but some voxels in Match Render 3D view are colored differently than their corresponding pixels in palette ramp mode.  You can see a basic example of this in weirdMismatchCase.ovox   This happens in just regular (non-smooth) voxel mode.
 
---[DONE] We need to be able to import a PNG (with transparency!) as a flat wall of voxels.  During import, we should click three times...  first time sets the location of the bottom left corner, next click specifies one axis, other click specifies other axis... we should see previews of these axes as translucent columns of voxels, and they should be forced to be straight lines and perpendicular to each other.  While placing the last axis, we should see a translucent preview of where the image wall of voxels will land.
-    File > Import PNG as voxel wall... loads a PNG (RGBA; pixels with alpha <
-    128 are skipped) via stb_image and arms the new "Image wall" tool.  Three
-    clicks place it: (1) the bottom-left corner cell, (2) the image-width axis,
-    (3) a perpendicular image-height axis (commits).  The two axes snap to one
-    of the six face directions by matching the cursor's on-screen direction
-    away from the corner (screen-space/gizmo style), so you can aim a vertical
-    +Y wall or a flat floor from any camera -- axis 2 is constrained
-    perpendicular to axis 1.  Stage 1 previews a translucent column of
-    image-width voxels; stage 2 previews the whole wall tinted with each
-    pixel's nearest-palette colour.  Each opaque pixel becomes one flat
-    single-colour voxel; the whole wall is one undo step.  Esc resets
-    placement, and you can stamp another copy without reloading.
 
---[DONE] There should just be a generic "extrude" function, where you select a bunch of voxels and extrude them in some direction by some distance.
-    Select tool -> "Extrude selection": pick an axis (+/-X/Y/Z) and a distance, then Extrude.
+--When the smoothed surface comes up against a non-smoothed surface, there is a boundary issue that we currently have no way to deal with.  The best case to demonstrate this is a cylinder.  We want the walls to be smooth, but the top to be flat, with a sharp edge between the top and the walls.  If we smooth the whole thing, we get shading that looks like a rounded edge (correct!)  But if we deselect just the very top layer, and smooth the walls only, then there's a weird spot in the shading along the top edge.  The top surface indeed looks flat, and the edge looks sharp, but where it meets the smoothing surface, it looks weird.  I wonder if there's some way to further specify a "corner" or something along with the smoothing surface... another button called "smooth to corner" that extends the neighboring smoothing surface up to a corner on the selected voxels.  So then there are three states voxels can be in:
 
---[DONE] Would also be good to extrude a selection (so you could select a weird shape, and then select a volume matching that shape going back a certain depth).
-    Same Extrude command: the swept prism matches the selected cross-section; the whole volume is left selected.
+1.  Unsmooth (regular voxels)
+2.  Smooth   (what we have currently)
+3.  Smooth Corner  (new)
 
---[DONE] We should be able to invert a selection (selecting everything not currently selected)
-    Select tool -> "Invert" button.
+I guess one thing about these smooth corner spots is that.... they behave like smooth voxels wherever they have smooth neighbors (including diagonal neighbors)... anywhere they are touching.  But if they stick out into the air on one side, or butt up against non-smooth voxels, they keep their sharp corner on that side.  In the case of the cylinder, the "top rim" would be a ring of these Smooth Corner voxels.  They would be smoothed down below, where they meet the smooth voxels on the cylinder walls, and they'd be smoothed around the circumference of the rim, where they touch the other Smooth Corner voxels around the rim, but on their top edge, where they hit the air, they would be sharp.
+
+
+A cylinder isn't the only case here... imagine a half-sphere (dome)... we want the flat side to have a sharp edge that meets the smooth dome nicely.
+
+This is also an issue if you want to punch a sharp-edged hole through a smoothed surface, like punching a square hole through the front wall of a smooth cylinder.  I'd want to make the rim of the hole Smooth Corners

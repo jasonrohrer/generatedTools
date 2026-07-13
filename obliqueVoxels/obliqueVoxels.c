@@ -132,7 +132,7 @@ typedef struct {
     int rampStart;          /* first palette index of shading ramp */
     int rampLen;            /* number of ramp colors (>=1) */
     int sel;                /* 1 if part of the current selection */
-    int smooth;             /* 1 = shade with a fitted surface normal */
+    int smooth;             /* 0 flat, 1 fitted-normal smooth, 2 smooth corner */
 } Voxel;
 
 static Voxel *g_vox = NULL;
@@ -264,9 +264,14 @@ static float g_smoothAmt    = 1.0f; /* 0 = blocky face normal, 1 = fully fitted 
  * of the solid-occupancy field over a (2R+1)^3 neighbourhood: sum the
  * directions pointing away from every nearby solid cell, distance-weighted.
  * The result is the local "curve of best fit" normal.  Returns 0 (leaving
- * *nx,*ny,*nz untouched) when the neighbourhood is degenerate/flat. */
-static int voxSmoothNormal( const Voxel *v,
-                            double *nx, double *ny, double *nz )
+ * *nx,*ny,*nz untouched) when the neighbourhood is degenerate/flat.
+ *
+ * When smoothOnly is set only cells that are themselves part of the smooth
+ * surface (smooth flag != 0) count -- so a "smooth corner" voxel's fitted
+ * surface ignores adjacent flat/unsmoothed blocks and stays sharp against
+ * them, and only bends where it meets other smooth voxels. */
+static int voxSmoothNormalEx( const Voxel *v, int smoothOnly,
+                              double *nx, double *ny, double *nz )
 {
     int di, dj, dk, R = g_smoothRadius;
     double ax = 0.0, ay = 0.0, az = 0.0, len;
@@ -275,10 +280,13 @@ static int voxSmoothNormal( const Voxel *v,
       for( dj = -R; dj <= R; dj++ )
         for( dk = -R; dk <= R; dk++ ) {
             double d2, w;
+            Voxel *n;
             if( di == 0 && dj == 0 && dk == 0 ) continue;
             d2 = (double)( di*di + dj*dj + dk*dk );
             if( d2 > (double)( R*R ) + 0.5 ) continue;   /* keep it spherical */
-            if( !voxAt( v->x + di, v->y + dj, v->z + dk ) ) continue;
+            n = voxAt( v->x + di, v->y + dj, v->z + dk );
+            if( !n ) continue;
+            if( smoothOnly && !n->smooth ) continue;
             w = 1.0 / d2;                 /* nearer solids weigh more */
             ax -= di * w; ay -= dj * w; az -= dk * w;   /* away from solid */
         }
@@ -286,6 +294,12 @@ static int voxSmoothNormal( const Voxel *v,
     if( len < 1e-6 ) return 0;
     *nx = ax/len; *ny = ay/len; *nz = az/len;
     return 1;
+}
+
+static int voxSmoothNormal( const Voxel *v,
+                            double *nx, double *ny, double *nz )
+{
+    return voxSmoothNormalEx( v, 0, nx, ny, nz );
 }
 
 /* ------------------------------------------------------------------ */
@@ -369,6 +383,8 @@ static int   g_impVx = 0, g_impVy = 1, g_impVz = 0; /* image-height axis (live i
 /* preview toggles */
 static int g_previewShade = 1;     /* 0 flat, 1 quick preview, 2 match render */
 static int g_previewEdges = 1;
+static int g_showSmoothWire = 1;   /* cyan wire boxes around smoothed voxels    */
+static int g_showSurfNormals = 0;  /* draw fitted surface normals (best-fit viz) */
 
 /* paste offset (voxels) applied by the "Paste" op */
 static int g_pasteDX = 2, g_pasteDY = 0, g_pasteDZ = 0;
@@ -569,20 +585,6 @@ static void fromUVW( double u, double v, double w, double *x, double *y, double 
         case 1:  *x =  w; *z = -u; break;
         case 2:  *x =  u; *z =  w; break;
         default: *x = -w; *z =  u; break;
-    }
-}
-
-/* Rotate a world-frame *direction* into the view frame (same 90*orient yaw as
- * toUVW, but for a continuous vector -- matches the light-vector rotation). */
-static void worldDirToUVW( double wx, double wy, double wz,
-                           double *u, double *v, double *w )
-{
-    *v = wy;
-    switch( g_orient & 3 ) {
-        case 0:  *u = -wx; *w = -wz; break;
-        case 1:  *u = -wz; *w =  wx; break;
-        case 2:  *u =  wx; *w =  wz; break;
-        default: *u =  wz; *w = -wx; break;
     }
 }
 
@@ -848,18 +850,20 @@ static void drawScene3D( void )
     }
 
     /* smoothed voxels: cyan wire boxes so you can see the smoothing group while
-     * building a selection (Select / Scribble tools). */
-    if( g_tool == 4 || g_tool == 5 ) {
+     * building a selection (Select / Scribble tools).  Toggleable in Display. */
+    if( g_showSmoothWire && ( g_tool == 4 || g_tool == 5 ) ) {
         int any = 0;
         for( i = 0; i < g_voxCap; i++ )
             if( g_vox[i].used==1 && g_vox[i].smooth ) { any=1; break; }
         if( any ) {
             glLineWidth( 2.0f );
-            glColor3f( 0.25f, 0.95f, 1.0f );
             glBegin( GL_LINES );
             for( i = 0; i < g_voxCap; i++ ) {
                 float x, y, z;
                 if( g_vox[i].used != 1 || !g_vox[i].smooth ) continue;
+                /* cyan for plain smooth, orange for smooth-corner voxels */
+                if( g_vox[i].smooth == 2 ) glColor3f( 1.0f, 0.6f, 0.15f );
+                else                        glColor3f( 0.25f, 0.95f, 1.0f );
                 x=(float)g_vox[i].x; y=(float)g_vox[i].y; z=(float)g_vox[i].z;
                 glVertex3f(x,y,z);     glVertex3f(x+1,y,z);
                 glVertex3f(x,y,z+1);   glVertex3f(x+1,y,z+1);
@@ -876,6 +880,49 @@ static void drawScene3D( void )
             }
             glEnd();
             glLineWidth( 1.0f );
+        }
+    }
+
+    /* fitted-surface visualization: for every smoothed voxel draw a little tile
+     * lying in the plane perpendicular to its fitted normal, plus a short spike
+     * along that normal.  Together the tiles read as the "curve of best fit"
+     * surface, so its response to the smooth radius/amount can be seen. */
+    if( g_showSurfNormals ) {
+        glLineWidth( 1.0f );
+        for( i = 0; i < g_voxCap; i++ ) {
+            double nx, ny, nz, t1x, t1y, t1z, t2x, t2y, t2z, hx, hy, hz, hl;
+            float cx, cy, cz, s = 0.42f;
+            if( g_vox[i].used != 1 || !g_vox[i].smooth ) continue;
+            if( !voxSmoothNormal( &g_vox[i], &nx, &ny, &nz ) ) continue;
+            cx = (float)g_vox[i].x + 0.5f;
+            cy = (float)g_vox[i].y + 0.5f;
+            cz = (float)g_vox[i].z + 0.5f;
+            /* tangent basis: cross the normal with whichever axis is least
+             * aligned so the helper is never parallel to n. */
+            if( fabs( nx ) <= fabs( ny ) && fabs( nx ) <= fabs( nz ) )
+                { hx = 1.0; hy = 0.0; hz = 0.0; }
+            else if( fabs( ny ) <= fabs( nz ) )
+                { hx = 0.0; hy = 1.0; hz = 0.0; }
+            else
+                { hx = 0.0; hy = 0.0; hz = 1.0; }
+            t1x = hy*nz - hz*ny; t1y = hz*nx - hx*nz; t1z = hx*ny - hy*nx;
+            hl = sqrt( t1x*t1x + t1y*t1y + t1z*t1z ); if( hl < 1e-6 ) hl = 1.0;
+            t1x /= hl; t1y /= hl; t1z /= hl;
+            t2x = ny*t1z - nz*t1y; t2y = nz*t1x - nx*t1z; t2z = nx*t1y - ny*t1x;
+            /* the plane tile, brighter on the lit side of the normal */
+            glColor4f( 1.0f, 0.55f, 0.1f, 0.5f );
+            glBegin( GL_LINE_LOOP );
+            glVertex3f( cx + (float)(( t1x+t2x)*s), cy + (float)(( t1y+t2y)*s), cz + (float)(( t1z+t2z)*s) );
+            glVertex3f( cx + (float)(( t1x-t2x)*s), cy + (float)(( t1y-t2y)*s), cz + (float)(( t1z-t2z)*s) );
+            glVertex3f( cx + (float)((-t1x-t2x)*s), cy + (float)((-t1y-t2y)*s), cz + (float)((-t1z-t2z)*s) );
+            glVertex3f( cx + (float)((-t1x+t2x)*s), cy + (float)((-t1y+t2y)*s), cz + (float)((-t1z+t2z)*s) );
+            glEnd();
+            /* outward normal spike */
+            glColor3f( 1.0f, 0.85f, 0.2f );
+            glBegin( GL_LINES );
+            glVertex3f( cx, cy, cz );
+            glVertex3f( cx + (float)(nx*0.6), cy + (float)(ny*0.6), cz + (float)(nz*0.6) );
+            glEnd();
         }
     }
 
@@ -1909,9 +1956,8 @@ static void initSoftSamples( void )
  * radius `size` (a jittered direction for an infinite sun) and average over the
  * caller-chosen number of rays -- so a wide soft radius costs only as many rays
  * as the user asks for, decoupling penumbra spread from render cost.
- * shadowFn is shadowedUVW or shadowedWorld -- identical signatures, so the same
- * soft logic serves both the oblique renderer and the 3D match preview. */
-static int shadowedUVW( double, double, double, double, double, double );
+ * shadowFn is a world-frame ray caster (shadowedWorld); both the oblique
+ * renderer and the 3D match preview now shade in true world space. */
 static double softVisible( double px, double py, double pz,
                            double lx, double ly, double lz,
                            double dirx, double diry, double dirz,
@@ -1943,130 +1989,6 @@ static double softVisible( double px, double py, double pz,
     return 1.0 - (double)blocked / ns;
 }
 
-/* Cast a shadow ray in the view frame from surface point P toward a light at
- * L (also view-frame).  Returns 1 if blocked by a voxel before the light. */
-static int shadowedUVW( double px, double py, double pz,
-                        double lx, double ly, double lz )
-{
-    double dx = lx - px, dy = ly - py, dz = lz - pz;
-    double len = sqrt( dx*dx + dy*dy + dz*dz );
-    int x, y, z, sx, sy, sz, step, maxCells;
-    double INF = 1e30, tMaxX, tMaxY, tMaxZ, tDX, tDY, tDZ;
-    if( len < 1e-6 ) return 0;
-    dx /= len; dy /= len; dz /= len;
-
-    x = (int)floor( px ); y = (int)floor( py ); z = (int)floor( pz );
-    sx = dx > 0 ? 1 : ( dx < 0 ? -1 : 0 );
-    sy = dy > 0 ? 1 : ( dy < 0 ? -1 : 0 );
-    sz = dz > 0 ? 1 : ( dz < 0 ? -1 : 0 );
-    tMaxX = tMaxY = tMaxZ = INF; tDX = tDY = tDZ = INF;
-    if( sx != 0 ) { double nb = (sx>0)?(x+1):x; tMaxX=(nb-px)/dx; tDX=sx/dx; }
-    if( sy != 0 ) { double nb = (sy>0)?(y+1):y; tMaxY=(nb-py)/dy; tDY=sy/dy; }
-    if( sz != 0 ) { double nb = (sz>0)?(z+1):z; tMaxZ=(nb-pz)/dz; tDZ=sz/dz; }
-
-    maxCells = 512;
-    for( step = 0; step < maxCells; step++ ) {
-        double t;
-        if( tMaxX < tMaxY && tMaxX < tMaxZ ) { t = tMaxX; x += sx; tMaxX += tDX; }
-        else if( tMaxY < tMaxZ )             { t = tMaxY; y += sy; tMaxY += tDY; }
-        else                                 { t = tMaxZ; z += sz; tMaxZ += tDZ; }
-        if( t > len - 0.02 ) return 0;   /* reached the light, unobstructed */
-        if( voxOccUVW( x, y, z ) ) return 1;
-    }
-    return 0;
-}
-
-/* Shade one surface sample.  P and N are in the view frame.  (nx,ny,nz) is the
- * shading normal (Lambert); (gnx,gny,gnz) is the geometric face normal used to
- * lift the shadow-ray origin off the true surface -- they differ only for
- * smooth-shaded voxels, whose shading normal is the fitted surface normal.
- * Writes an RGBA pixel (a=255). */
-static void shadeSample( double px, double py, double pz,
-                         double nx, double ny, double nz,
-                         double gnx, double gny, double gnz,
-                         const Voxel *v, unsigned char *out )
-{
-    int i;
-    double accR = g_ambient, accG = g_ambient, accB = g_ambient;
-    double scalarLit = g_ambient;
-
-    for( i = 0; i < g_numLights; i++ ) {
-        double lu, lv, lw, ldx, ldy, ldz, len, nl, atten, f, vis;
-        double du, dv, dw;
-        if( !g_lights[i].enabled ) continue;
-        /* rotate the world light vector into uvw the same way toUVW rotates
-         * cells (a position for local lights, a direction for the sun) */
-        { double lxw = g_lights[i].x, lyw = g_lights[i].y, lzw = g_lights[i].z;
-          switch( g_orient & 3 ) {
-            case 0: du = -lxw; dw = -lzw; break;
-            case 1: du = -lzw; dw = lxw; break;
-            case 2: du = lxw; dw = lzw; break;
-            default: du = lzw; dw = -lxw; break;
-          }
-          dv = lyw;
-        }
-        if( g_lights[i].infinite ) {
-            /* directional: (du,dv,dw) is the direction toward the sun */
-            len = sqrt( du*du + dv*dv + dw*dw );
-            if( len < 1e-6 ) continue;
-            ldx = du/len; ldy = dv/len; ldz = dw/len;
-            lu = px + ldx*1000.0; lv = py + ldy*1000.0; lw = pz + ldz*1000.0;
-        } else {
-            lu = du; lv = dv; lw = dw;
-            ldx = lu - px; ldy = lv - py; ldz = lw - pz;
-            len = sqrt( ldx*ldx + ldy*ldy + ldz*ldz );
-            if( len < 1e-5 ) continue;
-            ldx /= len; ldy /= len; ldz /= len;
-        }
-        nl = nx*ldx + ny*ldy + nz*ldz;
-        if( nl <= 0 ) continue;
-        /* shadow test: nudge off the surface along the normal.  Soft lights
-         * spread the rays over a sphere to get a penumbra. */
-        vis = softVisible( px + gnx*0.02, py + gny*0.02, pz + gnz*0.02, lu, lv, lw,
-                           ldx, ldy, ldz, g_lights[i].infinite,
-                           g_lights[i].size, g_lights[i].samples, shadowedUVW );
-        if( vis <= 0.0 ) continue;
-        atten = g_lights[i].infinite ? g_lights[i].intensity
-                                     : g_lights[i].intensity / ( 1.0 + 0.03 * len );
-        f = nl * atten * vis;
-        accR += f * g_pal[ g_lights[i].color*3+0 ] / 255.0;
-        accG += f * g_pal[ g_lights[i].color*3+1 ] / 255.0;
-        accB += f * g_pal[ g_lights[i].color*3+2 ] / 255.0;
-        scalarLit += f;
-    }
-
-    if( g_shadingMode == 1 ) {
-        /* palette-ramp shading: index the voxel's ramp by brightness.  The
-         * ramp is a contiguous palette run; we orient it by luminance so the
-         * darkest end always maps to the least-lit sample regardless of how
-         * the run happens to be ordered in the palette. */
-        int rl = v->rampLen < 1 ? 1 : v->rampLen;
-        int lo = clampi( v->rampStart, 0, g_palCount - 1 );
-        int hi = clampi( v->rampStart + rl - 1, 0, g_palCount - 1 );
-        int lumLo = g_pal[lo*3]+g_pal[lo*3+1]+g_pal[lo*3+2];
-        int lumHi = g_pal[hi*3]+g_pal[hi*3+1]+g_pal[hi*3+2];
-        double t = clampf( (float)scalarLit, 0.0f, 1.0f );
-        int idx = (int)( t * rl );
-        if( idx >= rl ) idx = rl - 1;
-        if( lumLo > lumHi ) idx = rl - 1 - idx;   /* run stored light->dark */
-        idx = clampi( v->rampStart + idx, 0, g_palCount - 1 );
-        out[0] = g_pal[ idx*3+0 ];
-        out[1] = g_pal[ idx*3+1 ];
-        out[2] = g_pal[ idx*3+2 ];
-    } else {
-        /* natural shading: base color modulated by (possibly colored) light.
-         * Use voxFlatColor so a ramp voxel picks a mid, non-black base (matching
-         * the Flat/Quick 3D previews) instead of a black ramp start. */
-        int bc = voxFlatColor( v );
-        double br = g_pal[ bc*3+0 ] / 255.0;
-        double bg = g_pal[ bc*3+1 ] / 255.0;
-        double bb = g_pal[ bc*3+2 ] / 255.0;
-        out[0] = (unsigned char)clampi( (int)( br * accR * 255.0 + 0.5 ), 0, 255 );
-        out[1] = (unsigned char)clampi( (int)( bg * accG * 255.0 + 0.5 ), 0, 255 );
-        out[2] = (unsigned char)clampi( (int)( bb * accB * 255.0 + 0.5 ), 0, 255 );
-    }
-    out[3] = 255;
-}
 
 /* Blend a blocky face normal toward a precomputed fitted surface normal.
  * When have==0 the face normal is returned unchanged.  (fnx,fny,fnz) and
@@ -2088,6 +2010,60 @@ static void blendSmoothN( int have, double wnx, double wny, double wnz,
     *ox = nx/len; *oy = ny/len; *oz = nz/len;
 }
 
+/* Shading normal for one *visible* world face of voxel v (fx,fy,fz is the face's
+ * flat axis normal).  Both the oblique renderer and the 3D match preview call
+ * this so they agree.  Handles the three smooth states:
+ *
+ *   0 unsmooth     -> the flat face normal.
+ *   1 smooth       -> the fitted surface normal (blended by g_smoothAmt),
+ *                     shared by every face; a voxel sphere shades round.
+ *   2 smooth corner-> the fitted normal computed over *smooth* neighbours only,
+ *                     then with its components along the voxel's OTHER exposed
+ *                     (air-facing) axes removed.  That keeps this face bending
+ *                     only along the surface it continues while the perpendicular
+ *                     exposed face stays flat -- e.g. a cylinder's top rim shades
+ *                     round on the wall but keeps a sharp, flat top edge.  Where a
+ *                     corner meets air or an unsmoothed block it stays sharp. */
+static void shadingNormalForFace( const Voxel *v,
+                                  double fx, double fy, double fz,
+                                  double *ox, double *oy, double *oz )
+{
+    double n[3];
+    *ox = fx; *oy = fy; *oz = fz;
+    if( v->smooth == 0 ) return;
+    if( v->smooth == 1 ) {
+        if( voxSmoothNormalEx( v, 0, &n[0], &n[1], &n[2] ) )
+            blendSmoothN( 1, n[0], n[1], n[2], fx, fy, fz, ox, oy, oz );
+        return;
+    }
+    /* smooth corner (state 2) */
+    if( !voxSmoothNormalEx( v, 1, &n[0], &n[1], &n[2] ) ) return;  /* flat */
+    {
+        int k, faceAxis = ( fy != 0.0 ) ? 1 : ( fz != 0.0 ? 2 : 0 );
+        double len;
+        for( k = 0; k < 3; k++ ) {
+            int d[3];
+            if( k == faceAxis ) continue;          /* never drop our own axis */
+            d[0] = d[1] = d[2] = 0;
+            d[k] = 1;
+            /* if this perpendicular axis is exposed to air on either side the
+             * surface does not continue that way -- drop that component so the
+             * face's normal cannot round over the sharp edge there. */
+            if( !voxAt( v->x + d[0], v->y + d[1], v->z + d[2] ) ||
+                !voxAt( v->x - d[0], v->y - d[1], v->z - d[2] ) )
+                n[k] = 0.0;
+        }
+        len = sqrt( n[0]*n[0] + n[1]*n[1] + n[2]*n[2] );
+        if( len < 1e-6 ) return;                    /* nothing left -> flat */
+        n[0] /= len; n[1] /= len; n[2] /= len;
+    }
+    blendSmoothN( 1, n[0], n[1], n[2], fx, fy, fz, ox, oy, oz );
+}
+
+/* Both the oblique renderer and the 3D preview shade in true world space. */
+static void shadeWorld( double, double, double, double, double, double,
+                        double, double, double, const Voxel *, unsigned char * );
+
 /* Render the sculpture to the g_img RGBA buffer via the oblique projection. */
 static void renderOblique( void )
 {
@@ -2099,10 +2075,23 @@ static void renderOblique( void )
     long bottomMax = 0, topMin = 0;   /* image-y extents (before offset) */
     float *zbuf;
     int C;
+    /* True-world-space shading: the uvw cell mapping negates some axes, which
+     * shifts a continuous +1 face sample point by up to one cell when mapped
+     * back to world.  We recover each sample's TRUE world position (fromUVW +
+     * this constant shift) and shade it in world space with shadeWorld -- the
+     * exact same math the "match render" 3D preview uses on true world faces,
+     * so the baked pixels and the preview agree voxel-for-voxel. */
+    double shX, shY, shZ;       /* uvw->world sample shift */
+    double fnwX, fnwY, fnwZ;    /* front-face world normal (top is always +Y) */
 
     W      = g_voxPx;
     frontH = g_voxPx / g_frontScrunch; if( frontH < 1 ) frontH = 1;
     topH   = g_voxPx / g_topScrunch;   if( topH < 1 ) topH = 1;
+
+    { double fx0, fy0, fz0;
+      fromUVW( 0.5, 1.0, 0.5, &fx0, &fy0, &fz0 );   /* top-face center of vox 0 */
+      shX = 0.5 - fx0; shY = 1.0 - fy0; shZ = 0.5 - fz0; }
+    fromUVW( 0.0, 0.0, 1.0, &fnwX, &fnwY, &fnwZ );   /* +w unit dir -> world */
 
     /* gather view-frame bounds */
     for( i = 0; i < g_voxCap; i++ ) {
@@ -2159,36 +2148,24 @@ static void renderOblique( void )
         int u, v, w, x0, py, px, ny;
         long by;
         Voxel *vox;
-        int smHave = 0;
-        double smU = 0.0, smV = 0.0, smW = 0.0;
         if( g_vox[C].used != 1 ) continue;
         vox = &g_vox[C];
         toUVW( vox->x, vox->y, vox->z, &u, &v, &w );
         x0 = ( u - umin ) * W;
         by = - (long)v * frontH + (long)w * topH - topMin;  /* into image space */
 
-        /* smooth-shaded voxels get a fitted surface normal (rotated into uvw),
-         * shared by both faces; computed once per voxel. */
-        if( vox->smooth ) {
-            double wnx, wny, wnz;
-            if( voxSmoothNormal( vox, &wnx, &wny, &wnz ) ) {
-                worldDirToUVW( wnx, wny, wnz, &smU, &smV, &smW );
-                smHave = 1;
-            }
-        }
-
-        /* ---- front face (+w side, normal (0,0,1)) ---- */
+        /* ---- front face (+w side, world normal fnw) ---- */
         {
             int fy0 = (int)( by - frontH ), fy1 = (int)by;
             /* visible only if nothing occupies the cell in front */
             int occFront = voxOccUVW( u, v, w + 1 );
-            double sfu, sfv, sfw;
-            blendSmoothN( smHave, smU, smV, smW, 0,0,1, &sfu, &sfv, &sfw );
+            double sfx, sfy, sfz;
+            shadingNormalForFace( vox, fnwX, fnwY, fnwZ, &sfx, &sfy, &sfz );
             if( !occFront ) {
                 for( py = fy0; py < fy1; py++ ) {
                     if( py < 0 || py >= imgH ) continue;
                     for( ny = 0; ny < W; ny++ ) {
-                        double fx, fyf, Px, Py, Pz;
+                        double fx, fyf, Px, Py, Pz, Wx, Wy, Wz;
                         float depth;
                         px = x0 + ny;
                         if( px < 0 || px >= imgW ) continue;
@@ -2201,24 +2178,27 @@ static void renderOblique( void )
                         if( depth > zbuf[ py*imgW + px ] ) {
                             unsigned char *o = &g_img[ (py*imgW + px)*4 ];
                             zbuf[ py*imgW + px ] = depth;
-                            shadeSample( Px, Py, Pz, sfu, sfv, sfw, 0,0,1, vox, o );
+                            fromUVW( Px, Py, Pz, &Wx, &Wy, &Wz );
+                            Wx += shX; Wy += shY; Wz += shZ;
+                            shadeWorld( Wx, Wy, Wz, sfx, sfy, sfz,
+                                        fnwX, fnwY, fnwZ, vox, o );
                         }
                     }
                 }
             }
         }
 
-        /* ---- top face (+v side, normal (0,1,0)) ---- */
+        /* ---- top face (+v side, world normal (0,1,0)) ---- */
         {
             int ty1 = (int)( by - frontH ), ty0 = ty1 - topH;
             int occTop = voxOccUVW( u, v + 1, w );
-            double stu, stv, stw;
-            blendSmoothN( smHave, smU, smV, smW, 0,1,0, &stu, &stv, &stw );
+            double stx, sty, stz;
+            shadingNormalForFace( vox, 0,1,0, &stx, &sty, &stz );
             if( !occTop ) {
                 for( py = ty0; py < ty1; py++ ) {
                     if( py < 0 || py >= imgH ) continue;
                     for( ny = 0; ny < W; ny++ ) {
-                        double fx, fzf, Px, Py, Pz;
+                        double fx, fzf, Px, Py, Pz, Wx, Wy, Wz;
                         float depth;
                         px = x0 + ny;
                         if( px < 0 || px >= imgW ) continue;
@@ -2231,7 +2211,10 @@ static void renderOblique( void )
                         if( depth > zbuf[ py*imgW + px ] ) {
                             unsigned char *o = &g_img[ (py*imgW + px)*4 ];
                             zbuf[ py*imgW + px ] = depth;
-                            shadeSample( Px, Py, Pz, stu, stv, stw, 0,1,0, vox, o );
+                            fromUVW( Px, Py, Pz, &Wx, &Wy, &Wz );
+                            Wx += shX; Wy += shY; Wz += shZ;
+                            shadeWorld( Wx, Wy, Wz, stx, sty, stz,
+                                        0,1,0, vox, o );
                         }
                     }
                 }
@@ -2335,6 +2318,7 @@ static void shadeWorld( double px, double py, double pz,
         out[1] = (unsigned char)clampi( (int)( bg * accG * 255.0 + 0.5 ), 0, 255 );
         out[2] = (unsigned char)clampi( (int)( bb * accB * 255.0 + 0.5 ), 0, 255 );
     }
+    out[3] = 255;   /* opaque: the oblique renderer bakes onto a clear buffer */
 }
 
 /* Quick (shadowless) preview shade used for the 3D view's non-match modes. */
@@ -2383,11 +2367,9 @@ static void rebuildPreviewFaces( void )
                 double cxp = v->x + 0.5 + NR[f][0]*0.5;
                 double cyp = v->y + 0.5 + NR[f][1]*0.5;
                 double czp = v->z + 0.5 + NR[f][2]*0.5;
-                double sx, sy, sz, wnx = 0.0, wny = 0.0, wnz = 0.0;
-                int have = v->smooth &&
-                           voxSmoothNormal( v, &wnx, &wny, &wnz );
-                blendSmoothN( have, wnx, wny, wnz,
-                              NR[f][0], NR[f][1], NR[f][2], &sx, &sy, &sz );
+                double sx, sy, sz;
+                shadingNormalForFace( v, NR[f][0], NR[f][1], NR[f][2],
+                                      &sx, &sy, &sz );
                 shadeWorld( cxp, cyp, czp, sx, sy, sz,
                             NR[f][0], NR[f][1], NR[f][2], v, c );
             } else {
@@ -2534,7 +2516,7 @@ static int loadSculpture( const char *path )
                 Voxel *nv;
                 voxSet( x,y,z,col,rs,rl );
                 nv = voxAt( x,y,z );
-                if( nv ) nv->smooth = ( got >= 7 ) ? ( sm ? 1 : 0 ) : 0;
+                if( nv ) nv->smooth = ( got >= 7 ) ? clampi( sm, 0, 2 ) : 0;
             }
         }
         /* older files may carry 'S x y z' smoother-cell lines; silently ignored */
@@ -2746,7 +2728,9 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Preview: quick light",  NULL, 1 ) ) { g_previewShade=1; g_renderDirty=1; }
         if( gui_menu_item( "Preview: match render", NULL, 1 ) ) { g_previewShade=2; g_renderDirty=1; }
         gui_separator();
-        gui_menu_item_check( "Voxel edges",   NULL, &g_previewEdges );
+        gui_menu_item_check( "Voxel edges",        NULL, &g_previewEdges );
+        gui_menu_item_check( "Smooth voxel wire",  NULL, &g_showSmoothWire );
+        gui_menu_item_check( "Surface normals",    NULL, &g_showSurfNormals );
         gui_end_menu();
     }
     (void)g_showFront; (void)g_showTop;
@@ -2844,6 +2828,8 @@ static void buildLeftPanel( float top, float h )
         if( gui_button( "Smooth" ) ) selSmooth( 1 );
         gui_same_line();
         if( gui_button( "Unsmooth" ) ) selSmooth( 0 );
+        gui_text( "Smooth corner: round only where it\nmeets other smooth voxels; keep a\nsharp edge toward air/flat faces" );
+        if( gui_button( "Smooth corner" ) ) selSmooth( 2 );
     }
 
     gui_separator_text( "Paint color / ramp" );

@@ -108,9 +108,29 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   in `.ovox`).  Two global render params tune it: **smooth radius** (1–4) sets
   how broad the fit is, **smooth amount** (0–1) blends between the flat face
   normal and the fitted normal.  Smoothed voxels show cyan wire boxes while the
-  Select/Scribble tool is active; the effect appears in both the oblique render
-  and the "match render" 3D preview.  (Only the *shading* normal changes — the
-  voxel geometry, occlusion and shadow-ray origins are untouched.)
+  Select/Scribble tool is active (toggle in Display); the effect appears in both
+  the oblique render and the "match render" 3D preview.  (Only the *shading*
+  normal changes — the voxel geometry, occlusion and shadow-ray origins are
+  untouched.)
+* **Smooth corner** is a third voxel state (Selection panel button; drawn in
+  orange, not cyan) for the seam where a smooth surface meets a flat one — a
+  cylinder's top rim, a dome's base, or the rim of a hole punched through a
+  smooth wall.  A corner voxel fits its normal over *smooth* neighbours only
+  (ignoring adjacent flat/unsmoothed blocks, so it stays sharp against them),
+  then, per visible face, drops the normal components along the voxel's other
+  air-facing axes.  That lets each face round only along the surface it
+  continues while the perpendicular exposed face keeps its flat, sharp edge —
+  e.g. the wall of a rim shades round while its top stays flat with a crisp
+  edge, instead of the fitted normal tilting up into a bright rounded lip.  The
+  three states are Unsmooth (0) / Smooth (1) / Smooth corner (2).
+* Both the oblique renderer and the "match render" 3D preview now shade in true
+  **world space** at the same surface point, so a voxel's baked pixels and its
+  3D-preview faces always agree (an earlier mismatch came from the renderer
+  shading in the negated-axis view frame, which shifted local-light distances).
+* **Display** menu toggles: preview shading mode, voxel edges, the cyan/orange
+  smooth wire boxes, and **Surface normals** (draws each smoothed voxel's fitted
+  normal as a small tile + spike so the best-fit surface can be seen while
+  tuning smooth radius/amount).
 * **Image wall** imports a PNG (with alpha) as a flat wall of voxels, one flat
   single-colour voxel per opaque pixel (nearest-palette colour; alpha < 128 is
   skipped).  Placement is a three-click gesture: click 1 fixes the bottom-left
@@ -143,8 +163,9 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 
 Human-readable, one record per line: a header, the embedded palette (`C r g b`),
 `AMBIENT`, `L` lights, a `RENDER` params line, then `V x y z color rampStart
-rampLen [smooth]` per voxel — the trailing `smooth` flag (1 = fitted-normal
-smooth shading) is optional so older 6-field voxel lines still load.  A light
+rampLen [smooth]` per voxel — the trailing `smooth` flag (0 flat, 1 fitted-
+normal smooth, 2 smooth corner) is optional so older 6-field voxel lines still
+load.  A light
 line is `L x y z color intensity enabled [infinite [size [samples]]]` — the
 trailing `infinite` flag (1 = directional "sun", parallel rays and no distance
 falloff, with x,y,z read as a direction), `size` (soft-light radius, 0 = hard)

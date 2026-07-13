@@ -985,7 +985,9 @@ static void drawScene3D( void )
         static const double NR[6][3] = { {0,1,0},{0,-1,0},{0,0,1},
                                          {0,0,-1},{1,0,0},{-1,0,0} };
         float sp = 1.1f, tile = 0.42f, base = 0.5f;
-        glDisable( GL_DEPTH_TEST );
+        /* Depth test stays ON: the tiles/spikes are lifted just above their
+         * faces, so real occlusion keeps far patches from punching through
+         * near ones (previously disabled, which jumbled dense scenes). */
         for( i = 0; i < g_voxCap; i++ ) {
             int f;
             Voxel *v = &g_vox[i];
@@ -1038,7 +1040,6 @@ static void drawScene3D( void )
             }
         }
         glLineWidth( 1.0f );
-        glEnable( GL_DEPTH_TEST );
     }
 
     /* light markers */
@@ -2186,7 +2187,7 @@ static void shadingNormalForFace( const Voxel *v,
                                   double fx, double fy, double fz,
                                   double *ox, double *oy, double *oz )
 {
-    double n[3];
+    double n[3], bev[3];
     int faceAxis, s, k, lock[3];
     double len;
 
@@ -2197,6 +2198,13 @@ static void shadingNormalForFace( const Voxel *v,
 
     faceAxis = ( fy != 0.0 ) ? 1 : ( fz != 0.0 ? 2 : 0 );
     lock[0] = lock[1] = lock[2] = 0;
+    /* bev = the purely geometric "bevel" direction this face should lean:
+     * the flat face normal plus the outward normal of every SMOOTH
+     * perpendicular neighbour it rounds toward.  Used only to sanity-check the
+     * fitted normal's in-plane sign below -- the fitted gradient can point the
+     * wrong way at a near-symmetric corner (where its primary signal cancels
+     * and far cells tip it), and that geometry knows which way is correct. */
+    bev[0]=fx; bev[1]=fy; bev[2]=fz;
 
     /* examine the four axis-aligned in-plane neighbour faces */
     for( k = 0; k < 3; k++ ) {
@@ -2213,6 +2221,7 @@ static void shadingNormalForFace( const Voxel *v,
                 nsm = faceIsSmoothAt( v->x, v->y, v->z,
                                       (double)e[0],(double)e[1],(double)e[2] );
                 if( !nsm ) lock[k] = 1;            /* perpendicular -> lock tangent */
+                else       bev[k] += e[k];         /* round toward it */
             } else if( !voxAt( A[0]+dr[0], A[1]+dr[1], A[2]+dr[2] ) ) {
                 /* coplanar continuation: neighbour face (A, faceNormal) */
                 nsm = faceIsSmoothAt( A[0], A[1], A[2], fx, fy, fz );
@@ -2222,11 +2231,22 @@ static void shadingNormalForFace( const Voxel *v,
                 nsm = faceIsSmoothAt( A[0]+dr[0], A[1]+dr[1], A[2]+dr[2],
                                       (double)-e[0],(double)-e[1],(double)-e[2] );
                 if( !nsm ) lock[k] = 1;            /* perpendicular -> lock tangent */
+                else       bev[k] -= e[k];         /* round toward it */
             }
         }
     }
 
     for( k = 0; k < 3; k++ ) if( lock[k] ) n[k] = 0.0;
+
+    /* Sign guard: where geometry says this face rounds toward a tangent
+     * direction (bev[k] != 0) but the fitted normal's tangent points the
+     * opposite way, the fit is unreliable (near-symmetric corner) -- flip that
+     * tangent component to agree with the geometry.  Coplanar smooth surfaces
+     * (spheres) leave bev[k] == 0, so they are untouched. */
+    for( k = 0; k < 3; k++ )
+        if( k != faceAxis && bev[k] != 0.0 && n[k]*bev[k] < 0.0 )
+            n[k] = -n[k];
+
     len = sqrt( n[0]*n[0] + n[1]*n[1] + n[2]*n[2] );
     if( len < 1e-6 ) return;                       /* nothing left -> flat */
     n[0] /= len; n[1] /= len; n[2] /= len;

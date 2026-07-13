@@ -126,7 +126,15 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   about the other in-plane axis).  So a flat washer ring whose rim faces are
   smooth but whose top/bottom faces are flat rounds only circumferentially (the
   flat caps pin the vertical tangent), and a cylinder's top rim keeps a crisp
-  flat cap edge with no dark patch.
+  flat cap edge with no dark patch.  A **bevel sign-guard** additionally fixes
+  "inner corner" voxels: at a near-symmetric corner the fitted gradient's
+  primary signal cancels and far cells can tip its in-plane component the *wrong*
+  way (a shading discontinuity).  So the meeting scan also builds a purely
+  geometric bevel direction — the flat face normal plus the outward normal of
+  every *smooth* perpendicular neighbour it rounds toward — and where the fitted
+  normal's tangent points opposite that geometry, that component is flipped to
+  agree.  Coplanar smooth surfaces (spheres) accumulate no bevel, so they are
+  untouched.
 * Set smoothness two ways: the **Smoother** tool (9) paints it face-by-face —
   drag over faces to mark them smooth (Draw) or flat (Erase); or, in the
   Selection panel, **Smooth** / **Unsmooth** set/clear *all six* faces of every
@@ -146,7 +154,9 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   cyan for a smooth face, square grey for a flat one — plus a spike along that
   normal, so "how is this face shaded?" reads at a glance while tuning smooth
   radius/amount), and **Hide voxels (faces only)** which stops drawing the solid
-  voxel faces so those surface tiles/normals can be inspected on their own.
+  voxel faces so those surface tiles/normals can be inspected on their own.  The
+  tiles/spikes are lifted just above their faces and drawn with the depth test
+  ON, so near patches correctly occlude far ones (no jumbled bleed-through).
 * **Image wall** imports a PNG (with alpha) as a flat wall of voxels, one flat
   single-colour voxel per opaque pixel (nearest-palette colour; alpha < 128 is
   skipped).  Placement is a three-click gesture: click 1 fixes the bottom-left

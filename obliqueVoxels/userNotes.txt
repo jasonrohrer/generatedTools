@@ -1,24 +1,9 @@
-Astounding!
-
-Wow, smoothing is working great!
+Nice work!
 
 
---Is it possible to view the surface, maybe as a wireframe or something?  Not sure you're actually constructing a mesh for it somewhere, but in the Display menu, it would be nice to have a checkbox for it, so we can see what the best fit surface is doing as we adjust the fitting parameters.
 
---We should have a checkbox in the Display menu to turn the blue "smooth voxel" edges on and off.
+--Hmm... smooth corners don't seem to be working correctly, or maybe I don't understand how I'm supposed to use them.  See the weirdCylinderEdge file as an example...  I've got just the top edge as sharp corners, but I'm still getting weird artifacts in the shading.
 
---Not sure if it's a new issue or not, but some voxels in Match Render 3D view are colored differently than their corresponding pixels in palette ramp mode.  You can see a basic example of this in weirdMismatchCase.ovox   This happens in just regular (non-smooth) voxel mode.
-
-
---When the smoothed surface comes up against a non-smoothed surface, there is a boundary issue that we currently have no way to deal with.  The best case to demonstrate this is a cylinder.  We want the walls to be smooth, but the top to be flat, with a sharp edge between the top and the walls.  If we smooth the whole thing, we get shading that looks like a rounded edge (correct!)  But if we deselect just the very top layer, and smooth the walls only, then there's a weird spot in the shading along the top edge.  The top surface indeed looks flat, and the edge looks sharp, but where it meets the smoothing surface, it looks weird.  I wonder if there's some way to further specify a "corner" or something along with the smoothing surface... another button called "smooth to corner" that extends the neighboring smoothing surface up to a corner on the selected voxels.  So then there are three states voxels can be in:
-
-1.  Unsmooth (regular voxels)
-2.  Smooth   (what we have currently)
-3.  Smooth Corner  (new)
-
-I guess one thing about these smooth corner spots is that.... they behave like smooth voxels wherever they have smooth neighbors (including diagonal neighbors)... anywhere they are touching.  But if they stick out into the air on one side, or butt up against non-smooth voxels, they keep their sharp corner on that side.  In the case of the cylinder, the "top rim" would be a ring of these Smooth Corner voxels.  They would be smoothed down below, where they meet the smooth voxels on the cylinder walls, and they'd be smoothed around the circumference of the rim, where they touch the other Smooth Corner voxels around the rim, but on their top edge, where they hit the air, they would be sharp.
+--The new surface normals view is too hard to see... the normal lines are very short, and barely stick through the voxels.  For starters, make the normal lines longer.  If there are any surface faces, they are completely burried in the voxels.   Maybe we need to have a way to toggle the voxels view too or something, to see the surface faces by themselves?
 
 
-A cylinder isn't the only case here... imagine a half-sphere (dome)... we want the flat side to have a sharp edge that meets the smooth dome nicely.
-
-This is also an issue if you want to punch a sharp-edged hole through a smoothed surface, like punching a square hole through the front wall of a smooth cylinder.  I'd want to make the rim of the hole Smooth Corners

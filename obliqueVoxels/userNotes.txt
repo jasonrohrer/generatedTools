@@ -1,9 +1,36 @@
 Nice work!
 
 
+--Smooth corners still aren't working correctly....
 
---Hmm... smooth corners don't seem to be working correctly, or maybe I don't understand how I'm supposed to use them.  See the weirdCylinderEdge file as an example...  I've got just the top edge as sharp corners, but I'm still getting weird artifacts in the shading.
+Here's an idea:
 
---The new surface normals view is too hard to see... the normal lines are very short, and barely stick through the voxels.  For starters, make the normal lines longer.  If there are any surface faces, they are completely burried in the voxels.   Maybe we need to have a way to toggle the voxels view too or something, to see the surface faces by themselves?
+Instead of smoothed voxel cubes.... we actually want smoothed faces only.  Currently, we're selecting huge swaths of voxels (like a whole sphere) and making them all smooth... But that's wasteful anyway, because the inner ones aren't visible.  It's really the SURFACES that we want to be smooth.   And that also clears up the problem with corners:   corners are voxels that have some visible faces that are smoothed, and other visible faces that are flat.   In that case, the smoothed face should always be perpendicular to the flat face.  It can rotate in various ways, but it must always meet the flat face at at a 90 degree angle.
+
+So we really shouldn't be selecting whole voxels, but instead just faces to be smoothed.   We're trying to figure out how to shade the visible face of this particular voxel.  It's invisible faces (smashed against other voxels) don't matter.  We look at the neighboring visible faces in all 8 directions (up, down, left, right, and diags).  Some of these faces are co-planar to us, some are perpendicular, and some are parallel but not co-planar (only diagonals can be that way, if we take a diagonal step up to the co-planar face of a diagonal neiboring visible voxel).  Somtimes the neighboring face to a given face is on the same voxel!  If all of them are smooth, then the normal of this face should be the average of the normals of those neighbors (or something like that).   However, if some of the visible neighboring faces are not smooth, we must obey various constraints.  If the visible non-smooth face is perpendicular to us, then we are constrained to keep this smoothed face perpedicular and only rotate it.  If there are multiple non-smooth neighbor faces that are perpedicular in different orientaions, we are stuck being perp to both, so our smoothed face is fixed and matches the normal of the underlying voxel face.  If even a single non-smooth neighbor face is co-planar with our face, our face is also stuck, unable to rotate at all, so again, our face is fixed to match the orientation of the underlying voxel face.
+
+I.e., smooth faces are adjusted to "meet" neighboring non-smooth faces in a sane way.  Think of a smooth mountain meeting a non-smooth flat plane.  The "toes" of the foot of the moutain need to be flat too, to meet the flat plane, and then the next faces in, further up the mountain from the very edge toes, can start ramping up, averaging themselves with the forced-flat toes that are their neighbors.
 
 
+
+So, with this in mind, we need a way to pick faces (instead of whole voxels) and then set their smooth/not-smooth status.   There should be a marquee tool to do this, and it just finds the closest faces hit and selects them... Maybe use the draw/erase metaphor, and give us a "smoother" tool that is just like Select, but it adds/removes (via draw/erase) hit visible faces hit by the tool to the list of smooth faces.
+
+The file format can track smoothed/notsmoothed status per-face of each voxel, assuming that each voxel is non smooth, and adding a 011000 type thing if any are smooth, which says TULRFB.... in this case, the Underside and the Left side are smoothed.  You can do this however you want, but the status of faces should stick to a voxel, so that when a voxel is deleted, the smoothed faces go with it.
+
+
+I guess you can give smoothed faces a cyan outline and an "x" across them, instead of just outlining them, for clarity, and we should be able to toggle this display (smoothed faces toggle in Display)
+
+I suppose that for ease of use, we can also just select whole swaths of voxels and make all of their faces smooth, but of course only visible faces would come into play during smoothing calculations (and our smooth normal/facet preview should only show the visible ones).  Still, all 6 faces should be remembered as smooth, since they might become visible if voxels are removed later.    So that could be added to the list of things under selection action (smooth and unsmooth), and those would apply to all 6 faces of every selected voxel.
+
+And I guess we should be able to have a checkbox below draw/erase for most of the drawing tools to make faces of affected voxels automatically have smoothed status.  Thus, you could draw a smoothed sphere, and all 6 faces of every voxel in the sphere would be smoothed.  Likewise, you could delete a sphere, carving it out, and the cavity faces left over would have smoothed status set.
+
+Once this is working, the following example should be possible:
+
+(See the exampleRing file)
+
+If I have a circular ring of voxels 1 thick, I could select just the inner and outer circumference faces to be smooth, and leave the top and bottom faces non-smooth.  Looking at a given face on the outer rim, we would see two neighboring perpendicular visible faces (top and bottom face) and then be constrained to remain perpendicular to those, while only rotating on the Z axis.  So the smoothing would rotate the faces of all rim circumference walls on the Z axis only, so that they are smooth relative to each other (each one axpproximating the tangent of an actual circle).  Meanwhile, the top and bottom faces, being non-smooth, would receive no smoothing rotation during shading.
+
+
+And our Surface Normals view should show little facets and normals for ALL visible faces, both smooth and non-smooth.  After all, those facets and normals just answer "how do I shade this particular voxel face?"
+
+Even regular voxels techincally have a normal (the face of the voxel itself), so showing those for all visible faces when that Display mode is checked makes sense.

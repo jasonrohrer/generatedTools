@@ -66,7 +66,8 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 
 ## Layout
 
-* `obliqueVoxels.c` — pure **C89**: voxel spatial hash, grouped undo history,
+* `obliqueVoxels.c` — pure **C89**: layered voxel spatial hash (per-layer
+  hashes unioned into a composite for render/pick), grouped undo history,
   orbit camera, fixed-function 3D preview (with a cached real-lit face list for
   "match render" mode), mouse→ray picking (Amanatides-Woo DDA), plane-locked
   region-gesture tools (line/rect/box) + marquee selection & clipboard, the CPU
@@ -94,6 +95,28 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   un-smooths) · **0** Eyedropper (click a voxel to load its color/ramp into the
   current paint color) · **Image wall** (no shortcut; armed by File ▸ Import PNG
   as voxel wall).
+* **Layers** (Tools panel): up to 16 independent voxel layers, listed top
+  (highest z-order) first.  Every edit acts on the single **active** layer
+  (click a layer's name to activate it); the oblique render, the 3D preview and
+  mouse picking all act on the **composite** — every *visible* layer unioned,
+  with a higher layer winning where two layers occupy the same cell (a union
+  performed before shading, so overlaps shade exactly).  Each row has a
+  visibility checkbox; **+ Add** / **Delete** / **Up** / **Down** (reorder the
+  z-order) / a **name** field.  Undo is per-layer (each recorded edit remembers
+  its layer and is replayed there); a *structural* change (add/delete/reorder a
+  layer) clears the undo history since history can't span a layer-set change.
+  Implementation: `g_vox`/`g_voxCap`/`g_voxUsed`/`g_voxTomb` are macros aliasing
+  the *active* layer's spatial-hash fields, so every existing edit and render
+  loop runs unchanged; a render or pick pass calls `ensureFlat()` to union the
+  visible layers into a reserved `FLAT_LAYER` scratch slot and temporarily
+  points `g_activeLayer` at it, so the same shading/occlusion/DDA code sees the
+  composite with no per-call branching.
+* **Cross-layer selection** is kept live *positionally*: switching the active
+  layer projects the set of selected cell positions onto whatever the new layer
+  has at those cells.  So selecting a sphere in one layer then switching to a
+  box layer leaves the sphere∩box overlap selected — enabling boolean gestures
+  (intersection by switching, union by Copy→switch→Paste-at-0, difference by
+  Delete on the projected selection).
 * **Symmetry planes** (Tools panel): checkboxes **mirror X/Y/Z** mirror every
   edit — draw, erase, select, smooth, sphere — across up to three planes at
   once (so up to 8-fold symmetry).  Each enabled axis gets a **pos** slider (the
@@ -209,8 +232,12 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 
 Human-readable, one record per line: a header (`OBLIQUEVOXELS <version>`), the
 embedded palette (`C r g b`), `AMBIENT`, `L` lights, a `RENDER` params line,
-then `V x y z color rampStart rampLen [smoothFaceMask]` per voxel — the trailing
-field is optional so older 6-field voxel lines still load.  In the current
+an `ACTIVE <layerIndex>` line, then for each layer a `LAYER <index> <visible>
+<name...>` line (the name runs to end of line and may contain spaces) followed
+by that layer's `V x y z color rampStart rampLen [smoothFaceMask]` voxel lines —
+the trailing smooth field is optional so older 6-field voxel lines still load.
+This is **version 3**; older **version 1/2** files have no `LAYER`/`ACTIVE`
+lines and load as a single layer.  In the current
 **version 2** format it is a 6-bit per-face smooth mask (bit = 1<<faceDir6,
 order +Y +Z −Z +X −X … i.e. +Y0 −Y1 +Z2 −Z3 +X4 −X5); in the legacy **version
 1** format it was a 0/1/2 whole-voxel smooth flag, which loads by mapping any

@@ -149,10 +149,35 @@ static int faceDir6( double nx, double ny, double nz )
     return 5;
 }
 
-static Voxel *g_vox = NULL;
-static int    g_voxCap  = 0;    /* power of two, or 0 */
-static int    g_voxUsed = 0;    /* occupied slots */
-static int    g_voxTomb = 0;    /* tombstones */
+/* ---- layers -------------------------------------------------------
+ * The model is a small stack of independent voxel layers.  Editing acts on
+ * the ACTIVE layer only; rendering/preview/picking act on the COMPOSITE (all
+ * *visible* layers unioned, a higher layer index winning where cells coincide).
+ * The composite is built into a reserved scratch slot (FLAT_LAYER) on demand.
+ *
+ * Trick: g_vox / g_voxCap / g_voxUsed / g_voxTomb are macros aliasing the
+ * active layer's fields, so every existing spatial-hash routine and edit loop
+ * operates on the active layer with no change.  A render/pick pass temporarily
+ * points g_activeLayer at FLAT_LAYER so the very same code sees the union. */
+#define MAX_LAYERS 16
+#define FLAT_LAYER MAX_LAYERS      /* reserved scratch slot for the composite */
+
+typedef struct {
+    Voxel *vox;
+    int    cap, used, tomb;        /* the spatial-hash state for this layer */
+    int    visible;                /* shown in composite render/preview */
+    char   name[32];
+} Layer;
+
+static Layer g_layers[ MAX_LAYERS + 1 ];   /* +1 for the FLAT_LAYER scratch */
+static int   g_numLayers   = 1;
+static int   g_activeLayer = 0;
+static int   g_flatDirty   = 1;    /* composite needs rebuilding */
+
+#define g_vox     ( g_layers[ g_activeLayer ].vox  )
+#define g_voxCap  ( g_layers[ g_activeLayer ].cap  )
+#define g_voxUsed ( g_layers[ g_activeLayer ].used )
+#define g_voxTomb ( g_layers[ g_activeLayer ].tomb )
 
 static unsigned int voxHash( int x, int y, int z )
 {
@@ -257,12 +282,137 @@ static void voxSet( int x, int y, int z, int color, int rs, int rl )
     if( g_voxCap == 0 ) voxInit( 1024 );
     if( ( g_voxUsed + g_voxTomb ) * 10 >= g_voxCap * 7 ) voxGrow();
     voxInsertRaw( x, y, z, color, rs, rl );
+    if( g_activeLayer != FLAT_LAYER ) g_flatDirty = 1;
 }
 
 static void voxErase( int x, int y, int z )
 {
     int i = voxFind( x, y, z );
     if( i >= 0 ) { g_vox[i].used = 2; g_voxUsed--; g_voxTomb++; }
+    if( g_activeLayer != FLAT_LAYER ) g_flatDirty = 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* layer management                                                    */
+/* ------------------------------------------------------------------ */
+
+static void histClear( void );        /* forward: structural edits reset undo */
+static void setStatus( const char *s );
+static int  g_renderDirty;            /* tentative decl; defined with =1 below */
+
+/* Free every layer and return to a single empty layer. */
+static void layersReset( void )
+{
+    int i;
+    for( i = 0; i <= MAX_LAYERS; i++ ) {
+        free( g_layers[i].vox );
+        g_layers[i].vox = NULL;
+        g_layers[i].cap = g_layers[i].used = g_layers[i].tomb = 0;
+        g_layers[i].visible = 1;
+        g_layers[i].name[0] = '\0';
+    }
+    g_numLayers = 1;
+    g_activeLayer = 0;
+    strcpy( g_layers[0].name, "Layer 1" );
+    g_flatDirty = 1;
+}
+
+/* Rebuild the FLAT scratch layer as the union of all visible layers, a higher
+ * layer index winning where cells coincide.  A no-op unless g_flatDirty. */
+static void ensureFlat( void )
+{
+    int save, L, i;
+    if( !g_flatDirty ) return;
+    save = g_activeLayer;
+    g_activeLayer = FLAT_LAYER;
+    voxClear();
+    for( L = 0; L < g_numLayers; L++ ) {
+        if( !g_layers[L].visible ) continue;
+        for( i = 0; i < g_layers[L].cap; i++ ) {
+            Voxel *s = &g_layers[L].vox[i];
+            Voxel *d;
+            if( s->used != 1 ) continue;
+            voxSet( s->x, s->y, s->z, s->color, s->rampStart, s->rampLen );
+            d = voxAt( s->x, s->y, s->z );
+            if( d ) { d->smoothFaces = s->smoothFaces; d->sel = s->sel; }
+        }
+    }
+    g_activeLayer = save;
+    g_flatDirty = 0;
+}
+
+/* Switch the active layer, keeping the selection "live" positionally: the set
+ * of selected cell positions is projected onto whatever the new layer has at
+ * those positions.  This makes cross-layer boolean gestures work -- select a
+ * sphere in one layer, switch to a box layer, and the sphere-shaped overlap is
+ * now selected. */
+static void setActiveLayer( int L )
+{
+    int i, n = 0, k = 0, *buf = NULL;
+    if( L < 0 || L >= g_numLayers || L == g_activeLayer ) return;
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 && g_vox[i].sel ) n++;
+    if( n ) {
+        buf = (int*)malloc( sizeof(int) * 3 * n );
+        for( i = 0; i < g_voxCap; i++ )
+            if( g_vox[i].used == 1 && g_vox[i].sel ) {
+                buf[k*3+0] = g_vox[i].x; buf[k*3+1] = g_vox[i].y;
+                buf[k*3+2] = g_vox[i].z; k++;
+            }
+    }
+    g_activeLayer = L;
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 ) g_vox[i].sel = 0;
+    for( i = 0; i < n; i++ ) {
+        Voxel *v = voxAt( buf[i*3+0], buf[i*3+1], buf[i*3+2] );
+        if( v ) v->sel = 1;
+    }
+    free( buf );
+    g_renderDirty = 1;
+}
+
+static void layerAdd( void )
+{
+    int idx = g_numLayers;
+    if( g_numLayers >= MAX_LAYERS ) { setStatus( "Max layers reached" ); return; }
+    g_layers[idx].vox = NULL;
+    g_layers[idx].cap = g_layers[idx].used = g_layers[idx].tomb = 0;
+    g_layers[idx].visible = 1;
+    sprintf( g_layers[idx].name, "Layer %d", idx + 1 );
+    g_numLayers++;
+    setActiveLayer( idx );      /* projects (clears) selection onto the new layer */
+    histClear();                /* undo can't cross a layer-set change */
+    g_flatDirty = 1; g_renderDirty = 1;
+}
+
+static void layerDelete( int L )
+{
+    int i;
+    if( g_numLayers <= 1 ) { setStatus( "Can't delete the last layer" ); return; }
+    if( L < 0 || L >= g_numLayers ) return;
+    free( g_layers[L].vox );
+    for( i = L; i < g_numLayers - 1; i++ ) g_layers[i] = g_layers[i+1];
+    g_numLayers--;
+    /* zero the vacated top slot so its (now duplicated) pointer isn't freed twice */
+    g_layers[g_numLayers].vox = NULL;
+    g_layers[g_numLayers].cap = g_layers[g_numLayers].used =
+        g_layers[g_numLayers].tomb = 0;
+    if( g_activeLayer >= g_numLayers ) g_activeLayer = g_numLayers - 1;
+    else if( g_activeLayer > L )       g_activeLayer--;
+    histClear();
+    g_flatDirty = 1; g_renderDirty = 1;
+}
+
+/* Swap two layers to reorder the composite z-order (higher index wins). */
+static void layerSwap( int a, int b )
+{
+    Layer t;
+    if( a < 0 || b < 0 || a >= g_numLayers || b >= g_numLayers || a == b ) return;
+    t = g_layers[a]; g_layers[a] = g_layers[b]; g_layers[b] = t;
+    if( g_activeLayer == a )      g_activeLayer = b;
+    else if( g_activeLayer == b ) g_activeLayer = a;
+    histClear();
+    g_flatDirty = 1; g_renderDirty = 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -480,6 +630,7 @@ typedef struct {
     int   x, y, z;
     int   hadBefore, hadAfter;
     int   group;            /* edits sharing a group id undo/redo together */
+    int   layer;            /* which layer this edit applies to */
     Voxel before, after;    /* voxel contents when present */
 } Edit;
 
@@ -504,6 +655,7 @@ static void groupEnd( void )   { g_inGroup = 0; }
 
 static void histPush( Edit e )
 {
+    e.layer = g_activeLayer;   /* edits always target the active layer */
     if( g_histPos == g_histCap ) {
         g_histCap = g_histCap ? g_histCap * 2 : 256;
         g_hist = (Edit*)realloc( g_hist, (size_t)g_histCap * sizeof( Edit ) );
@@ -576,6 +728,8 @@ static void editVoxel( int x, int y, int z, int place,
 
 static void applyUndo( Edit *e )
 {
+    int save = g_activeLayer;
+    if( e->layer >= 0 && e->layer < g_numLayers ) g_activeLayer = e->layer;
     if( e->hadBefore ) {
         Voxel *v;
         voxSet( e->x, e->y, e->z, e->before.color,
@@ -584,9 +738,12 @@ static void applyUndo( Edit *e )
         if( v ) v->smoothFaces = e->before.smoothFaces;
     }
     else               voxErase( e->x, e->y, e->z );
+    g_activeLayer = save;
 }
 static void applyRedo( Edit *e )
 {
+    int save = g_activeLayer;
+    if( e->layer >= 0 && e->layer < g_numLayers ) g_activeLayer = e->layer;
     if( e->hadAfter ) {
         Voxel *v;
         voxSet( e->x, e->y, e->z, e->after.color,
@@ -595,6 +752,7 @@ static void applyRedo( Edit *e )
         if( v ) v->smoothFaces = e->after.smoothFaces;
     }
     else              voxErase( e->x, e->y, e->z );
+    g_activeLayer = save;
 }
 
 static void histUndo( void )
@@ -1189,6 +1347,12 @@ static int rayVoxel( double ox, double oy, double oz,
     double tDX = INF, tDY = INF, tDZ = INF;
     int lastAxis = -1;
     int step;
+    int save = g_activeLayer;
+    int result = 0;
+    /* pick against the composite (all visible layers), not just the active one,
+     * so you can draw onto surfaces belonging to other layers. */
+    ensureFlat();
+    g_activeLayer = FLAT_LAYER;
 
     if( sx != 0 ) {
         double nb = ( sx > 0 ) ? ( x + 1 ) : x;
@@ -1211,7 +1375,8 @@ static int rayVoxel( double ox, double oy, double oz,
             else if( lastAxis == 1 ) *py = y - sy;
             else if( lastAxis == 2 ) *pz = z - sz;
             if( axisOut ) *axisOut = lastAxis;
-            return 1;
+            result = 1;
+            break;
         }
         if( tMaxX < tMaxY && tMaxX < tMaxZ ) {
             x += sx; tMaxX += tDX; lastAxis = 0;
@@ -1221,7 +1386,8 @@ static int rayVoxel( double ox, double oy, double oz,
             z += sz; tMaxZ += tDZ; lastAxis = 2;
         }
     }
-    return 0;
+    g_activeLayer = save;
+    return result;
 }
 
 /* ---- symmetry helpers ---- */
@@ -2845,7 +3011,6 @@ static void rebuildPreviewFaces( void )
     static const int NB[6][3] = { {0,1,0},{0,-1,0},{0,0,1},{0,0,-1},{1,0,0},{-1,0,0} };
     static const float NR[6][3] = { {0,1,0},{0,-1,0},{0,0,1},{0,0,-1},{1,0,0},{-1,0,0} };
     g_pfaceCount = 0;
-    if( g_previewShade == 0 ) return;   /* flat mode: use fallback path */
     for( i = 0; i < g_voxCap; i++ ) {
         int f; Voxel *v;
         if( g_vox[i].used != 1 ) continue;
@@ -2854,7 +3019,11 @@ static void rebuildPreviewFaces( void )
             int nx = v->x+NB[f][0], ny = v->y+NB[f][1], nz = v->z+NB[f][2];
             unsigned char c[4];
             if( voxAt( nx, ny, nz ) ) continue;   /* hidden face */
-            if( g_previewShade == 2 ) {
+            if( g_previewShade == 0 ) {
+                /* flat: unlit base color (still the visible-layer composite) */
+                int fc = voxFlatColor( v );
+                c[0] = g_pal[fc*3+0]; c[1] = g_pal[fc*3+1]; c[2] = g_pal[fc*3+2];
+            } else if( g_previewShade == 2 ) {
                 double cxp = v->x + 0.5 + NR[f][0]*0.5;
                 double cyp = v->y + 0.5 + NR[f][1]*0.5;
                 double czp = v->z + 0.5 + NR[f][2]*0.5;
@@ -2890,9 +3059,13 @@ static void uploadRenderTexture( void )
 static void ensureRender( void )
 {
     if( g_renderDirty ) {
+        int save = g_activeLayer;
+        ensureFlat();                 /* union of visible layers -> FLAT scratch */
+        g_activeLayer = FLAT_LAYER;   /* render & preview see the composite */
         renderOblique();
-        uploadRenderTexture();
         rebuildPreviewFaces();
+        g_activeLayer = save;
+        uploadRenderTexture();
         g_renderDirty = 0;
     }
 }
@@ -2919,7 +3092,7 @@ static void saveSculpture( const char *path )
     FILE *f = fopen( path, "w" );
     int i;
     if( !f ) { setStatus( "Save failed" ); return; }
-    fprintf( f, "OBLIQUEVOXELS 2\n" );
+    fprintf( f, "OBLIQUEVOXELS 3\n" );
     fprintf( f, "PALETTE %s %d\n", g_palName, g_palCount );
     for( i = 0; i < g_palCount; i++ )
         fprintf( f, "C %d %d %d\n", g_pal[i*3+0], g_pal[i*3+1], g_pal[i*3+2] );
@@ -2932,35 +3105,52 @@ static void saveSculpture( const char *path )
     fprintf( f, "RENDER %d %d %d %d %d %d %.4f\n", g_shadingMode, g_voxPx,
              g_frontScrunch, g_topScrunch, g_orient,
              g_smoothRadius, g_smoothAmt );
-    /* one voxel per line: V x y z color rampStart rampLen [smoothFaceMask]
+    fprintf( f, "ACTIVE %d\n", g_activeLayer );
+    /* Layers, bottom to top.  Each "LAYER idx visible name" is followed by that
+     * layer's voxels.  Name runs to end of line (may contain spaces).  Files
+     * with no LAYER line (older formats) load all voxels into a single layer.
+     *
+     * one voxel per line: V x y z color rampStart rampLen [smoothFaceMask]
      * The trailing field is a 6-bit per-face smooth mask (order +Y +Z ... see
      * faceDir6).  In the legacy version-1 format this field was a 0/1/2 whole-
      * voxel smooth flag; loadSculpture migrates those. */
-    for( i = 0; i < g_voxCap; i++ ) {
-        Voxel *v;
-        if( g_vox[i].used != 1 ) continue;
-        v = &g_vox[i];
-        fprintf( f, "V %d %d %d %d %d %d %d\n",
-                 v->x, v->y, v->z, v->color, v->rampStart, v->rampLen,
-                 v->smoothFaces );
+    { int save = g_activeLayer, L, total = 0;
+      for( L = 0; L < g_numLayers; L++ ) {
+          fprintf( f, "LAYER %d %d %s\n", L, g_layers[L].visible,
+                   g_layers[L].name[0] ? g_layers[L].name : "Layer" );
+          g_activeLayer = L;
+          for( i = 0; i < g_voxCap; i++ ) {
+              Voxel *v;
+              if( g_vox[i].used != 1 ) continue;
+              v = &g_vox[i];
+              fprintf( f, "V %d %d %d %d %d %d %d\n",
+                       v->x, v->y, v->z, v->color, v->rampStart, v->rampLen,
+                       v->smoothFaces );
+              total++;
+          }
+      }
+      g_activeLayer = save;
+      fclose( f );
+      { char msg[1400];
+        sprintf( msg, "Saved %d voxels, %d layers -> %s",
+                 total, g_numLayers, path );
+        setStatus( msg ); }
+      return;
     }
-    fclose( f );
-    { char msg[1400]; sprintf( msg, "Saved %d voxels -> %s", g_voxUsed, path );
-      setStatus( msg ); }
 }
 
 static int loadSculpture( const char *path )
 {
     FILE *f = fopen( path, "r" );
     char line[ 256 ];
-    int palIdx = 0, palExpected = 0, ver = 1;
+    int palIdx = 0, palExpected = 0, ver = 1, wantActive = 0;
     if( !f ) { setStatus( "Open failed" ); return 0; }
     if( !fgets( line, sizeof line, f ) ||
         strncmp( line, "OBLIQUEVOXELS", 13 ) != 0 ) {
         fclose( f ); setStatus( "Not an .ovox file" ); return 0;
     }
     sscanf( line, "OBLIQUEVOXELS %d", &ver );
-    voxClear();
+    layersReset();      /* free all layers -> single empty layer 0 (load target) */
     histClear();
     g_numLights = 0;
 
@@ -2982,7 +3172,28 @@ static int loadSculpture( const char *path )
                 palIdx++;
             }
         } else if( line[0] == 'A' ) {
-            float a; if( sscanf( line, "AMBIENT %f", &a ) == 1 ) g_ambient = a;
+            float a;
+            if( sscanf( line, "AMBIENT %f", &a ) == 1 ) g_ambient = a;
+            else sscanf( line, "ACTIVE %d", &wantActive );
+        } else if( line[0] == 'L' && line[1] == 'A' ) {
+            /* LAYER idx visible name...  (name runs to end of line) */
+            int idx = 0, vis = 1, off = 0;
+            if( sscanf( line, "LAYER %d %d %n", &idx, &vis, &off ) >= 2 &&
+                idx >= 0 && idx < MAX_LAYERS ) {
+                char *nm = line + off;
+                int len = (int)strlen( nm );
+                while( len > 0 && ( nm[len-1]=='\n' || nm[len-1]=='\r' ) )
+                    nm[--len] = '\0';
+                if( idx >= g_numLayers ) g_numLayers = idx + 1;
+                g_layers[idx].visible = vis ? 1 : 0;
+                if( len > 0 ) {
+                    strncpy( g_layers[idx].name, nm,
+                             sizeof g_layers[idx].name - 1 );
+                    g_layers[idx].name[ sizeof g_layers[idx].name - 1 ] = '\0';
+                } else if( g_layers[idx].name[0] == '\0' )
+                    sprintf( g_layers[idx].name, "Layer %d", idx + 1 );
+                g_activeLayer = idx;   /* subsequent V lines load into this layer */
+            }
         } else if( line[0] == 'L' && line[1] == ' ' ) {
             float x,y,z,inten,sz=0.0f; int col,en,inf=0,smp=8,got;
             got = sscanf( line, "L %f %f %f %d %f %d %d %f %d",
@@ -3022,13 +3233,18 @@ static int loadSculpture( const char *path )
         /* older files may carry 'S x y z' smoother-cell lines; silently ignored */
     }
     fclose( f );
+    g_activeLayer = clampi( wantActive, 0, g_numLayers - 1 );
+    g_flatDirty = 1;
     if( palIdx > 0 ) g_palCount = palIdx;
     (void)palExpected;
     g_pick = clampi( g_pick, 0, g_palCount-1 );
     g_rampStart = clampi( g_rampStart, 0, g_palCount-1 );
     g_rampEnd = clampi( g_rampEnd, g_rampStart, g_palCount-1 );
     g_renderDirty = 1;
-    { char msg[1400]; sprintf( msg, "Loaded %d voxels from %s", g_voxUsed, path );
+    { char msg[1400]; int L, total = 0;
+      for( L = 0; L < g_numLayers; L++ ) total += g_layers[L].used;
+      sprintf( msg, "Loaded %d voxels, %d layers from %s",
+               total, g_numLayers, path );
       setStatus( msg ); }
     return 1;
 }
@@ -3163,7 +3379,7 @@ static void buildMenuBar( int *quit )
     if( !gui_begin_main_menu_bar() ) return;
     if( gui_begin_menu( "File" ) ) {
         if( gui_menu_item( "New", NULL, 1 ) ) {
-            voxClear(); g_numLights = 0; histClear();
+            layersReset(); g_numLights = 0; histClear();
             g_renderDirty = 1;
             setStatus( "New sculpture" );
         }
@@ -3272,6 +3488,34 @@ static void buildLeftPanel( float top, float h )
 
     if( g_tool == 10 )
         gui_text( "click a voxel to sample its color/ramp" );
+
+    /* layers: edits act on the ACTIVE layer; the render/preview show every
+     * VISIBLE layer unioned (a higher row wins where cells overlap). */
+    gui_separator_text( "Layers" );
+    { int L;
+      /* list top (highest index) first, matching composite z-order */
+      for( L = g_numLayers - 1; L >= 0; L-- ) {
+          gui_push_id( 900 + L );
+          if( gui_checkbox( "##vis", &g_layers[L].visible ) ) {
+              g_flatDirty = 1; g_renderDirty = 1;
+          }
+          gui_same_line();
+          if( gui_selectable( g_layers[L].name[0] ? g_layers[L].name : "(layer)",
+                              L == g_activeLayer ) )
+              setActiveLayer( L );
+          gui_pop_id();
+      }
+      if( gui_button( "+ Add" ) )   layerAdd();
+      gui_same_line();
+      if( gui_button( "Delete" ) )  layerDelete( g_activeLayer );
+      if( gui_button( "Up" ) )      layerSwap( g_activeLayer, g_activeLayer + 1 );
+      gui_same_line();
+      if( gui_button( "Down" ) )    layerSwap( g_activeLayer, g_activeLayer - 1 );
+      gui_input_text( "name", g_layers[g_activeLayer].name,
+                      (int)sizeof g_layers[g_activeLayer].name );
+      sprintf( buf, "active: %s", g_layers[g_activeLayer].name );
+      gui_text( buf );
+    }
 
     /* symmetry planes: mirror every edit across the enabled planes */
     gui_separator_text( "Symmetry" );
@@ -3682,7 +3926,7 @@ int main( int argc, char **argv )
     }
 
     initSoftSamples();
-    voxInit( 1024 );
+    layersReset();
     if( argc > 1 ) {
         if( !loadSculpture( argv[1] ) ) buildDemoScene();
     } else {
@@ -3717,6 +3961,33 @@ int main( int argc, char **argv )
         if( !voxAt(10,0,0) || !voxAt(11,0,0) ) { ok=0; fprintf(stderr,"FAIL move-dst\n"); }
         if( voxAt(10,0,0) && voxAt(10,0,0)->color!=5 ) { ok=0; fprintf(stderr,"FAIL move-color\n"); }
         if( g_moveDX!=0 ) { ok=0; fprintf(stderr,"FAIL move-reset\n"); }
+        /* layers: composite union, higher-layer-wins, visibility, and the
+         * positional selection projection across a layer switch */
+        layersReset();
+        voxSet(0,0,0,3,3,1);                 /* layer 0 */
+        layerAdd();                          /* -> active layer 1 */
+        if( g_numLayers != 2 || g_activeLayer != 1 )
+            { ok=0; fprintf(stderr,"FAIL layer-add\n"); }
+        voxSet(0,0,0,7,7,1);                 /* overlaps layer 0's cell */
+        voxSet(2,0,0,8,8,1);
+        g_flatDirty=1; ensureFlat();
+        { int sv=g_activeLayer; g_activeLayer=FLAT_LAYER;
+          if(!voxAt(0,0,0)||voxAt(0,0,0)->color!=7)
+              {ok=0;fprintf(stderr,"FAIL layer-topwins\n");}
+          if(!voxAt(2,0,0)){ok=0;fprintf(stderr,"FAIL layer-union\n");}
+          g_activeLayer=sv; }
+        g_layers[1].visible=0; g_flatDirty=1; ensureFlat();
+        { int sv=g_activeLayer; g_activeLayer=FLAT_LAYER;
+          if(!voxAt(0,0,0)||voxAt(0,0,0)->color!=3)
+              {ok=0;fprintf(stderr,"FAIL layer-hide\n");}
+          if(voxAt(2,0,0)){ok=0;fprintf(stderr,"FAIL layer-hide2\n");}
+          g_activeLayer=sv; }
+        g_layers[1].visible=1; g_flatDirty=1;
+        { Voxel*a; g_activeLayer=1; a=voxAt(0,0,0); if(a)a->sel=1;
+          setActiveLayer(0);
+          if(!voxAt(0,0,0)||!voxAt(0,0,0)->sel)
+              {ok=0;fprintf(stderr,"FAIL sel-project\n");} }
+        layersReset();
         fprintf( stderr, ok ? "SELFTEST OK\n" : "SELFTEST FAILED\n" );
         gui_shutdown(); SDL_GL_DeleteContext(glctx); SDL_DestroyWindow(window);
         SDL_Quit();

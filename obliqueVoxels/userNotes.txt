@@ -21,9 +21,26 @@ Wow, face smoothing is pretty much perfect now.  The pixel art that is coming ou
 --[DONE] We need an eyedropper mode to sample the color (or ramp) of an existing voxel.
     Done: Eyedropper tool (key 0 / Tools panel / Tools menu) -- click a voxel to load its color and full ramp into the current paint color.
 
---[DEFERRED] It's time for LAYERS, where we can toggle layers on and off, draw voxels in the layers, create and delete layers, etc.  In the case there are voxels in the same spot in two visible layers, the higher-up layer wins.  This is something like a union operation, which should be performed before shading and rendering.
-    Deferred to a follow-up session: layers are the largest change (voxel model, undo, .ovox format, render union all need a layer index) and are best done as their own focused pass rather than bundled with the above.
+--[DONE] It's time for LAYERS, where we can toggle layers on and off, draw voxels in the layers, create and delete layers, etc.  In the case there are voxels in the same spot in two visible layers, the higher-up layer wins.  This is something like a union operation, which should be performed before shading and rendering.
+    Done: Tools panel > "Layers".  Up to 16 independent voxel layers, listed
+    top (highest z-order) first.  Each row has a visibility checkbox and a
+    click-to-activate name; editing always targets the ACTIVE layer while the
+    render/preview/picking all use the COMPOSITE (all VISIBLE layers unioned,
+    higher layer wins on overlap -- exactly the union-before-shading you asked
+    for).  "+ Add" / "Delete" / "Up" / "Down" (reorder z-order) / rename field.
+    Undo is per-layer (each edit remembers its layer); adding/deleting/reordering
+    a layer clears undo (it can't span a layer-set change).  Saved in the .ovox
+    v3 format (LAYER + ACTIVE lines); older v1/v2 files load as a single layer.
+    Implementation note: g_vox/g_voxCap are macros aliasing the active layer's
+    hash, so all the existing edit/render code runs unchanged -- render & pick
+    passes just temporarily point the active layer at a flattened composite slot.
 
---SELECTIONS made in one layer should stay live when switching to another layer, which will allow us to do some boolean operations (select some sphere in one layer, switch to a layer with a box that intersects the sphere... now a sphere-shaped region inside the box is selected, which will allow us to do intersetions and difference operations.  We can do a UNION by copying in one layer, keeping the selection live as we switch layers, and pasting with 0 offset in the other layer.
+--[DONE] SELECTIONS made in one layer should stay live when switching to another layer, which will allow us to do some boolean operations (select some sphere in one layer, switch to a layer with a box that intersects the sphere... now a sphere-shaped region inside the box is selected, which will allow us to do intersetions and difference operations.  We can do a UNION by copying in one layer, keeping the selection live as we switch layers, and pasting with 0 offset in the other layer.
+    Done: the selection is projected POSITIONALLY across a layer switch -- when
+    you activate another layer, the set of selected cell positions is re-applied
+    to whatever that layer has at those cells.  So select a sphere in layer A,
+    switch to a box in layer B, and the sphere-shaped overlap is now selected
+    (intersection); Copy in A, switch to B keeping the live selection, Paste at
+    0 offset does the union; Delete on the projected selection does difference.
 
 

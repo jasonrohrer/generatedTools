@@ -1,8 +1,22 @@
 Nice work!
 
-The new smooth faces implementation is a big improvement!
+Wow, face smoothing is pretty much perfect now.  The pixel art that is coming out of this thing is amazing.
 
 
---There are still a few cases that are buggy...  see the exampleRing file.  Most of the voxels in there have a color ramp, but I've marked a few voxels with pink.  These are "inner corner" voxels, and the smoothing is doing something weird with how the face is rotated, almost like it's finding the wrong visible neighbor face, and thus being "tween" rotated the wrong way.  This results in a discontinuity in the shading.
+--When using Delete mode with various tools, and drawing on a face of existing voxels, the "thickness" setting digs down into the face (good).  However, as you draw the delete region (sphere, line, box, etc), it appears as red translucent cubes (good), but where those cubes intersect voxels, it's impossible to see (the voxels block it).  What about putting little red outlines on any hit voxels, and putting red X marks on their faces, during the live delete drag, to be crystal clear about what will be deleted?
 
---Now that the surface normals and surface patches are "lifted" above the voxels, we no longer need z-sorting to be disabled.  Currently, it's a real jumbled mess when there are lots of surface patches visible, and it's really hard to see what's what, with further-back patches being drawn through closer patches, etc.  If the voxels ever get in the way, we can just turn the voxel view off to look at the surface normal patches.
+--The same is true when dragging a selection marquee that passes through multiple voxels... the ones that are being hit by the live marquee don't take on a special visual appearance.  You don't want to put yellow outlines around them, because that shows what's in the current selection.... how about yellow outlines with X marks on their faces during live select drag?
+
+--We need the ability to MOVE selected voxels without copying and pasting them... just select them and move them around, somehow.  Not sure what happens if we move them to collide with other voxels... maybe there are move sliders for the 3 directions, and a COMMIT MOVE button under them, so we can test the move live and not perma-delete collision voxels as we are testing.
+
+--We need the ability to have planes of symmetry, where all operations (draw, delete, select, smooth, etc) are mirrored across the line.  There should be little checkboxes in the sidebar for these, along with sliders for position.  We can have them in the XY plane, the YZ plane, and the XZ plane.  There should also be checkboxes for +0.5 for each one, b/c sometimes we want them mid-voxel, when we're drawing symmetrical odd-dimensioned items.
+
+--Is there a way for us to type a value in any of the sliders?  Would be nice if there was some way to do this, especially if we want to override the max value provided by the slider.
+
+--We need an eyedropper mode to sample the color (or ramp) of an existing voxel.
+
+--It's time for LAYERS, where we can toggle layers on and off, draw voxels in the layers, create and delete layers, etc.  In the case there are voxels in the same spot in two visible layers, the higher-up layer wins.  This is something like a union operation, which should be performed before shading and rendering.
+
+--SELECTIONS made in one layer should stay live when switching to another layer, which will allow us to do some boolean operations (select some sphere in one layer, switch to a layer with a box that intersects the sphere... now a sphere-shaped region inside the box is selected, which will allow us to do intersetions and difference operations.  We can do a UNION by copying in one layer, keeping the selection live as we switch layers, and pasting with 0 offset in the other layer.
+
+

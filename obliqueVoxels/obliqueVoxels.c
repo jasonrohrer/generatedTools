@@ -548,6 +548,7 @@ static int g_rampEnd   = 15;
 static int g_symOn[3]   = { 0, 0, 0 };   /* mirror across X(0)/Y(1)/Z(2)? */
 static int g_symPos[3]  = { 0, 0, 0 };   /* plane position (integer cell coord) */
 static int g_symHalf[3] = { 0, 0, 0 };   /* +0.5: plane through cell centres    */
+static int g_symShow    = 0;             /* draw translucent symmetry planes?   */
 
 /* ---- pending selection move ---- a live, uncommitted translation of the
  * current selection.  The originals stay put and a green ghost previews the
@@ -978,7 +979,32 @@ static void drawGrid( void )
     glEnd();
 }
 
+/* Per-voxel move offset under symmetry: a selected voxel on the + side of an
+ * enabled mirror plane moves with +offset along that axis, one on the - side
+ * moves the opposite way, and one sitting exactly on a mid-voxel plane doesn't
+ * move along that axis at all -- so a symmetric selection stays symmetric as it
+ * is dragged.  With symmetry off it is just the plain (g_moveDX,DY,DZ). */
+static void selMoveOffset( int x, int y, int z, int *odx, int *ody, int *odz )
+{
+    int coord[3], mv[3], off[3], a;
+    coord[0] = x; coord[1] = y; coord[2] = z;
+    mv[0] = g_moveDX; mv[1] = g_moveDY; mv[2] = g_moveDZ;
+    for( a = 0; a < 3; a++ ) {
+        int s = 1;
+        if( g_symOn[a] ) {
+            int c = coord[a];
+            if( g_symHalf[a] )
+                s = ( c > g_symPos[a] ) ? 1 : ( c < g_symPos[a] ? -1 : 0 );
+            else
+                s = ( c >= g_symPos[a] ) ? 1 : -1;
+        }
+        off[a] = mv[a] * s;
+    }
+    *odx = off[0]; *ody = off[1]; *odz = off[2];
+}
+
 /* forward decls for preview overlays defined later */
+static int  symActive( void );
 static void drawGesturePreview( void );
 static void cbGhostCube( float fx, float fy, float fz );
 static void importWallDrawPreview( void );
@@ -1046,6 +1072,81 @@ static void faceCorners( int x, int y, int z, int nx, int ny, int nz,
                         c[2][0]=fx;   c[2][1]=fy+1; c[2][2]=fz+1;
                         c[3][0]=fx;   c[3][1]=fy;   c[3][2]=fz+1; }
     { int k; for( k=0;k<4;k++ ){ c[k][0]+=px; c[k][1]+=py; c[k][2]+=pz; } }
+}
+
+/* Composite (all visible layers) integer cell bounds; lo/hi are inclusive cell
+ * coords.  Falls back to a small box around the origin when the scene is empty. */
+static void compositeBounds( int lo[3], int hi[3] )
+{
+    int L, i, a, any = 0;
+    for( a = 0; a < 3; a++ ) { lo[a] = 0; hi[a] = 0; }
+    for( L = 0; L < g_numLayers; L++ ) {
+        if( !g_layers[L].visible ) continue;
+        for( i = 0; i < g_layers[L].cap; i++ ) {
+            Voxel *s = &g_layers[L].vox[i];
+            if( s->used != 1 ) continue;
+            if( !any ) {
+                lo[0]=hi[0]=s->x; lo[1]=hi[1]=s->y; lo[2]=hi[2]=s->z; any=1;
+            } else {
+                if( s->x < lo[0] ) lo[0]=s->x;
+                if( s->x > hi[0] ) hi[0]=s->x;
+                if( s->y < lo[1] ) lo[1]=s->y;
+                if( s->y > hi[1] ) hi[1]=s->y;
+                if( s->z < lo[2] ) lo[2]=s->z;
+                if( s->z > hi[2] ) hi[2]=s->z;
+            }
+        }
+    }
+    if( !any ) { for( a=0;a<3;a++ ){ lo[a]=-4; hi[a]=4; } }
+}
+
+/* emit one vertex on the plane perpendicular to axis a (fixed at c), with the
+ * two in-plane axes u,vax set to uv,vv. */
+static void planeVert( int a, float c, int u, float uv, int vax, float vv )
+{
+    float p[3];
+    p[a] = c; p[u] = uv; p[vax] = vv;
+    glVertex3f( p[0], p[1], p[2] );
+}
+
+/* Draw each enabled symmetry plane as a translucent striped sheet, extending 5
+ * voxels beyond the model's extents so it reads as an infinite mirror without
+ * near-plane clipping.  X plane = red, Y = green, Z = blue. */
+static void drawSymmetryPlanes( void )
+{
+    int lo[3], hi[3], a;
+    if( !g_symShow || !symActive() ) return;
+    compositeBounds( lo, hi );
+    glEnable( GL_BLEND );
+    glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+    glDepthMask( GL_FALSE );
+    for( a = 0; a < 3; a++ ) {
+        float c, col[3], t, ulo, uhi, vlo, vhi;
+        int u = (a+1)%3, vax = (a+2)%3;
+        if( !g_symOn[a] ) continue;
+        c = (float)g_symPos[a] + ( g_symHalf[a] ? 0.5f : 0.0f );
+        ulo = (float)( lo[u] - 5 );  uhi = (float)( hi[u] + 6 );
+        vlo = (float)( lo[vax] - 5 ); vhi = (float)( hi[vax] + 6 );
+        col[0]=col[1]=col[2]=0.25f; col[a]=1.0f;
+        glColor4f( col[0], col[1], col[2], 0.13f );
+        glBegin( GL_QUADS );
+        planeVert( a, c, u, ulo, vax, vlo );
+        planeVert( a, c, u, uhi, vax, vlo );
+        planeVert( a, c, u, uhi, vax, vhi );
+        planeVert( a, c, u, ulo, vax, vhi );
+        glEnd();
+        /* stripes: parallel lines every 2 units along the u axis */
+        glColor4f( col[0], col[1], col[2], 0.55f );
+        glLineWidth( 1.0f );
+        glBegin( GL_LINES );
+        for( t = (float)((int)ulo); t <= uhi; t += 2.0f ) {
+            planeVert( a, c, u, t, vax, vlo );
+            planeVert( a, c, u, t, vax, vhi );
+        }
+        glEnd();
+    }
+    glDepthMask( GL_TRUE );
+    glDisable( GL_BLEND );
 }
 
 static void drawScene3D( void )
@@ -1120,6 +1221,8 @@ static void drawScene3D( void )
       }
     }
 
+    drawSymmetryPlanes();
+
     drawGesturePreview();
 
     /* pending selection move: a green translucent ghost of the selection at the
@@ -1131,10 +1234,13 @@ static void drawScene3D( void )
         glColor4f( 0.3f, 1.0f, 0.5f, 0.40f );
         glBegin( GL_QUADS );
         for( i = 0; i < g_voxCap; i++ )
-            if( g_vox[i].used == 1 && g_vox[i].sel )
-                cbGhostCube( (float)( g_vox[i].x + g_moveDX ),
-                             (float)( g_vox[i].y + g_moveDY ),
-                             (float)( g_vox[i].z + g_moveDZ ) );
+            if( g_vox[i].used == 1 && g_vox[i].sel ) {
+                int ox, oy, oz;
+                selMoveOffset( g_vox[i].x, g_vox[i].y, g_vox[i].z, &ox, &oy, &oz );
+                cbGhostCube( (float)( g_vox[i].x + ox ),
+                             (float)( g_vox[i].y + oy ),
+                             (float)( g_vox[i].z + oz ) );
+            }
         glEnd();
         glDepthMask( GL_TRUE );
         glDisable( GL_BLEND );
@@ -1497,13 +1603,28 @@ static void putCell1( int x, int y, int z )
                                  g_rampEnd - g_rampStart + 1 );
 }
 
-/* Place or erase a cell and all of its symmetry images. */
+/* Place or erase a cell and all of its symmetry images.  When drawing, if any
+ * mirror image sits on an already-selected voxel the whole newly-placed group
+ * inherits that selection -- so a voxel drawn where its mirror was selected
+ * (e.g. selection made before its counterpart existed) is auto-selected while
+ * symmetry stays on. */
 static void putCell( int x, int y, int z )
 {
-    int out[8][3], n, i;
+    int out[8][3], n, i, anySel = 0;
     if( !symActive() ) { putCell1( x, y, z ); return; }
     n = symImages( x, y, z, out );
+    if( g_mode == 0 ) {
+        for( i = 0; i < n; i++ ) {
+            Voxel *v = voxAt( out[i][0], out[i][1], out[i][2] );
+            if( v && v->sel ) { anySel = 1; break; }
+        }
+    }
     for( i = 0; i < n; i++ ) putCell1( out[i][0], out[i][1], out[i][2] );
+    if( anySel )
+        for( i = 0; i < n; i++ ) {
+            Voxel *v = voxAt( out[i][0], out[i][1], out[i][2] );
+            if( v ) v->sel = 1;
+        }
 }
 
 /* Select (or, in erase mode, deselect) a cell and all its symmetry images. */
@@ -1632,6 +1753,38 @@ static void regionForEach( int tool,
     hi0 = a[i0] > b[i0] ? a[i0] : b[i0];
     lo1 = a[i1] < b[i1] ? a[i1] : b[i1];
     hi1 = a[i1] > b[i1] ? a[i1] : b[i1];
+
+    if( tool == 11 ) {
+        /* ellipsoid: a full 3D ball in the gesture frame.  The drag rectangle
+         * gives the two in-plane semi-axes; g_thickness gives the third (along
+         * the plane normal); g_sphereDepth sinks it into the surface (dome at
+         * depth 0, centred near thickness/2, crater when erasing). */
+        double cen0 = ( lo0 + hi0 ) * 0.5 + 0.5, cen1 = ( lo1 + hi1 ) * 0.5 + 0.5;
+        double ra = ( hi0 - lo0 ) * 0.5 + 0.5, rb = ( hi1 - lo1 ) * 0.5 + 0.5;
+        double rc = g_thickness * 0.5;
+        double surfA, cenA;
+        int cellA, camin, camax, p0e, p1e;
+        if( rc < 0.5 ) rc = 0.5;
+        surfA = a[A] + ( g_gDir > 0 ? 0.0 : 1.0 );
+        cenA  = surfA + g_gDir * ( rc - g_sphereDepth );
+        camin = (int)floor( cenA - rc - 1.0 );
+        camax = (int)ceil ( cenA + rc + 1.0 );
+        for( cellA = camin; cellA <= camax; cellA++ ) {
+            double dA = ( cellA + 0.5 - cenA ) / rc;
+            if( dA*dA > 1.0 ) continue;
+            c[A] = cellA;
+            for( p0e = lo0; p0e <= hi0; p0e++ )
+              for( p1e = lo1; p1e <= hi1; p1e++ ) {
+                double d0 = ( p0e + 0.5 - cen0 ) / ra;
+                double d1 = ( p1e + 0.5 - cen1 ) / rb;
+                if( d0*d0 + d1*d1 + dA*dA > 1.0 ) continue;
+                c[i0] = p0e; c[i1] = p1e;
+                cb( c[0], c[1], c[2], ud );
+                if( ++count > limit ) return;
+              }
+        }
+        return;
+    }
 
     for( k = g_regLayerLo; k <= g_regLayerHi; k++ ) {
         int layer = a[A] + k * g_gDir;
@@ -2034,6 +2187,37 @@ static void selAll( void )
         if( g_vox[i].used == 1 ) g_vox[i].sel = 1;
 }
 
+/* Enforce the symmetry invariant on the live selection: whatever is selected on
+ * one side of an enabled mirror plane is also selected on the other.  Called
+ * whenever a symmetry plane is toggled, moved, or its +0.5 flips, so the
+ * selection mirrors instantly ("moving a mirror over a drawing").  Add-only: a
+ * selected voxel selects its mirror images where voxels exist; mirror positions
+ * sitting in empty air are simply skipped.  One pass suffices since the mirror
+ * group is closed under composition. */
+static void symmetryChanged( void )
+{
+    int i, n = 0, cap;
+    int (*sc)[3];
+    if( !symActive() ) return;
+    cap = selCount();
+    if( cap == 0 ) return;
+    sc = (int (*)[3])malloc( (size_t)cap * sizeof *sc );
+    for( i = 0; i < g_voxCap; i++ )
+        if( g_vox[i].used == 1 && g_vox[i].sel ) {
+            sc[n][0] = g_vox[i].x; sc[n][1] = g_vox[i].y; sc[n][2] = g_vox[i].z;
+            n++;
+        }
+    for( i = 0; i < n; i++ ) {
+        int out[8][3], m, k;
+        m = symImages( sc[i][0], sc[i][1], sc[i][2], out );
+        for( k = 0; k < m; k++ ) {
+            Voxel *v = voxAt( out[k][0], out[k][1], out[k][2] );
+            if( v ) v->sel = 1;
+        }
+    }
+    free( sc );
+}
+
 /* Invert: select every unselected voxel and drop the current selection. */
 static void selInvert( void )
 {
@@ -2148,10 +2332,10 @@ static void recordVoxelWrite( int x, int y, int z, const Voxel *nd )
 static void selMoveCommit( void )
 {
     int i, n = 0, cap = selCount();
-    int dx = g_moveDX, dy = g_moveDY, dz = g_moveDZ;
     Voxel *src;
     if( cap == 0 ) { setStatus( "Selection empty" ); return; }
-    if( dx == 0 && dy == 0 && dz == 0 ) { setStatus( "Move offset is 0" ); return; }
+    if( g_moveDX == 0 && g_moveDY == 0 && g_moveDZ == 0 )
+        { setStatus( "Move offset is 0" ); return; }
     src = (Voxel*)malloc( (size_t)cap * sizeof( Voxel ) );
     for( i = 0; i < g_voxCap; i++ )
         if( g_vox[i].used == 1 && g_vox[i].sel ) src[n++] = g_vox[i];
@@ -2159,11 +2343,14 @@ static void selMoveCommit( void )
     /* erase all sources first so a move onto another source cell is clean */
     for( i = 0; i < n; i++ )
         recordVoxelWrite( src[i].x, src[i].y, src[i].z, NULL );
-    /* place the moved copies (selected) at their new homes */
+    /* place the moved copies (selected) at their new homes -- each voxel's
+     * offset respects symmetry so a mirrored selection stays mirrored */
     for( i = 0; i < n; i++ ) {
         Voxel nd = src[i];
+        int ox, oy, oz;
+        selMoveOffset( src[i].x, src[i].y, src[i].z, &ox, &oy, &oz );
         nd.sel = 1;
-        recordVoxelWrite( src[i].x+dx, src[i].y+dy, src[i].z+dz, &nd );
+        recordVoxelWrite( src[i].x+ox, src[i].y+oy, src[i].z+oz, &nd );
     }
     groupEnd();
     free( src );
@@ -3774,6 +3961,7 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Scribble select", "K", 1 ) ) g_tool = 5;
         if( gui_menu_item( "Cylinder", "C", 1 ) ) g_tool = 6;
         if( gui_menu_item( "Sphere",   "S", 1 ) ) g_tool = 7;
+        if( gui_menu_item( "Ellipsoid", "O", 1 ) ) g_tool = 11;
         if( gui_menu_item( "Smoother (faces)", "H", 1 ) ) g_tool = 8;
         if( gui_menu_item( "Eyedropper", "I / Alt", 1 ) ) g_tool = 10;
         if( gui_menu_item( "Image wall", "W", g_impPix ? 1 : 0 ) ) {
@@ -3841,7 +4029,8 @@ static void buildLeftPanel( float top, float h )
     gui_radio_int( "Rect",   &g_tool, 2 );
     gui_radio_int( "Box",    &g_tool, 3 ); gui_same_line();
     gui_radio_int( "Cylinder", &g_tool, 6 );
-    gui_radio_int( "Sphere", &g_tool, 7 );
+    gui_radio_int( "Sphere", &g_tool, 7 ); gui_same_line();
+    gui_radio_int( "Ellipsoid", &g_tool, 11 );
     gui_radio_int( "Select", &g_tool, 4 ); gui_same_line();
     gui_radio_int( "Scribble", &g_tool, 5 );
     gui_radio_int( "Smoother (faces)", &g_tool, 8 );
@@ -3852,61 +4041,23 @@ static void buildLeftPanel( float top, float h )
     if( g_tool == 10 )
         gui_text( "click a voxel to sample its color/ramp" );
 
-    /* layers: edits act on the ACTIVE layer; the render/preview show every
-     * VISIBLE layer unioned (a higher row wins where cells overlap). */
-    gui_separator_text( "Layers" );
-    { int L;
-      /* list top (highest index) first, matching composite z-order */
-      for( L = g_numLayers - 1; L >= 0; L-- ) {
-          gui_push_id( 900 + L );
-          if( gui_checkbox( "##vis", &g_layers[L].visible ) ) {
-              g_flatDirty = 1; g_renderDirty = 1;
-          }
-          gui_same_line();
-          if( gui_selectable( g_layers[L].name[0] ? g_layers[L].name : "(layer)",
-                              L == g_activeLayer ) )
-              setActiveLayer( L );
-          gui_pop_id();
-      }
-      if( gui_button( "+ Add" ) )   layerAdd();
-      gui_same_line();
-      if( gui_button( "Delete" ) )  layerDelete( g_activeLayer );
-      if( gui_button( "Up" ) )      layerSwap( g_activeLayer, g_activeLayer + 1 );
-      gui_same_line();
-      if( gui_button( "Down" ) )    layerSwap( g_activeLayer, g_activeLayer - 1 );
-      gui_input_text( "name", g_layers[g_activeLayer].name,
-                      (int)sizeof g_layers[g_activeLayer].name );
-      sprintf( buf, "active: %s", g_layers[g_activeLayer].name );
-      gui_text( buf );
-    }
-
-    /* symmetry planes: mirror every edit across the enabled planes */
-    gui_separator_text( "Symmetry" );
-    { static const char *axLabel[3] = { "mirror X", "mirror Y", "mirror Z" };
-      int a;
-      for( a = 0; a < 3; a++ ) {
-          gui_push_id( 700 + a );
-          gui_checkbox( axLabel[a], &g_symOn[a] );
-          if( g_symOn[a] ) {
-              gui_same_line();
-              gui_checkbox( "+0.5", &g_symHalf[a] );
-              gui_slider_int( "pos", &g_symPos[a], -64, 64 );
-          }
-          gui_pop_id();
-      }
-    }
-
     gui_separator_text( "Mode" );
     gui_radio_int( "Draw",  &g_mode, 0 ); gui_same_line();
     gui_radio_int( "Erase", &g_mode, 1 );
     /* auto-smooth: newly drawn (or erase-exposed) faces become smooth */
-    if( g_tool <= 7 )
+    if( g_tool <= 7 || g_tool == 11 )
         gui_checkbox( "auto-smooth new faces", &g_autoSmooth );
-    if( ( g_tool >= 1 && g_tool <= 3 ) || g_tool == 6 )
+    if( ( g_tool >= 1 && g_tool <= 3 ) || g_tool == 6 || g_tool == 11 )
         gui_slider_int( "thickness", &g_thickness, 1, 32 );
     if( g_tool == 7 ) {
         gui_slider_int( "sphere depth", &g_sphereDepth, 0, 32 );
         gui_text( "drag on a surface to grow the ball" );
+    }
+    if( g_tool == 11 ) {
+        gui_slider_int( "depth (sink)", &g_sphereDepth, 0, 32 );
+        gui_text( "drag a W x H rect on a surface;\n"
+                  "thickness = 3rd axis, depth sinks it\n"
+                  "(dome at 0, crater when erasing)" );
     }
     if( g_tool == 9 ) {
         gui_separator_text( "Image wall" );
@@ -3980,6 +4131,52 @@ static void buildLeftPanel( float top, float h )
         if( gui_button( "Smooth" ) ) selSmooth( 1 );
         gui_same_line();
         if( gui_button( "Unsmooth" ) ) selSmooth( 0 );
+    }
+
+    /* symmetry planes: mirror every edit across the enabled planes */
+    gui_separator_text( "Symmetry" );
+    { static const char *axLabel[3] = { "mirror X", "mirror Y", "mirror Z" };
+      int a;
+      for( a = 0; a < 3; a++ ) {
+          gui_push_id( 700 + a );
+          if( gui_checkbox( axLabel[a], &g_symOn[a] ) ) symmetryChanged();
+          if( g_symOn[a] ) {
+              gui_same_line();
+              if( gui_checkbox( "+0.5", &g_symHalf[a] ) ) symmetryChanged();
+              if( gui_slider_int( "pos", &g_symPos[a], -64, 64 ) ) symmetryChanged();
+          }
+          gui_pop_id();
+      }
+      if( g_symOn[0] || g_symOn[1] || g_symOn[2] )
+          gui_checkbox( "show planes", &g_symShow );
+    }
+
+    /* layers: edits act on the ACTIVE layer; the render/preview show every
+     * VISIBLE layer unioned (a higher row wins where cells overlap). */
+    gui_separator_text( "Layers" );
+    { int L;
+      /* list top (highest index) first, matching composite z-order */
+      for( L = g_numLayers - 1; L >= 0; L-- ) {
+          gui_push_id( 900 + L );
+          if( gui_checkbox( "##vis", &g_layers[L].visible ) ) {
+              g_flatDirty = 1; g_renderDirty = 1;
+          }
+          gui_same_line();
+          if( gui_selectable( g_layers[L].name[0] ? g_layers[L].name : "(layer)",
+                              L == g_activeLayer ) )
+              setActiveLayer( L );
+          gui_pop_id();
+      }
+      if( gui_button( "+ Add" ) )   layerAdd();
+      gui_same_line();
+      if( gui_button( "Delete" ) )  layerDelete( g_activeLayer );
+      if( gui_button( "Up" ) )      layerSwap( g_activeLayer, g_activeLayer + 1 );
+      gui_same_line();
+      if( gui_button( "Down" ) )    layerSwap( g_activeLayer, g_activeLayer - 1 );
+      gui_input_text( "name", g_layers[g_activeLayer].name,
+                      (int)sizeof g_layers[g_activeLayer].name );
+      sprintf( buf, "active: %s", g_layers[g_activeLayer].name );
+      gui_text( buf );
     }
 
     gui_separator_text( "Paint color / ramp" );
@@ -4355,14 +4552,15 @@ static void initCursors( void )
         "    .      .    ", "    ........    ", "                ",
         "                ", "                ", "                ",
         "                " };
-    /* Eyedropper: a bulb at the upper-right, a diagonal barrel, a tip at the
-     * lower-left (the hotspot / sampled pixel). */
+    /* Eyedropper: an empty white circle (halo pass paints black inside and
+     * out).  A symmetric ring avoids the "which end is the tip?" ambiguity of a
+     * pointer -- the sampled pixel is simply the ring's centre (the hotspot). */
     static const char *drop[16] = {
-        "                ", "          ...   ", "         .....  ",
-        "         .....  ", "          ...   ", "        ..      ",
-        "       ..       ", "      ..        ", "     ..         ",
-        "    ..          ", "   ..           ", "  ..            ",
-        " ..             ", "..              ", "                ",
+        "                ", "      ....      ", "    ..    ..    ",
+        "   .        .   ", "  .          .  ", "  .          .  ",
+        " .            . ", " .            . ", " .            . ",
+        "  .          .  ", "  .          .  ", "   .        .   ",
+        "    ..    ..    ", "      ....      ", "                ",
         "                " };
     /* Select: corner brackets + a centre dot (draw); erase variant drops the
      * dot so the mode reads at a glance. */
@@ -4391,7 +4589,7 @@ static void initCursors( void )
     g_curResize = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_SIZEWE );
     g_curPencil = makeCursor( pencil, 7, 6  );
     g_curErase  = makeCursor( erase,  7, 6  );
-    g_curDrop   = makeCursor( drop,   0, 13 );
+    g_curDrop   = makeCursor( drop,   7, 7  );
     g_curSelect = makeCursor( select, 7, 8  );
     g_curSelectE= makeCursor( selectE,7, 8  );
     g_curSmooth = makeCursor( smooth, 7, 7  );
@@ -4411,6 +4609,34 @@ static void freeCursors( void )
 
 /* Choose and apply the mouse cursor for this frame based on where the mouse is
  * and which tool/mode is active. */
+/* Build the live gesture-dimension readout for the 3D view's upper-left corner.
+ * Returns 1 (and fills buf) while a sizing gesture is open: W x H for a
+ * line/rect/marquee, W x H x thickness for a box/cylinder/ellipsoid, and the
+ * radius + diameter for a sphere. */
+static int gestureDimText( char *buf )
+{
+    if( g_sphActive && g_sphR >= 0.5 ) {
+        sprintf( buf, "r %.1f   d %d", g_sphR, (int)( g_sphR * 2.0 + 0.5 ) );
+        return 1;
+    }
+    if( g_gActive && g_gHaveB &&
+        ( g_tool==1 || g_tool==2 || g_tool==3 ||
+          g_tool==4 || g_tool==6 || g_tool==11 ) ) {
+        int A = g_gAxis, i0 = (A+1)%3, i1 = (A+2)%3;
+        int a[3], b[3], w, h;
+        a[0]=g_gAx; a[1]=g_gAy; a[2]=g_gAz;
+        b[0]=g_gBx; b[1]=g_gBy; b[2]=g_gBz;
+        w = abs( a[i0]-b[i0] ) + 1;
+        h = abs( a[i1]-b[i1] ) + 1;
+        if( g_tool==3 || g_tool==6 || g_tool==11 )
+            sprintf( buf, "%d x %d x %d", w, h, g_thickness );
+        else
+            sprintf( buf, "%d x %d", w, h );
+        return 1;
+    }
+    return 0;
+}
+
 static void updateCursor( int mx, int my, int winW, int overSplitter )
 {
     SDL_Cursor *c = g_curArrow;
@@ -4549,6 +4775,37 @@ int main( int argc, char **argv )
               {ok=0;fprintf(stderr,"FAIL smooth-composite\n");}
           g_activeLayer=sv; }
         layersReset();
+        /* symmetric move: with mirror-X (boundary at 0) live and a voxel on each
+         * side both selected, one +offset drags them apart symmetrically. */
+        voxClear();
+        g_symOn[0]=1; g_symOn[1]=g_symOn[2]=0; g_symPos[0]=0; g_symHalf[0]=0;
+        voxSet(1,0,0,5,5,1); voxSet(-2,0,0,5,5,1);   /* -2 is the mirror of 1 */
+        { Voxel*a=voxAt(1,0,0),*b=voxAt(-2,0,0); if(a)a->sel=1; if(b)b->sel=1; }
+        g_moveDX=3; g_moveDY=0; g_moveDZ=0;
+        selMoveCommit();
+        if( !voxAt(4,0,0) ) { ok=0; fprintf(stderr,"FAIL symmove-plus\n"); }
+        if( !voxAt(-5,0,0) ) { ok=0; fprintf(stderr,"FAIL symmove-minus\n"); }
+        if( voxAt(1,0,0) || voxAt(-2,0,0) )
+            { ok=0; fprintf(stderr,"FAIL symmove-src\n"); }
+        /* symmetryChanged mirrors a one-sided selection to the other side */
+        voxClear();
+        g_symOn[0]=1; g_symPos[0]=0; g_symHalf[0]=0;
+        voxSet(3,0,0,5,5,1); voxSet(-4,0,0,5,5,1);   /* -4 is the mirror of 3 */
+        { Voxel*a=voxAt(3,0,0); if(a)a->sel=1; }      /* select only +side */
+        symmetryChanged();
+        if( !voxAt(-4,0,0) || !voxAt(-4,0,0)->sel )
+            { ok=0; fprintf(stderr,"FAIL symchanged-mirror\n"); }
+        g_symOn[0]=0;
+        /* ellipsoid: fills its interior, empties its corners */
+        layersReset();
+        g_symOn[0]=g_symOn[1]=g_symOn[2]=0; g_mode=0;
+        g_gAx=0; g_gAy=0; g_gAz=0; g_gBx=6; g_gBy=0; g_gBz=6;
+        g_gAxis=1; g_gDir=1; g_gHaveB=1; g_thickness=7; g_sphereDepth=3;
+        groupBegin(); regionForEach( 11, cbPut, NULL ); groupEnd();
+        if( !voxAt(3,0,3) ) { ok=0; fprintf(stderr,"FAIL ellipsoid-center\n"); }
+        if( voxAt(0,0,0) )  { ok=0; fprintf(stderr,"FAIL ellipsoid-corner\n"); }
+        g_thickness=1; g_sphereDepth=0; g_gHaveB=0;
+        layersReset();
         fprintf( stderr, ok ? "SELFTEST OK\n" : "SELFTEST FAILED\n" );
         gui_shutdown(); SDL_GL_DeleteContext(glctx); SDL_DestroyWindow(window);
         SDL_Quit();
@@ -4597,6 +4854,7 @@ int main( int argc, char **argv )
                         else if( k == SDLK_k ) g_tool = 5;   /* scribble select */
                         else if( k == SDLK_c ) g_tool = 6;   /* cylinder */
                         else if( k == SDLK_s ) g_tool = 7;   /* sphere */
+                        else if( k == SDLK_o ) g_tool = 11;  /* ellipsoid */
                         else if( k == SDLK_h ) g_tool = 8;   /* smoother */
                         else if( k == SDLK_i ) g_tool = 10;  /* eyedropper */
                         else if( k == SDLK_w ) {             /* image wall */
@@ -4786,6 +5044,12 @@ int main( int argc, char **argv )
           gui_overlay_text( (float)g_viewX + g_viewW * 0.5f,
                             (float)g_viewY + 6.0f, lbl,
                             vn ? 235 : 150, vn ? 235 : 150, vn ? 180 : 150 ); }
+
+        /* live gesture-dimension readout in the 3D view's upper-left corner */
+        { char dim[64];
+          if( gestureDimText( dim ) )
+              gui_overlay_text_left( (float)g_viewX + 10.0f,
+                                     (float)g_viewY + 6.0f, dim, 120, 255, 170 ); }
 
         /* draggable splitter handles at each panel/view boundary (drawn on the
          * foreground; the drag itself is handled in the SDL event loop).

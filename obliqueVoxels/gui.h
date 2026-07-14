@@ -103,6 +103,10 @@ void gui_overlay_rect( float x0, float y0, float x1, float y1,
  * indicator above the 3D viewport. */
 void gui_overlay_text( float cx, float y, const char *s, int r, int g, int b );
 
+/* Like gui_overlay_text but left-aligned: the text's left edge sits at x.  Used
+ * for the live gesture-dimension readout in the 3D view's upper-left corner. */
+void gui_overlay_text_left( float x, float y, const char *s, int r, int g, int b );
+
 /* ---- image (the oblique render texture) ---- */
 void gui_image( unsigned int texId, float w, float h );
 

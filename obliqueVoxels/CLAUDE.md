@@ -105,16 +105,28 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 * Tools use letter shortcuts (Aseprite-ish, since the number keys drive the 3D
   views): **B** Pencil (brush) · **L** Line · **R** Rect · **X** Box · **M**
   Select (marquee) · **K** Scribble (paint a selection over whatever voxels the
-  drag touches; erase mode un-paints) · **C** Cylinder · **S** Sphere · **H**
+  drag touches; erase mode un-paints) · **C** Cylinder · **S** Sphere · **O**
+  Ellipsoid (drag a W×H rect on a surface for a 3D ball; **thickness** = its
+  third axis, **depth (sink)** slider domes/craters it like the sphere) · **H**
   Smoother (paint per-face smoothness over whatever faces the drag touches;
   erase un-smooths) · **I** Eyedropper (click a voxel to load its color/ramp
   into the current paint color) · **W** Image wall (only if a PNG is loaded;
   else armed by File ▸ Import PNG as voxel wall).  Holding **Alt** quick-toggles
   the Eyedropper (releasing Alt restores the previous tool), Aseprite-style.
+* The left (Tools) panel is ordered so the controls that immediately drive the
+  active tool sit right under it: **Tool** ▸ **Mode** (draw/erase plus that
+  tool's inline options: auto-smooth, thickness, sphere/ellipsoid depth) ▸ the
+  current tool's **special area** (Selection/move/extrude, Image wall, Smoother)
+  ▸ **Symmetry** ▸ **Layers** ▸ paint color/ramp ▸ shading ▸ lights.
+* A **live dimension readout** appears in the 3D view's upper-left corner while a
+  sizing gesture is open: `W x H` for a line/rect/select marquee, `W x H x
+  thickness` for a box/cylinder/ellipsoid, and `r … d …` (radius, diameter) for a
+  sphere (`gestureDimText`, drawn via `gui_overlay_text_left`).
 * Number keys switch the 3D view preset: **1** Front · **2** Back · **3** Left ·
   **4** Right · **5** Top · **6** Bottom · **7** Iso; **0** toggles orthographic
   projection.  The mouse cursor changes to reflect the active tool/mode over the
-  3D view — a solid box (draw), a hollow box (erase), an eyedropper, a corner-
+  3D view — a solid box (draw), a hollow box (erase), a hollow-circle eyedropper
+  (its centre is the sampled pixel, so there's no ambiguous "tip"), a corner-
   bracket marquee (with a centre dot in Draw, dotless in Erase), a smoother
   disc — and a horizontal-resize cursor over a panel splitter.  Every cursor is
   a white silhouette with an auto-generated 1px black halo (`makeCursor` promotes
@@ -149,13 +161,25 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   it to the centre of that column of cells, so an odd-width shape stays
   symmetric about its middle voxel.  A smoothed face mirrors to the correct
   opposite face; a cell that maps to itself (centre column) is edited only once.
+  A **show planes** checkbox (shown once any axis is enabled) draws each active
+  plane as a translucent striped sheet — red X / green Y / blue Z — extending 5
+  voxels past the model's extents so it reads as an infinite mirror without
+  near-plane clipping (`drawSymmetryPlanes` / `compositeBounds`).  The live
+  selection is kept symmetric: toggling an axis, moving its **pos**, or flipping
+  **+0.5** re-mirrors the current selection onto existing voxels on the other
+  side (`symmetryChanged`, add-only — air positions are skipped), and drawing a
+  voxel where its mirror is already selected auto-selects it.
 * **Move selection** (Selection panel): **mx/my/mz** sliders translate the
   selection live — a green ghost previews where it lands while the originals
   stay put — and **Commit Move** bakes it as one undo step (overwriting any
   colliding voxels, which undo restores), carrying each voxel's color/ramp and
   per-face smooth mask.  **Reset Move** zeroes the offset without committing.
+  The move **obeys symmetry**: a selected voxel on the + side of an enabled
+  mirror plane moves with the offset and one on the − side moves opposite, so a
+  symmetric selection stays symmetric (`selMoveOffset`); a voxel sitting exactly
+  on a mid-voxel plane doesn't move along that axis.
 * **Live drag hit-marks**: while dragging a delete region (line/rect/box/
-  cylinder/sphere in Erase mode) or a Select marquee, every *existing* voxel the
+  cylinder/ellipsoid/sphere in Erase mode) or a Select marquee, every *existing* voxel the
   region intersects gets a wire outline plus an X across its faces — red for
   delete, yellow for select — so what will be affected reads clearly even where
   the translucent ghost hides it behind solid voxels.
@@ -169,12 +193,18 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   3D view names the current preset view (Front/Right/…/Iso) and the projection
   mode; the view name persists through a pan but disappears once you orbit away
   from the preset (`currentViewName` matches cam yaw/pitch to a preset).
-* **thickness** slider extrudes Line/Rect/Box/Cylinder along the started face's
-  normal, so Box is a solid rectangular prism in one drag.  **Cylinder** is the
+* **thickness** slider extrudes Line/Rect/Box/Cylinder/Ellipsoid along the
+  started face's normal, so Box is a solid rectangular prism in one drag.  **Cylinder** is the
   same drag but its footprint is the inscribed (jaggy) ellipse.
 * **Sphere** drags a perfect ball out of the clicked surface; a **sphere depth**
   slider sinks the ball into the surface (dome at depth≈radius; erase digs a
   crater).  The ball grows with drag distance.
+* **Ellipsoid** is the region-gesture cousin of the sphere: drag a W×H rectangle
+  on a surface (the two in-plane semi-axes), with **thickness** giving the third
+  semi-axis along the plane normal and **depth (sink)** sinking it into the
+  surface for a dome (depth 0), a full ellipsoid, or (in Erase) an ellipsoidal
+  crater.  `regionForEach` handles it as a `tool == 11` branch that tests the
+  full 3D ellipsoid equation in the gesture frame.
 * **Smooth shading is per-FACE.**  Each voxel carries a 6-bit mask
   (`smoothFaces`) of which of its faces are smooth; only *visible* faces
   actually shade, but all six are remembered so a face exposed later by an edit

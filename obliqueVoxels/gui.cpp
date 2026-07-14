@@ -297,6 +297,18 @@ void gui_overlay_text( float cx, float y, const char *s, int r, int g, int b )
     dl->AddText( p, IM_COL32( r, g, b, 255 ), s );
 }
 
+void gui_overlay_text_left( float x, float y, const char *s, int r, int g, int b )
+{
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImVec2 ts = ImGui::CalcTextSize( s );
+    ImVec2 p( x, y );
+    dl->AddRectFilled( ImVec2( p.x - 7.0f, p.y - 3.0f ),
+                       ImVec2( p.x + ts.x + 7.0f, p.y + ts.y + 3.0f ),
+                       IM_COL32( 0, 0, 0, 130 ), 4.0f );
+    dl->AddText( ImVec2( p.x + 1.0f, p.y + 1.0f ), IM_COL32( 0, 0, 0, 190 ), s );
+    dl->AddText( p, IM_COL32( r, g, b, 255 ), s );
+}
+
 /* ---- image ---- */
 void gui_image( unsigned int texId, float w, float h )
 {

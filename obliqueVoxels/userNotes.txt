@@ -1,18 +1,5 @@
 Incredible work!  This is turning into an amazingly powerful tool.  There's never been anything like it before for making pixel art.  It's borderline revolutionary.
 
-Wow, the self-shadow fix worked great!
+--The select cursor looks good, but there need to be some black pixels around the edges of the white pixels, so it can be seen if you mouse over white voxels.  Same with smoother and eraser cursor, which are pure white currently.  The draw cursor can probably be just a little white box (with black border) instead of the pencil that you have now, which is a little wonky.  The erase can be an empty white box (with black borders inside and out).  Eyedropper is a little weird looking.  See if you can take another pass at that.  Draw vs Erase mode for select cursor should change the cursor too (maybe get rid of the little dot in the center in erase mode).
 
-
---Since this is a perfect pixel art program, we actually don't need anything but integer zoom factors in the pixel preview.  It should stop at 1, and go up and down by integer steps.  3 is a fine default (for the reset button), but even the scroll wheel should go up and down by integer steps.
-
---It seems like an orthographic mode (no perspective) would be useful in the 3D view, especially for top, front, etc.   Can the view menu have an orthographic checkbox?  Not sure what will happen when we go to rotate... but let's just try it and see how it feels.
-
---We need keyboard shortcuts for the different views.  Probably the numbers are better for those, and then come up with letters for each of the drawing tools.  Maybe look at what Aseprite uses as letter shortcuts for their drawing tools?  Holding ALT quick-toggles the eyedropper, for example.
-
---Also, can we get a cursor change when we're in eyedropper mode?  Also a cursor change when in erase vs drawing mode vs select mode vs smoother mode.
-
---We should have keyboard shortcuts for the different views.  Since the numbers will be freed up, probably use those.  Also a shortcut to toggle ortho on and off (maybe 0 would be good for that).
-
---There should be a little text display, dead-center above the 3D window, that tells you what view you're in, and whether it's orthographic or not (the name of a fixed view should disappear if you rotate out of that view with the mouse, but not if you pan around).
-
---It would be nice to be able to load a BG pixel image to show behind the pixel render, to give it context.  Whatever image is loaded should be centered behind our pixel preview, with perfect pixel alignment (even if our BG is even dimensions while our pixel preview is odd dimensions), and zoom in and out with it, and we should have a checkbox in the view settings on the right sidebar to toggle it.  The load bg image button can be over there too, and one to clear it.  Can the BG image pixels just be baked right into the ovox file format, so there are no external references?
+--We probably need some x/y position sliders for the background image, and this offset should get saved in the ovox file.

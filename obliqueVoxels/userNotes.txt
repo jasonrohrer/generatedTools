@@ -1,46 +1,8 @@
 Nice work!
 
-Wow, face smoothing is pretty much perfect now.  The pixel art that is coming out of this thing is amazing.
+Layers are working great!
 
 
---[DONE] When using Delete mode with various tools, and drawing on a face of existing voxels, the "thickness" setting digs down into the face (good).  However, as you draw the delete region (sphere, line, box, etc), it appears as red translucent cubes (good), but where those cubes intersect voxels, it's impossible to see (the voxels block it).  What about putting little red outlines on any hit voxels, and putting red X marks on their faces, during the live delete drag, to be crystal clear about what will be deleted?
-    Done: existing voxels a delete drag intersects now get a red wire outline + face X (works for line/rect/box/cylinder/sphere in Erase mode).
+--One strange new issue:  when adding smooth faces with the smoother, the pixel preview doesn't update the smoothness until something else changes (another voxel is added, triggering a redraw, or toggling the layer on and off to trigger a pixel rendering redraw).  The same is now true for the smoothness settings sliders... they no longer live-update the pixel preview as you slide around, not until you edit the voxels to trigger a redraw.  Any changes to the smoothness faces OR the smoothness sliders used to insta-update the rendering.  Probably something in the layer implementation broke this.
 
---[DONE] The same is true when dragging a selection marquee that passes through multiple voxels... the ones that are being hit by the live marquee don't take on a special visual appearance.  You don't want to put yellow outlines around them, because that shows what's in the current selection.... how about yellow outlines with X marks on their faces during live select drag?
-    Done: the live select marquee draws a yellow outline + face X on every voxel it currently covers.
-
---[DONE] We need the ability to MOVE selected voxels without copying and pasting them... just select them and move them around, somehow.  Not sure what happens if we move them to collide with other voxels... maybe there are move sliders for the 3 directions, and a COMMIT MOVE button under them, so we can test the move live and not perma-delete collision voxels as we are testing.
-    Done: Selection panel > "Move selection" has mx/my/mz sliders (live green ghost preview), a "Commit Move" button (one undo step, overwrites collisions which undo restores, preserves color/ramp/smooth), and "Reset Move".
-
---[DONE] We need the ability to have planes of symmetry, where all operations (draw, delete, select, smooth, etc) are mirrored across the line.  There should be little checkboxes in the sidebar for these, along with sliders for position.  We can have them in the XY plane, the YZ plane, and the XZ plane.  There should also be checkboxes for +0.5 for each one, b/c sometimes we want them mid-voxel, when we're drawing symmetrical odd-dimensioned items.
-    Done: Tools panel > "Symmetry" has mirror X/Y/Z checkboxes (combine for up to 8-fold), each with a pos slider and a +0.5 (mid-voxel) checkbox.  Mirrors draw/erase/select/smooth/sphere.  (Not yet saved in .ovox -- they are transient editing aids.)
-
---[DONE] Is there a way for us to type a value in any of the sliders?  Would be nice if there was some way to do this, especially if we want to override the max value provided by the slider.
-    Yes -- Ctrl+click any slider to type an exact value (typed values may exceed the slider's max).  Added a hint line in the Tools panel.
-
---[DONE] We need an eyedropper mode to sample the color (or ramp) of an existing voxel.
-    Done: Eyedropper tool (key 0 / Tools panel / Tools menu) -- click a voxel to load its color and full ramp into the current paint color.
-
---[DONE] It's time for LAYERS, where we can toggle layers on and off, draw voxels in the layers, create and delete layers, etc.  In the case there are voxels in the same spot in two visible layers, the higher-up layer wins.  This is something like a union operation, which should be performed before shading and rendering.
-    Done: Tools panel > "Layers".  Up to 16 independent voxel layers, listed
-    top (highest z-order) first.  Each row has a visibility checkbox and a
-    click-to-activate name; editing always targets the ACTIVE layer while the
-    render/preview/picking all use the COMPOSITE (all VISIBLE layers unioned,
-    higher layer wins on overlap -- exactly the union-before-shading you asked
-    for).  "+ Add" / "Delete" / "Up" / "Down" (reorder z-order) / rename field.
-    Undo is per-layer (each edit remembers its layer); adding/deleting/reordering
-    a layer clears undo (it can't span a layer-set change).  Saved in the .ovox
-    v3 format (LAYER + ACTIVE lines); older v1/v2 files load as a single layer.
-    Implementation note: g_vox/g_voxCap are macros aliasing the active layer's
-    hash, so all the existing edit/render code runs unchanged -- render & pick
-    passes just temporarily point the active layer at a flattened composite slot.
-
---[DONE] SELECTIONS made in one layer should stay live when switching to another layer, which will allow us to do some boolean operations (select some sphere in one layer, switch to a layer with a box that intersects the sphere... now a sphere-shaped region inside the box is selected, which will allow us to do intersetions and difference operations.  We can do a UNION by copying in one layer, keeping the selection live as we switch layers, and pasting with 0 offset in the other layer.
-    Done: the selection is projected POSITIONALLY across a layer switch -- when
-    you activate another layer, the set of selected cell positions is re-applied
-    to whatever that layer has at those cells.  So select a sphere in layer A,
-    switch to a box in layer B, and the sphere-shaped overlap is now selected
-    (intersection); Copy in A, switch to B keeping the live selection, Paste at
-    0 offset does the union; Delete on the projected selection does difference.
-
-
+--Long-standing issue.... the pencil tool, if you drag instead of clicking, rotates the model.  We already have right click to rotate, so left-clicking with the pencil tool shouldn't rotate too (redundant), and also, we should be able to just drag around and scribble with the pencil too, and add squares to any face hit.  Scribbling in the same spot, while looking down, should build a tower up.  Almost like the pencil tool is gobbing more and more bits of clay in whatever new spot (voxel face or floor face) that you mouse back over.  The other drawing tools allow dragging, but of course you drag a preview and let go to actually place the voxels.  The pencil tool should behave like the Scribble select tool or like the Smoother face tool, but instead of selecting voxels or picking faces to smooth, it should lay down blocks.  It might be too slow to update the pixel rendering as you drag around, so maybe you can drag a preview of little translucent blocks, and then when you let go, they appear all at once (just like the sphere or box).  If that's the case, then probably just add translucent preview blocks stuck only to the closest real (not preview) voxel face hit by the mouse.  In that case, piling up preview blocks on top of each other would be too confusing.  So the pencil drag would "paint" hit surfaces with new preview blocks, and then when you stop dragging, they become real voxels.

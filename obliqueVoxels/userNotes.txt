@@ -1,10 +1,15 @@
-(Add new testing notes below.)
+Great work!
 
---- addressed 2026-07-14 ---
-- Cursors reworked: every white cursor now gets an auto-generated 1px black
-  halo so it reads over white voxels (select, smoother, eraser were pure white).
-  Draw is now a small solid white box, Erase a hollow white box with black
-  borders inside and out, eyedropper redrawn (bulb / barrel / tip), and the
-  Select cursor drops its centre dot in Erase mode.
-- Background image now has BG x / BG y sliders (whole render-pixel offset) plus a
-  Center BG reset; the offset is saved in the .ovox BGIMAGE line.
+
+--Probably just make the eyedropper a little empty white circle with black borders inside and out.  The problem with any kind of "pointer" tool is that it's ambiguous which end is the tip.
+
+--Mode area should be under the Tool area, followed by any special area for the current tool (like the Selection area, including move and extrude, or the Image Wall special area), followed by the Symmetry area, and then the Layer, color, and lighting areas under that.  Basically, things that immediately affect the tool should be under the Tool area.  Then, as you switch tools, you can see those areas change.
+
+--We need some visualization of the symmetry planes... maybe some kind of translucent planes with stripes?  Maybe sized to go like... 5 voxels beyond the furthest extents of our current model, so we don't have weird camera plane clipping issues.  And there should be a Visible check box in the Symmetry area to turn this visualization on and off.
+
+--Move Selection should obey the symmetry.  If the selections are present on both sides of the symmetry line, they should move in opposite directions.  Sliding Move in the positive direction should move the selection on the +x side of the X symmetry plane +x, and move the one on the other side -x.  And we should ENSURE that selections always exist on both sides, whenever symmetry is on, b/c if we draw a selection with symmetry OFF, and then turn it on, the selection should be mirrored to the other side instantly.  And if we move the line of symmetry while symmetrical selections are live, both sides of the selection should update to maintian symmetrical consistency, duplicating adding new voxels to the selection as necessary, almost like moving a mirror over a drawing.  If this results in a selected voxel being out in the "air" on one side, just ignore that, but if a voxel is ever placed there, it should be auto-selected (as long as the symmetry is still on).  Whatever is selected on that side must be selected on this side.
+
+--We need an Ellipsoid tool.  The easiest way to do this would be like the Cylinder, with a thickness, so you draw a width and height on the surface, and an ellipsoid with the specified thickness is drawn in that rectangular area.  But like a sphere, we also need a depth slider, so we can make ellipsoid domes, or carve partial ellipsoid craters in surfaces.
+
+--In the upper left corner of the 3D area, we should see a live W x H display when dragging a box, rect, cylinder, ellipsoid line, or selection marqee.  We should also see the radius and diameter of a sphere up there.
+

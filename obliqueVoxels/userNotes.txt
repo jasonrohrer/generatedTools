@@ -1,1 +1,6 @@
-(Add new testing notes below.)
+Amazing!
+
+
+One last thing, for now:
+
+--In Ortho view mode, I'm noticing that paralle lines diverge a small bit as they go back away from the camera.  I've confirmed that this is not just an illusion.  Hopefully it can be fixed.

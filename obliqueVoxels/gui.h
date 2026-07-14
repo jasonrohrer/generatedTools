@@ -97,14 +97,24 @@ int  gui_selectable( const char *label, int selected );
 void gui_overlay_rect( float x0, float y0, float x1, float y1,
                        int r, int g, int b, int a );
 
+/* Draw a short text label centred horizontally on cx, with its top at y, on the
+ * foreground draw list (above every window).  Painted with a translucent
+ * backdrop + drop shadow so it reads over the 3D view.  Used for the view-name
+ * indicator above the 3D viewport. */
+void gui_overlay_text( float cx, float y, const char *s, int r, int g, int b );
+
 /* ---- image (the oblique render texture) ---- */
 void gui_image( unsigned int texId, float w, float h );
 
 /* Pan/zoom image canvas filling the available content region.  Draws texId
  * centred + (*panX,*panY) screen-px offset, scaled by *zoom.  Scroll wheel
- * over the canvas zooms about the cursor; left-drag pans.  Updates the three
- * state values in place. */
+ * over the canvas zooms about the cursor (in INTEGER steps, min 1x, for crisp
+ * pixel art); left-drag pans.  Updates the three state values in place.  If
+ * bgTex is non-zero and showBg is set, it is drawn first (behind texId),
+ * centred on the same point but snapped to a whole-pixel offset so its pixel
+ * grid aligns with the render even when their dimensions differ in parity. */
 void gui_pan_zoom_image( unsigned int texId, int imgW, int imgH,
+                         unsigned int bgTex, int bgW, int bgH, int showBg,
                          float *zoom, float *panX, float *panY );
 
 /* ---- popups / modals ---- */

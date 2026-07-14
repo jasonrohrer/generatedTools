@@ -528,6 +528,8 @@ static int g_tool = 0;             /* 0 pencil,1 line,2 rect,3 box,4 select,
                                     * 8 smoother (per-face), 9 image wall,
                                     * 10 eyedropper */
 static int g_mode = 0;             /* 0 draw, 1 erase */
+static int g_altEyedrop = 0;       /* ALT held: temporarily forced eyedropper */
+static int g_savedTool = 0;        /* tool to restore when ALT is released */
 static int g_autoSmooth = 0;       /* if set, drawing tools mark every face of
                                     * placed voxels smooth (and erasing marks the
                                     * newly-exposed cavity faces smooth). */
@@ -579,10 +581,18 @@ static int g_voxPx        = 6;     /* voxel pixel size (horizontal & base) */
 static int g_frontScrunch = 1;     /* 1..3 : front face height = voxPx/scrunch */
 static int g_topScrunch   = 1;     /* 1..3 : top face height   = voxPx/scrunch */
 static int g_orient       = 0;     /* 0..3 : 90-degree yaw of the oblique view */
-static float g_prevZoom   = 3.0f;  /* preview magnification (wheel + slider) */
+static float g_prevZoom   = 3.0f;  /* preview magnification (integer, wheel+slider) */
 static float g_prevPanX   = 0.0f;  /* preview pan offset, screen px from centre */
 static float g_prevPanY   = 0.0f;
 static int g_selLight     = -1;    /* selected light in the panel (-1 none) */
+static int g_ortho        = 0;     /* 3D view: 0 perspective, 1 orthographic */
+
+/* Optional background image shown behind the pixel-render preview, for context.
+ * Stored as raw RGBA so it can be baked into the .ovox file (base64). */
+static unsigned char *g_bgPix = NULL;   /* g_bgW*g_bgH*4 RGBA, or NULL */
+static int    g_bgW = 0, g_bgH = 0;
+static GLuint g_bgTex = 0;
+static int    g_bgShow = 1;             /* view toggle: draw the BG image */
 
 /* the baked oblique render */
 static unsigned char *g_img = NULL;
@@ -837,12 +847,30 @@ static void camEye( double *ex, double *ey, double *ez )
     *ez = cam_tz + cam_dist * cp * sy;
 }
 
+/* Load the 3D-view projection into the current matrix (assumes GL_PROJECTION is
+ * active and identity-loaded).  Orthographic mode builds an ortho box sized so
+ * the on-screen scale at the camera target matches the 42-degree perspective
+ * view, so toggling ortho doesn't jump the zoom. */
+static void applyProjection( int w, int h )
+{
+    double aspect = h ? (double)w / (double)h : 1.0;
+    if( g_ortho ) {
+        double halfH = cam_dist * tan( 21.0 * M_PI / 180.0 );
+        double halfW;
+        if( halfH < 1e-3 ) halfH = 1e-3;
+        halfW = halfH * aspect;
+        glOrtho( -halfW, halfW, -halfH, halfH, -2000.0, 2000.0 );
+    } else {
+        gluPerspective( 42.0, aspect, 0.1, 2000.0 );
+    }
+}
+
 static void setupCamera( int w, int h )
 {
     double ex, ey, ez;
     glMatrixMode( GL_PROJECTION );
     glLoadIdentity();
-    gluPerspective( 42.0, h ? (double)w / (double)h : 1.0, 0.1, 2000.0 );
+    applyProjection( w, h );
     glMatrixMode( GL_MODELVIEW );
     glLoadIdentity();
     camEye( &ex, &ey, &ez );
@@ -1274,8 +1302,7 @@ static void mouseRay( int mx, int my,
      * current GL state: this function runs during event handling, when the
      * live GL matrices belong to ImGui, not the voxel view. */
     glMatrixMode( GL_PROJECTION ); glPushMatrix(); glLoadIdentity();
-    gluPerspective( 42.0, g_viewH ? (double)g_viewW / (double)g_viewH : 1.0,
-                    0.1, 2000.0 );
+    applyProjection( g_viewW, g_viewH );
     glGetDoublev( GL_PROJECTION_MATRIX, proj );
     glPopMatrix();
     glMatrixMode( GL_MODELVIEW ); glPushMatrix(); glLoadIdentity();
@@ -1311,8 +1338,7 @@ static int worldToScreen( double wx, double wy, double wz,
     double   ex, ey, ez;
 
     glMatrixMode( GL_PROJECTION ); glPushMatrix(); glLoadIdentity();
-    gluPerspective( 42.0, g_viewH ? (double)g_viewW / (double)g_viewH : 1.0,
-                    0.1, 2000.0 );
+    applyProjection( g_viewW, g_viewH );
     glGetDoublev( GL_PROJECTION_MATRIX, proj );
     glPopMatrix();
     glMatrixMode( GL_MODELVIEW ); glPushMatrix(); glLoadIdentity();
@@ -3208,6 +3234,50 @@ static void uploadRenderTexture( void )
     glBindTexture( GL_TEXTURE_2D, 0 );
 }
 
+/* ------------------------------------------------------------------ */
+/* background image (context behind the pixel preview)                 */
+/* ------------------------------------------------------------------ */
+
+static void bgUpload( void )
+{
+    if( !g_bgPix || g_bgW <= 0 || g_bgH <= 0 ) return;
+    if( g_bgTex == 0 ) glGenTextures( 1, &g_bgTex );
+    glBindTexture( GL_TEXTURE_2D, g_bgTex );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+    glPixelStorei( GL_UNPACK_ALIGNMENT, 1 );
+    glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, g_bgW, g_bgH, 0,
+                  GL_RGBA, GL_UNSIGNED_BYTE, g_bgPix );
+    glBindTexture( GL_TEXTURE_2D, 0 );
+}
+
+static void bgClear( void )
+{
+    if( g_bgPix ) { stbi_image_free( g_bgPix ); g_bgPix = NULL; }
+    if( g_bgTex ) { glDeleteTextures( 1, &g_bgTex ); g_bgTex = 0; }
+    g_bgW = g_bgH = 0;
+}
+
+/* Load a PNG as the preview background image (kept as raw RGBA for baking). */
+static int bgLoadPNG( const char *path )
+{
+    int w = 0, h = 0, comp = 0;
+    unsigned char *data = stbi_load( path, &w, &h, &comp, 4 );
+    if( !data ) { setStatus( "BG image load failed" ); return 0; }
+    if( w < 1 || h < 1 || w > 2048 || h > 2048 ) {
+        stbi_image_free( data );
+        setStatus( "BG image must be 1..2048 px on a side" );
+        return 0;
+    }
+    bgClear();
+    g_bgPix = data; g_bgW = w; g_bgH = h; g_bgShow = 1;
+    bgUpload();
+    { char m[128]; sprintf( m, "BG image %dx%d loaded", w, h ); setStatus( m ); }
+    return 1;
+}
+
 static void ensureRender( void )
 {
     if( g_renderDirty ) {
@@ -3239,6 +3309,74 @@ static void savePNG( const char *path )
 /* bespoke .ovox save / load                                           */
 /* ------------------------------------------------------------------ */
 
+/* ---- base64 (for baking the background image into the .ovox text file) ---- */
+
+static const char B64ENC[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static int b64val( int c )
+{
+    if( c >= 'A' && c <= 'Z' ) return c - 'A';
+    if( c >= 'a' && c <= 'z' ) return c - 'a' + 26;
+    if( c >= '0' && c <= '9' ) return c - '0' + 52;
+    if( c == '+' ) return 62;
+    if( c == '/' ) return 63;
+    return -1;      /* padding, whitespace, anything else: skip */
+}
+
+static void b64enc3( const unsigned char *in, int n, char *out )
+{
+    unsigned long v = ( (unsigned long)in[0] ) << 16;
+    if( n > 1 ) v |= ( (unsigned long)in[1] ) << 8;
+    if( n > 2 ) v |= (unsigned long)in[2];
+    out[0] = B64ENC[ ( v >> 18 ) & 63 ];
+    out[1] = B64ENC[ ( v >> 12 ) & 63 ];
+    out[2] = ( n > 1 ) ? B64ENC[ ( v >> 6 ) & 63 ] : '=';
+    out[3] = ( n > 2 ) ? B64ENC[ v & 63 ] : '=';
+}
+
+/* Emit raw bytes as wrapped "BGDATA <base64>" lines (54 bytes -> 72 chars). */
+static void b64WriteFile( FILE *f, const unsigned char *data, long len )
+{
+    long i; char line[ 80 ]; int col = 0;
+    for( i = 0; i < len; i += 3 ) {
+        int n = (int)( len - i ); if( n > 3 ) n = 3;
+        b64enc3( data + i, n, line + col ); col += 4;
+        if( col >= 72 || i + 3 >= len ) {
+            line[ col ] = '\0';
+            fprintf( f, "BGDATA %s\n", line );
+            col = 0;
+        }
+    }
+}
+
+/* Decode a base64 string into a freshly malloc'd byte buffer. */
+static unsigned char *b64Decode( const char *s, long *outLen )
+{
+    long cap = (long)strlen( s ) / 4 * 3 + 4, n = 0;
+    unsigned char *out = (unsigned char*)malloc( (size_t)cap );
+    int quad[4], qn = 0; const char *p;
+    if( !out ) { *outLen = 0; return NULL; }
+    for( p = s; *p; p++ ) {
+        int v = b64val( (unsigned char)*p );
+        if( v < 0 ) continue;
+        quad[ qn++ ] = v;
+        if( qn == 4 ) {
+            out[n++] = (unsigned char)( ( quad[0] << 2 ) | ( quad[1] >> 4 ) );
+            out[n++] = (unsigned char)( ( ( quad[1] & 15 ) << 4 ) | ( quad[2] >> 2 ) );
+            out[n++] = (unsigned char)( ( ( quad[2] & 3 ) << 6 ) | quad[3] );
+            qn = 0;
+        }
+    }
+    if( qn >= 2 ) {
+        out[n++] = (unsigned char)( ( quad[0] << 2 ) | ( quad[1] >> 4 ) );
+        if( qn == 3 )
+            out[n++] = (unsigned char)( ( ( quad[1] & 15 ) << 4 ) | ( quad[2] >> 2 ) );
+    }
+    *outLen = n;
+    return out;
+}
+
 static void saveSculpture( const char *path )
 {
     FILE *f = fopen( path, "w" );
@@ -3258,6 +3396,12 @@ static void saveSculpture( const char *path )
              g_frontScrunch, g_topScrunch, g_orient,
              g_smoothRadius, g_smoothAmt );
     fprintf( f, "ACTIVE %d\n", g_activeLayer );
+    /* Optional preview background image, baked in as base64 RGBA so the .ovox
+     * stays self-contained (no external file reference). */
+    if( g_bgPix && g_bgW > 0 && g_bgH > 0 ) {
+        fprintf( f, "BGIMAGE %d %d\n", g_bgW, g_bgH );
+        b64WriteFile( f, g_bgPix, (long)g_bgW * g_bgH * 4 );
+    }
     /* Layers, bottom to top.  Each "LAYER idx visible name" is followed by that
      * layer's voxels.  Name runs to end of line (may contain spaces).  Files
      * with no LAYER line (older formats) load all voxels into a single layer.
@@ -3296,6 +3440,8 @@ static int loadSculpture( const char *path )
     FILE *f = fopen( path, "r" );
     char line[ 256 ];
     int palIdx = 0, palExpected = 0, ver = 1, wantActive = 0;
+    char *bgB64 = NULL; long bgB64Len = 0, bgB64Cap = 0;
+    int bgIW = 0, bgIH = 0, haveBg = 0;
     if( !f ) { setStatus( "Open failed" ); return 0; }
     if( !fgets( line, sizeof line, f ) ||
         strncmp( line, "OBLIQUEVOXELS", 13 ) != 0 ) {
@@ -3304,6 +3450,7 @@ static int loadSculpture( const char *path )
     sscanf( line, "OBLIQUEVOXELS %d", &ver );
     layersReset();      /* free all layers -> single empty layer 0 (load target) */
     histClear();
+    bgClear();          /* drop any prior preview background image */
     g_numLights = 0;
 
     while( fgets( line, sizeof line, f ) ) {
@@ -3327,6 +3474,23 @@ static int loadSculpture( const char *path )
             float a;
             if( sscanf( line, "AMBIENT %f", &a ) == 1 ) g_ambient = a;
             else sscanf( line, "ACTIVE %d", &wantActive );
+        } else if( line[0] == 'B' && line[1] == 'G' ) {
+            if( line[2] == 'I' ) {                 /* BGIMAGE w h */
+                if( sscanf( line, "BGIMAGE %d %d", &bgIW, &bgIH ) == 2 )
+                    haveBg = 1;
+            } else if( line[2] == 'D' ) {          /* BGDATA <base64> */
+                char *d = line + 7;                /* skip "BGDATA " */
+                int len = (int)strlen( d );
+                while( len > 0 && ( d[len-1]=='\n' || d[len-1]=='\r' ||
+                                    d[len-1]==' ' ) ) d[--len] = '\0';
+                if( bgB64Len + len + 1 > bgB64Cap ) {
+                    long nc = bgB64Cap ? bgB64Cap * 2 : 8192;
+                    while( nc < bgB64Len + len + 1 ) nc *= 2;
+                    bgB64 = (char*)realloc( bgB64, (size_t)nc ); bgB64Cap = nc;
+                }
+                if( bgB64 ) { memcpy( bgB64 + bgB64Len, d, (size_t)len );
+                              bgB64Len += len; bgB64[bgB64Len] = '\0'; }
+            }
         } else if( line[0] == 'L' && line[1] == 'A' ) {
             /* LAYER idx visible name...  (name runs to end of line) */
             int idx = 0, vis = 1, off = 0;
@@ -3385,6 +3549,17 @@ static int loadSculpture( const char *path )
         /* older files may carry 'S x y z' smoother-cell lines; silently ignored */
     }
     fclose( f );
+    /* materialise the baked background image, if any */
+    if( haveBg && bgIW > 0 && bgIH > 0 && bgB64 ) {
+        long need = (long)bgIW * bgIH * 4, got = 0;
+        unsigned char *px = b64Decode( bgB64, &got );
+        if( px && got >= need ) {
+            bgClear();
+            g_bgPix = px; g_bgW = bgIW; g_bgH = bgIH; g_bgShow = 1;
+            bgUpload();
+        } else if( px ) free( px );
+    }
+    if( bgB64 ) free( bgB64 );
     g_activeLayer = clampi( wantActive, 0, g_numLayers - 1 );
     g_flatDirty = 1;
     if( palIdx > 0 ) g_palCount = palIdx;
@@ -3482,6 +3657,35 @@ static void setView( float yaw, float pitch )
     cam_yaw = yaw; cam_pitch = pitch;
 }
 
+/* True if two angles are within a small tolerance modulo 2*pi. */
+static int angClose( float a, float b )
+{
+    double d = (double)a - (double)b;
+    while( d >  M_PI ) d -= 2.0 * M_PI;
+    while( d < -M_PI ) d += 2.0 * M_PI;
+    return fabs( d ) < 0.02;
+}
+
+/* Name of the fixed 3D-view preset the camera currently matches (by yaw/pitch),
+ * or NULL when the camera has been freely rotated away from any preset.  Panning
+ * leaves yaw/pitch untouched, so the name persists through a pan but vanishes on
+ * an orbit -- exactly the behaviour the tester asked for. */
+static const char *currentViewName( void )
+{
+    if( angClose( cam_pitch, 0.0f ) ) {
+        if( angClose( cam_yaw, -1.5708f ) ) return "Front";
+        if( angClose( cam_yaw,  1.5708f ) ) return "Back";
+        if( angClose( cam_yaw,  3.1416f ) ) return "Left";
+        if( angClose( cam_yaw,  0.0f    ) ) return "Right";
+    }
+    if( angClose( cam_yaw, -1.5708f ) ) {
+        if( angClose( cam_pitch,  1.5620f ) ) return "Top";
+        if( angClose( cam_pitch, -1.5620f ) ) return "Bottom";
+    }
+    if( angClose( cam_yaw, 0.9f ) && angClose( cam_pitch, 0.6f ) ) return "Iso";
+    return NULL;
+}
+
 /* ------------------------------------------------------------------ */
 /* UI panels                                                           */
 /* ------------------------------------------------------------------ */
@@ -3520,6 +3724,7 @@ static void openFileDialog( const char *id )
     if( g_fbDir[0] == 0 ) fs_cwd( g_fbDir, sizeof g_fbDir );
     if( strcmp( id, "PNG" ) == 0 )          { strcpy( g_fbExt, ".png" );  setFbFile( "render.png" ); }
     else if( strcmp( id, "ImportPNG" ) == 0 ) { strcpy( g_fbExt, ".png" ); setFbFile( "" ); }
+    else if( strcmp( id, "BGImage" ) == 0 ) { strcpy( g_fbExt, ".png" ); setFbFile( "" ); }
     else if( strcmp( id, "Palette" ) == 0 ) { strcpy( g_fbExt, ".gpl" );  setFbFile( "" ); }
     else if( strcmp( id, "ImportLight" ) == 0 ) { strcpy( g_fbExt, ".ovox" ); setFbFile( "" ); }
     else                                    { strcpy( g_fbExt, ".ovox" ); setFbFile( "sculpture.ovox" ); }
@@ -3531,7 +3736,7 @@ static void buildMenuBar( int *quit )
     if( !gui_begin_main_menu_bar() ) return;
     if( gui_begin_menu( "File" ) ) {
         if( gui_menu_item( "New", NULL, 1 ) ) {
-            layersReset(); g_numLights = 0; histClear();
+            layersReset(); g_numLights = 0; histClear(); bgClear();
             g_renderDirty = 1;
             setStatus( "New sculpture" );
         }
@@ -3553,20 +3758,20 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Undo", "Ctrl+Z", g_histPos > 0 ) ) histUndo();
         if( gui_menu_item( "Redo", "Ctrl+Y", g_histPos < g_histLen ) ) histRedo();
         gui_separator();
-        if( gui_menu_item( "Draw mode",  "B", 1 ) ) g_mode = 0;
+        if( gui_menu_item( "Draw mode",  "D", 1 ) ) g_mode = 0;
         if( gui_menu_item( "Erase mode", "E", 1 ) ) g_mode = 1;
         gui_separator();
-        if( gui_menu_item( "Pencil", "1", 1 ) ) g_tool = 0;
-        if( gui_menu_item( "Line",   "2", 1 ) ) g_tool = 1;
-        if( gui_menu_item( "Rect",   "3", 1 ) ) g_tool = 2;
-        if( gui_menu_item( "Box",    "4", 1 ) ) g_tool = 3;
-        if( gui_menu_item( "Select", "5", 1 ) ) g_tool = 4;
-        if( gui_menu_item( "Scribble select", "6", 1 ) ) g_tool = 5;
-        if( gui_menu_item( "Cylinder", "7", 1 ) ) g_tool = 6;
-        if( gui_menu_item( "Sphere",   "8", 1 ) ) g_tool = 7;
-        if( gui_menu_item( "Smoother (faces)", "9", 1 ) ) g_tool = 8;
-        if( gui_menu_item( "Eyedropper", "0", 1 ) ) g_tool = 10;
-        if( gui_menu_item( "Image wall", NULL, g_impPix ? 1 : 0 ) ) {
+        if( gui_menu_item( "Pencil", "B", 1 ) ) g_tool = 0;
+        if( gui_menu_item( "Line",   "L", 1 ) ) g_tool = 1;
+        if( gui_menu_item( "Rect",   "R", 1 ) ) g_tool = 2;
+        if( gui_menu_item( "Box",    "X", 1 ) ) g_tool = 3;
+        if( gui_menu_item( "Select (marquee)", "M", 1 ) ) g_tool = 4;
+        if( gui_menu_item( "Scribble select", "K", 1 ) ) g_tool = 5;
+        if( gui_menu_item( "Cylinder", "C", 1 ) ) g_tool = 6;
+        if( gui_menu_item( "Sphere",   "S", 1 ) ) g_tool = 7;
+        if( gui_menu_item( "Smoother (faces)", "H", 1 ) ) g_tool = 8;
+        if( gui_menu_item( "Eyedropper", "I / Alt", 1 ) ) g_tool = 10;
+        if( gui_menu_item( "Image wall", "W", g_impPix ? 1 : 0 ) ) {
             g_tool = 9; g_impStage = 0; g_impHaveHover = 0;
         }
         gui_end_menu();
@@ -3583,14 +3788,15 @@ static void buildMenuBar( int *quit )
         gui_end_menu();
     }
     if( gui_begin_menu( "View" ) ) {
-        if( gui_menu_item( "Front",  NULL, 1 ) ) setView( -1.5708f, 0.0f );
-        if( gui_menu_item( "Back",   NULL, 1 ) ) setView(  1.5708f, 0.0f );
-        if( gui_menu_item( "Left",   NULL, 1 ) ) setView(  3.1416f, 0.0f );
-        if( gui_menu_item( "Right",  NULL, 1 ) ) setView(  0.0f,    0.0f );
-        if( gui_menu_item( "Top",    NULL, 1 ) ) setView( -1.5708f, 1.5620f );
-        if( gui_menu_item( "Bottom", NULL, 1 ) ) setView( -1.5708f,-1.5620f );
+        if( gui_menu_item( "Front",  "1", 1 ) ) setView( -1.5708f, 0.0f );
+        if( gui_menu_item( "Back",   "2", 1 ) ) setView(  1.5708f, 0.0f );
+        if( gui_menu_item( "Left",   "3", 1 ) ) setView(  3.1416f, 0.0f );
+        if( gui_menu_item( "Right",  "4", 1 ) ) setView(  0.0f,    0.0f );
+        if( gui_menu_item( "Top",    "5", 1 ) ) setView( -1.5708f, 1.5620f );
+        if( gui_menu_item( "Bottom", "6", 1 ) ) setView( -1.5708f,-1.5620f );
+        if( gui_menu_item( "Iso",    "7", 1 ) ) setView( 0.9f, 0.6f );
         gui_separator();
-        if( gui_menu_item( "Iso",    NULL, 1 ) ) setView( 0.9f, 0.6f );
+        if( gui_menu_item_check( "Orthographic", "0", &g_ortho ) ) {}
         gui_end_menu();
     }
     if( gui_begin_menu( "Display" ) ) {
@@ -3885,7 +4091,8 @@ static void buildRightPanel( float top, float h, float winW )
     if( gui_slider_int( "smooth radius", &g_smoothRadius, 1, 4 ) ) g_renderDirty = 1;
     if( gui_slider_float( "smooth amount", &g_smoothAmt, 0.0f, 1.0f, "%.2f" ) )
         g_renderDirty = 1;
-    gui_slider_float( "zoom", &g_prevZoom, 0.25f, 32.0f, "%.2fx" );
+    { int zi = (int)( g_prevZoom + 0.5f ); if( zi < 1 ) zi = 1;
+      if( gui_slider_int( "zoom", &zi, 1, 32 ) ) g_prevZoom = (float)zi; }
     gui_same_line();
     if( gui_small_button( "reset" ) )
         { g_prevPanX = g_prevPanY = 0.0f; g_prevZoom = 3.0f; }
@@ -3897,10 +4104,26 @@ static void buildRightPanel( float top, float h, float winW )
     if( gui_button( "Export PNG..." ) ) openFileDialog( "PNG" );
 
     gui_separator();
+    /* background-image controls (context behind the pixel preview) */
+    if( gui_button( "Load BG image..." ) ) openFileDialog( "BGImage" );
+    if( g_bgPix ) {
+        gui_same_line();
+        if( gui_small_button( "Clear BG" ) ) {
+            bgClear(); setStatus( "BG image cleared" );
+        }
+        gui_checkbox( "Show BG", &g_bgShow );
+        sprintf( buf, "BG: %d x %d px", g_bgW, g_bgH );
+        gui_text( buf );
+    } else {
+        gui_text( "(no background image)" );
+    }
+
+    gui_separator();
     { float aw, ah;
       gui_content_avail( &aw, &ah );
       if( gui_begin_child( "renderview", aw, ah, 0 ) ) {
         gui_pan_zoom_image( g_imgTex, g_imgW, g_imgH,
+                            g_bgTex, g_bgW, g_bgH, g_bgShow,
                             &g_prevZoom, &g_prevPanX, &g_prevPanY );
       }
       gui_end_child();
@@ -3922,6 +4145,8 @@ static void fbDoAction( void )
         savePNG( full );
     } else if( strcmp( g_fbAction, "ImportPNG" ) == 0 ) {
         importWallLoad( full );
+    } else if( strcmp( g_fbAction, "BGImage" ) == 0 ) {
+        bgLoadPNG( full );
     } else if( strcmp( g_fbAction, "ImportLight" ) == 0 ) {
         importLighting( full );
     } else if( strcmp( g_fbAction, "Palette" ) == 0 ) {
@@ -3948,6 +4173,7 @@ static void buildDialogs( void )
     if( strcmp( act, "Save" ) == 0 )         { title = "Save sculpture (.ovox)";  actLabel = "Save"; }
     else if( strcmp( act, "PNG" ) == 0 )     { title = "Export render (.png)";    actLabel = "Export"; }
     else if( strcmp( act, "ImportPNG" ) == 0 ) { title = "Import PNG as voxel wall"; actLabel = "Import"; }
+    else if( strcmp( act, "BGImage" ) == 0 )  { title = "Load background image (.png)"; actLabel = "Load"; }
     else if( strcmp( act, "ImportLight" ) == 0 ) { title = "Import lighting from (.ovox)"; actLabel = "Import"; }
     else if( strcmp( act, "Palette" ) == 0 ) { title = "Load palette (.gpl)";     actLabel = "Load"; }
     else                                     { title = "Open sculpture (.ovox)";  actLabel = "Open"; }
@@ -4046,6 +4272,116 @@ static int inView( int x, int y )
 }
 
 /* ------------------------------------------------------------------ */
+/* per-tool mouse cursors                                              */
+/* ------------------------------------------------------------------ */
+/* Each cursor is 16x16 ASCII art: '#' = black, '.' = white, ' ' =
+ * transparent.  White fill + black edge reads on both the dark 3D background
+ * and light voxels.  The app drives the SDL cursor itself (ImGui's cursor
+ * management is disabled), so the cursor tells you the active tool/mode. */
+
+static SDL_Cursor *g_curArrow  = NULL;   /* default (over panels) */
+static SDL_Cursor *g_curPencil = NULL;   /* draw mode */
+static SDL_Cursor *g_curErase  = NULL;   /* erase mode */
+static SDL_Cursor *g_curDrop   = NULL;   /* eyedropper */
+static SDL_Cursor *g_curSelect = NULL;   /* marquee / scribble select */
+static SDL_Cursor *g_curSmooth = NULL;   /* smoother */
+static SDL_Cursor *g_curResize = NULL;   /* panel splitter (system) */
+
+static SDL_Cursor *makeCursor( const char *rows[16], int hotx, int hoty )
+{
+    Uint8 data[32], mask[32];
+    int y, x;
+    memset( data, 0, sizeof data );
+    memset( mask, 0, sizeof mask );
+    for( y = 0; y < 16; y++ )
+        for( x = 0; x < 16; x++ ) {
+            char c = rows[y][x];
+            int byte = y * 2 + ( x >> 3 );
+            int bit  = 7 - ( x & 7 );
+            if( c == '#' ) { data[byte] |= (Uint8)( 1 << bit );
+                             mask[byte] |= (Uint8)( 1 << bit ); }
+            else if( c == '.' ) mask[byte] |= (Uint8)( 1 << bit );
+            /* ' ' -> transparent (both bits 0) */
+        }
+    return SDL_CreateCursor( data, mask, 16, 16, hotx, hoty );
+}
+
+static void initCursors( void )
+{
+    static const char *pencil[16] = {
+        "            ##  ", "           #..# ", "          #..## ",
+        "         #..#.  ", "        #..#.   ", "       #..#.    ",
+        "      #..#.     ", "     #..#.      ", "    #..#.       ",
+        "   #..#.        ", "  #..#.         ", " #..#.          ",
+        " #.#.           ", "###.            ", "#.              ",
+        "                " };
+    static const char *erase[16] = {
+        "                ", "                ", "    ########    ",
+        "    #......#    ", "    #......#    ", "    #......#    ",
+        "    #......#    ", "    #......#    ", "    #......#    ",
+        "    #......#    ", "    #......#    ", "    ########    ",
+        "                ", "                ", "                ",
+        "                " };
+    static const char *drop[16] = {
+        "          ####  ", "          #..#  ", "          #..#  ",
+        "         ##.#   ", "        #.#.    ", "       #.#      ",
+        "      #.#       ", "     #.#        ", "    #.#         ",
+        "   #.#          ", "  #.#           ", " #.#            ",
+        "#.#             ", "##              ", "#               ",
+        "                " };
+    static const char *select[16] = {
+        "                ", "  ...      ...  ", "  .          .  ",
+        "  .          .  ", "                ", "                ",
+        "                ", "       ..       ", "       ..       ",
+        "                ", "                ", "  .          .  ",
+        "  .          .  ", "  ...      ...  ", "                ",
+        "                " };
+    static const char *smooth[16] = {
+        "                ", "                ", "      ....      ",
+        "    ........    ", "   ..........   ", "   ..........   ",
+        "  ............  ", "  ............  ", "  ............  ",
+        "  ............  ", "   ..........   ", "   ..........   ",
+        "    ........    ", "      ....      ", "                ",
+        "                " };
+    g_curArrow  = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_ARROW );
+    g_curResize = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_SIZEWE );
+    g_curPencil = makeCursor( pencil, 1, 14 );
+    g_curErase  = makeCursor( erase,  8, 7  );
+    g_curDrop   = makeCursor( drop,   0, 14 );
+    g_curSelect = makeCursor( select, 7, 8  );
+    g_curSmooth = makeCursor( smooth, 7, 7  );
+}
+
+static void freeCursors( void )
+{
+    if( g_curArrow  ) SDL_FreeCursor( g_curArrow );
+    if( g_curResize ) SDL_FreeCursor( g_curResize );
+    if( g_curPencil ) SDL_FreeCursor( g_curPencil );
+    if( g_curErase  ) SDL_FreeCursor( g_curErase );
+    if( g_curDrop   ) SDL_FreeCursor( g_curDrop );
+    if( g_curSelect ) SDL_FreeCursor( g_curSelect );
+    if( g_curSmooth ) SDL_FreeCursor( g_curSmooth );
+}
+
+/* Choose and apply the mouse cursor for this frame based on where the mouse is
+ * and which tool/mode is active. */
+static void updateCursor( int mx, int my, int winW, int overSplitter )
+{
+    SDL_Cursor *c = g_curArrow;
+    int overGui = gui_any_window_hovered() || gui_any_popup_open();
+    (void)winW;
+    if( overSplitter && !overGui ) {
+        c = g_curResize;
+    } else if( inView( mx, my ) && !overGui ) {
+        if( g_tool == 10 )      c = g_curDrop;    /* eyedropper */
+        else if( g_tool == 8 )  c = g_curSmooth;  /* smoother */
+        else if( g_tool == 4 || g_tool == 5 ) c = g_curSelect;
+        else                    c = ( g_mode == 1 ) ? g_curErase : g_curPencil;
+    }
+    if( c ) SDL_SetCursor( c );
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -4087,6 +4423,7 @@ int main( int argc, char **argv )
     if( gui_init( window, glctx ) ) {
         fprintf( stderr, "GUI init failed\n" ); return 1;
     }
+    initCursors();
 
     initSoftSamples();
     layersReset();
@@ -4192,18 +4529,38 @@ int main( int argc, char **argv )
                         else if( ctrl && k == SDLK_c ) selCopy();
                         else if( ctrl && k == SDLK_v ) selPaste();
                         else if( ctrl && k == SDLK_a ) { selAll(); setStatus("Selected all"); }
-                        else if( k == SDLK_b ) g_mode = 0;   /* draw */
+                        /* ---- number keys: 3D view presets ---- */
+                        else if( k == SDLK_1 ) setView( -1.5708f, 0.0f );
+                        else if( k == SDLK_2 ) setView(  1.5708f, 0.0f );
+                        else if( k == SDLK_3 ) setView(  3.1416f, 0.0f );
+                        else if( k == SDLK_4 ) setView(  0.0f,    0.0f );
+                        else if( k == SDLK_5 ) setView( -1.5708f, 1.5620f );
+                        else if( k == SDLK_6 ) setView( -1.5708f,-1.5620f );
+                        else if( k == SDLK_7 ) setView( 0.9f, 0.6f );
+                        else if( k == SDLK_0 ) g_ortho = !g_ortho;
+                        /* ---- draw/erase mode ---- */
+                        else if( k == SDLK_d ) g_mode = 0;   /* draw */
                         else if( k == SDLK_e ) g_mode = 1;   /* erase */
-                        else if( k == SDLK_1 ) g_tool = 0;
-                        else if( k == SDLK_2 ) g_tool = 1;
-                        else if( k == SDLK_3 ) g_tool = 2;
-                        else if( k == SDLK_4 ) g_tool = 3;
-                        else if( k == SDLK_5 ) g_tool = 4;
-                        else if( k == SDLK_6 ) g_tool = 5;
-                        else if( k == SDLK_7 ) g_tool = 6;
-                        else if( k == SDLK_8 ) g_tool = 7;
-                        else if( k == SDLK_9 ) g_tool = 8;
-                        else if( k == SDLK_0 ) g_tool = 10;
+                        /* ---- letter keys: drawing tools (Aseprite-ish) ---- */
+                        else if( k == SDLK_b ) g_tool = 0;   /* pencil/brush */
+                        else if( k == SDLK_l ) g_tool = 1;   /* line */
+                        else if( k == SDLK_r ) g_tool = 2;   /* rect */
+                        else if( k == SDLK_x ) g_tool = 3;   /* box */
+                        else if( k == SDLK_m ) g_tool = 4;   /* marquee select */
+                        else if( k == SDLK_k ) g_tool = 5;   /* scribble select */
+                        else if( k == SDLK_c ) g_tool = 6;   /* cylinder */
+                        else if( k == SDLK_s ) g_tool = 7;   /* sphere */
+                        else if( k == SDLK_h ) g_tool = 8;   /* smoother */
+                        else if( k == SDLK_i ) g_tool = 10;  /* eyedropper */
+                        else if( k == SDLK_w ) {             /* image wall */
+                            if( g_impPix ) { g_tool = 9; g_impStage = 0;
+                                             g_impHaveHover = 0; }
+                        }
+                        /* ALT held: quick-toggle eyedropper (revert on release) */
+                        else if( ( k == SDLK_LALT || k == SDLK_RALT ) &&
+                                 !g_altEyedrop && g_tool != 10 ) {
+                            g_savedTool = g_tool; g_tool = 10; g_altEyedrop = 1;
+                        }
                         else if( k == SDLK_DELETE || k == SDLK_BACKSPACE ) selDelete();
                         else if( k == SDLK_ESCAPE ) {
                             if( g_tool == 9 && g_impPix && g_impStage > 0 ) {
@@ -4211,6 +4568,14 @@ int main( int argc, char **argv )
                                 setStatus( "Placement reset -- click a new corner" );
                             } else { selClear(); setStatus("Selection cleared"); }
                         }
+                    }
+                    break;
+                case SDL_KEYUP:
+                    /* release the ALT quick-eyedropper and restore the tool */
+                    if( g_altEyedrop &&
+                        ( ev.key.keysym.sym == SDLK_LALT ||
+                          ev.key.keysym.sym == SDLK_RALT ) ) {
+                        g_tool = g_savedTool; g_altEyedrop = 0;
                     }
                     break;
                 case SDL_MOUSEBUTTONDOWN:
@@ -4365,6 +4730,16 @@ int main( int argc, char **argv )
         buildStatusBar( (float)winW, (float)winH );
         buildDialogs();
 
+        /* view-name / projection indicator, centred above the 3D viewport */
+        { const char *vn = currentViewName();
+          char lbl[64];
+          if( vn ) sprintf( lbl, "%s  \xc2\xb7  %s", vn,
+                            g_ortho ? "Orthographic" : "Perspective" );
+          else     sprintf( lbl, "%s", g_ortho ? "Orthographic" : "Perspective" );
+          gui_overlay_text( (float)g_viewX + g_viewW * 0.5f,
+                            (float)g_viewY + 6.0f, lbl,
+                            vn ? 235 : 150, vn ? 235 : 150, vn ? 180 : 150 ); }
+
         /* draggable splitter handles at each panel/view boundary (drawn on the
          * foreground; the drag itself is handled in the SDL event loop).
          * Suppressed while any menu/popup is open so the foreground handle can't
@@ -4383,6 +4758,15 @@ int main( int argc, char **argv )
                             (float)winW - g_rightW + 6.0f, sy + sh,
                             hotR?120:66, hotR?145:70, hotR?190:80, 255 );
         }
+
+        /* per-tool mouse cursor for this frame */
+        { int mx, my, overSplit;
+          SDL_GetMouseState( &mx, &my );
+          overSplit = g_splitDrag ||
+                      ( mx >= (int)g_leftW - 6 && mx < (int)g_leftW ) ||
+                      ( mx >= winW - (int)g_rightW && mx < winW - (int)g_rightW + 6 );
+          updateCursor( mx, my, winW, overSplit ); }
+
         gui_render();
 
         SDL_GL_SwapWindow( window );
@@ -4392,6 +4776,8 @@ int main( int argc, char **argv )
 
     if( exportEnv ) savePNG( exportEnv );
 
+    freeCursors();
+    bgClear();
     gui_shutdown();
     if( g_imgTex ) glDeleteTextures( 1, &g_imgTex );
     free( g_img );

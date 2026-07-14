@@ -102,13 +102,20 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   committed as one undo step on release — left-drag never orbits (right-drag
   does).  **Left-drag** (Line/Rect/Box/Select) region gesture with a live ghost,
   committed as one undo step.
-* Tools **1** Pencil · **2** Line · **3** Rect · **4** Box · **5** Select ·
-  **6** Scribble (paint a selection over whatever voxels the drag touches;
-  erase mode un-paints) · **7** Cylinder · **8** Sphere · **9** Smoother
-  (paint per-face smoothness over whatever faces the drag touches; erase
-  un-smooths) · **0** Eyedropper (click a voxel to load its color/ramp into the
-  current paint color) · **Image wall** (no shortcut; armed by File ▸ Import PNG
-  as voxel wall).
+* Tools use letter shortcuts (Aseprite-ish, since the number keys drive the 3D
+  views): **B** Pencil (brush) · **L** Line · **R** Rect · **X** Box · **M**
+  Select (marquee) · **K** Scribble (paint a selection over whatever voxels the
+  drag touches; erase mode un-paints) · **C** Cylinder · **S** Sphere · **H**
+  Smoother (paint per-face smoothness over whatever faces the drag touches;
+  erase un-smooths) · **I** Eyedropper (click a voxel to load its color/ramp
+  into the current paint color) · **W** Image wall (only if a PNG is loaded;
+  else armed by File ▸ Import PNG as voxel wall).  Holding **Alt** quick-toggles
+  the Eyedropper (releasing Alt restores the previous tool), Aseprite-style.
+* Number keys switch the 3D view preset: **1** Front · **2** Back · **3** Left ·
+  **4** Right · **5** Top · **6** Bottom · **7** Iso; **0** toggles orthographic
+  projection.  The mouse cursor changes to reflect the active tool/mode over the
+  3D view (pencil / eraser block / eyedropper / marquee / smoother-brush), and
+  to a horizontal-resize cursor over a panel splitter.
 * **Layers** (Tools panel): up to 16 independent voxel layers, listed top
   (highest z-order) first.  Every edit acts on the single **active** layer
   (click a layer's name to activate it); the oblique render, the 3D preview and
@@ -150,8 +157,14 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   the translucent ghost hides it behind solid voxels.
 * Any slider accepts **Ctrl+click to type** an exact value (and typed values may
   exceed the slider's range).
-* Modes **B** draw · **E** erase — every tool obeys the mode (erase a whole
+* Modes **D** draw · **E** erase — every tool obeys the mode (erase a whole
   line/box, marquee-deselect, etc.).
+* **Orthographic** 3D view (View menu ▸ Orthographic, or **0**): a parallel
+  projection (`glOrtho`) sized to match the perspective on-screen scale at the
+  camera target, so toggling doesn't jump the zoom.  A centred label above the
+  3D view names the current preset view (Front/Right/…/Iso) and the projection
+  mode; the view name persists through a pan but disappears once you orbit away
+  from the preset (`currentViewName` matches cam yaw/pitch to a preset).
 * **thickness** slider extrudes Line/Rect/Box/Cylinder along the started face's
   normal, so Box is a solid rectangular prism in one drag.  **Cylinder** is the
   same drag but its footprint is the inscribed (jaggy) ellipse.
@@ -242,10 +255,16 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 * Drag the thin handle at either **panel/view boundary** to resize the side
   panels; the palette grid re-wraps to the new width.  (The handles are hidden
   while a menu/popup is open so they can't paint over an open dropdown's text.)
-* The **oblique-render preview** (right panel) is centred in its area.  The
-  **zoom** slider magnifies about the centre; the **scroll wheel** over the
-  preview zooms about the cursor; **left-drag** pans; **reset** recentres and
-  restores the default zoom.
+* The **oblique-render preview** (right panel) is centred in its area.  Because
+  this is pure pixel art the **zoom** is integer-only (1×..32×): the slider steps
+  by whole numbers and the **scroll wheel** over the preview steps ±1× about the
+  cursor (min 1×, default/reset 3×); **left-drag** pans; **reset** recentres.
+* A **background image** can be shown behind the preview for context (right
+  panel: *Load BG image…* / *Clear BG* / *Show BG*).  It is drawn behind the
+  render, centred but snapped to a whole-pixel offset so its pixel grid stays
+  aligned with the render even when their dimensions differ in parity, and it
+  zooms/pans with the render.  The image is baked into the `.ovox` file (base64
+  RGBA) so the file stays self-contained; **New** and loading a file clear it.
 * **Ctrl+Z / Ctrl+Y** undo / redo (whole gesture at a time).
 * Clicks are gated on the real 3D-viewport rect + an immediate popup-open
   check (not ImGui's one-frame-late hover), so nothing leaks between panels
@@ -255,8 +274,11 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 
 Human-readable, one record per line: a header (`OBLIQUEVOXELS <version>`), the
 embedded palette (`C r g b`), `AMBIENT`, `L` lights, a `RENDER` params line,
-an `ACTIVE <layerIndex>` line, then for each layer a `LAYER <index> <visible>
-<name...>` line (the name runs to end of line and may contain spaces) followed
+an `ACTIVE <layerIndex>` line, an optional background-image block (`BGIMAGE
+<w> <h>` followed by one or more `BGDATA <base64>` lines carrying the raw RGBA
+bytes, wrapped 72 base64 chars per line), then for each layer a `LAYER <index>
+<visible> <name...>` line (the name runs to end of line and may contain spaces)
+followed
 by that layer's `V x y z color rampStart rampLen [smoothFaceMask]` voxel lines —
 the trailing smooth field is optional so older 6-field voxel lines still load.
 This is **version 3**; older **version 1/2** files have no `LAYER`/`ACTIVE`

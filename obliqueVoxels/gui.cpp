@@ -23,6 +23,9 @@ int gui_init( SDL_Window *window, void *gl_context )
     ImGuiIO &io = ImGui::GetIO();
     io.IniFilename = NULL;   /* no imgui.ini clutter, faster startup */
     io.LogFilename = NULL;
+    /* The app manages the SDL mouse cursor itself (per-tool cursors over the 3D
+     * view), so stop the SDL2 backend from overriding it each frame. */
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 
     ImGui::StyleColorsDark();
     ImGuiStyle &st = ImGui::GetStyle();
@@ -282,6 +285,18 @@ void gui_overlay_rect( float x0, float y0, float x1, float y1,
         ImVec2( x0, y0 ), ImVec2( x1, y1 ), IM_COL32( r, g, b, a ) );
 }
 
+void gui_overlay_text( float cx, float y, const char *s, int r, int g, int b )
+{
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImVec2 ts = ImGui::CalcTextSize( s );
+    ImVec2 p( cx - ts.x * 0.5f, y );
+    dl->AddRectFilled( ImVec2( p.x - 7.0f, p.y - 3.0f ),
+                       ImVec2( p.x + ts.x + 7.0f, p.y + ts.y + 3.0f ),
+                       IM_COL32( 0, 0, 0, 130 ), 4.0f );
+    dl->AddText( ImVec2( p.x + 1.0f, p.y + 1.0f ), IM_COL32( 0, 0, 0, 190 ), s );
+    dl->AddText( p, IM_COL32( r, g, b, 255 ), s );
+}
+
 /* ---- image ---- */
 void gui_image( unsigned int texId, float w, float h )
 {
@@ -294,6 +309,7 @@ void gui_image( unsigned int texId, float w, float h )
  * three state values are updated in place.  Used for the oblique-render
  * preview so it centres, scroll-zooms on the cursor, and drag-pans. */
 void gui_pan_zoom_image( unsigned int texId, int imgW, int imgH,
+                         unsigned int bgTex, int bgW, int bgH, int showBg,
                          float *zoom, float *panX, float *panY )
 {
     ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -310,11 +326,13 @@ void gui_pan_zoom_image( unsigned int texId, int imgW, int imgH,
     bool active  = ImGui::IsItemActive();
     ImGuiIO &io  = ImGui::GetIO();
 
-    /* wheel zoom, anchored on the point under the cursor */
+    /* wheel zoom in whole-integer steps (pixel art wants integer magnification),
+     * anchored on the point under the cursor */
     if( hovered && io.MouseWheel != 0.0f ) {
         float old = *zoom;
-        float nz  = old * powf( 1.15f, io.MouseWheel );
-        if( nz < 0.25f ) nz = 0.25f;
+        int   step = io.MouseWheel > 0.0f ? 1 : -1;
+        float nz  = floorf( old + 0.5f ) + (float)step;
+        if( nz < 1.0f )  nz = 1.0f;
         if( nz > 64.0f ) nz = 64.0f;
         {
             float icx = center.x + *panX;      /* image centre on screen */
@@ -337,10 +355,20 @@ void gui_pan_zoom_image( unsigned int texId, int imgW, int imgH,
     dl->AddRectFilled( cMin, cMax, IM_COL32( 18, 19, 22, 255 ) );
     dl->PushClipRect( cMin, cMax, true );
     if( texId && imgW > 0 && imgH > 0 ) {
-        float hw = imgW * (*zoom) * 0.5f;
-        float hh = imgH * (*zoom) * 0.5f;
+        float z  = *zoom;
+        float hw = imgW * z * 0.5f;
+        float hh = imgH * z * 0.5f;
         ImVec2 p0( center.x + *panX - hw, center.y + *panY - hh );
         ImVec2 p1( center.x + *panX + hw, center.y + *panY + hh );
+        /* background image first, centred on the render but offset by a whole
+         * number of pixels so the two pixel grids stay aligned */
+        if( showBg && bgTex && bgW > 0 && bgH > 0 ) {
+            float ox = floorf( ( (float)imgW - (float)bgW ) * 0.5f + 0.5f );
+            float oy = floorf( ( (float)imgH - (float)bgH ) * 0.5f + 0.5f );
+            ImVec2 b0( p0.x + ox * z, p0.y + oy * z );
+            ImVec2 b1( b0.x + bgW * z, b0.y + bgH * z );
+            dl->AddImage( (ImTextureID)(intptr_t)bgTex, b0, b1 );
+        }
         dl->AddImage( (ImTextureID)(intptr_t)texId, p0, p1 );
     }
     dl->PopClipRect();

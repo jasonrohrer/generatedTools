@@ -1673,20 +1673,70 @@ static void regionCommit( void )
     setStatus( msg );
 }
 
-/* Single-click pencil (or single-cell select). */
-static void applyToolAt( int mx, int my )
+/* ---- pencil paint-drag state ----
+ * The pencil is a scribble tool like the smoother/scribble-select: dragging with
+ * the left button paints a set of target cells (one per real surface the cursor
+ * sweeps over) as a translucent ghost, and the whole set is committed as ONE
+ * undo step when the button is released.  A plain click paints a single cell, so
+ * the click and drag paths are identical -- the click just paints one cell.
+ * Target cells are always computed against the *real* voxels (pickCell picks the
+ * empty neighbour of the surface hit, or the ground cell on a miss), never
+ * against the pending ghost, so a drag lays down one shell of clay without ever
+ * piling ghost-on-ghost.  Left-drag therefore paints instead of orbiting -- the
+ * right button remains the (redundant) orbit control. */
+#define PENCIL_MAX 16384
+static int g_pencilActive = 0;
+static int g_pencilN = 0;
+static int g_pencilCells[ PENCIL_MAX ][3];
+
+static void pencilAddCell( int x, int y, int z )
+{
+    int i;
+    for( i = 0; i < g_pencilN; i++ )     /* dedup: the same surface is swept a lot */
+        if( g_pencilCells[i][0] == x && g_pencilCells[i][1] == y &&
+            g_pencilCells[i][2] == z ) return;
+    if( g_pencilN >= PENCIL_MAX ) return;
+    g_pencilCells[g_pencilN][0] = x;
+    g_pencilCells[g_pencilN][1] = y;
+    g_pencilCells[g_pencilN][2] = z;
+    g_pencilN++;
+}
+
+/* Paint the cell the cursor is over into the pending ghost set. */
+static void pencilAt( int mx, int my )
 {
     int cx, cy, cz, axis, dir, ground;
+    if( !g_pencilActive ) return;
     if( !pickCell( mx, my, &cx, &cy, &cz, &axis, &dir, &ground ) ) return;
-    if( g_tool == 4 ) {
-        int nsel = 0;
-        selectCell( cx, cy, cz, &nsel );
-        if( nsel ) setStatus( g_mode == 1 ? "Deselected voxel"
-                                          : "Selected voxel" );
-        return;
-    }
-    putCell( cx, cy, cz );
-    setStatus( g_mode == 1 ? "Erased voxel" : "Placed voxel" );
+    pencilAddCell( cx, cy, cz );
+}
+
+static void pencilBegin( int mx, int my )
+{
+    g_pencilActive = 1;
+    g_pencilN = 0;
+    pencilAt( mx, my );
+}
+
+/* Commit the pending ghost set as real voxels (or erasures in erase mode) in a
+ * single undo group.  putCell reads g_mode, so draw vs erase follows the current
+ * mode, and applies any active symmetry planes. */
+static void pencilCommit( void )
+{
+    int i, n;
+    if( !g_pencilActive ) return;
+    g_pencilActive = 0;
+    n = g_pencilN;
+    g_pencilN = 0;
+    if( n == 0 ) return;
+    groupBegin();
+    for( i = 0; i < n; i++ )
+        putCell( g_pencilCells[i][0], g_pencilCells[i][1], g_pencilCells[i][2] );
+    groupEnd();
+    { char m[64];
+      sprintf( m, g_mode == 1 ? "Erased %d voxel%s" : "Painted %d voxel%s",
+               n, n == 1 ? "" : "s" );
+      setStatus( m ); }
 }
 
 /* Begin a region drag under the cursor. */
@@ -1781,6 +1831,11 @@ static void smoothOneFace( int cx, int cy, int cz, int nx, int ny, int nz )
     e.hadAfter = 1; e.after = *v;
     e.group = g_curGroup;
     histPush( e );
+    /* smoothFaces was mutated directly (not via voxSet), so the composite scratch
+     * layer won't pick it up unless we flag it dirty -- otherwise the pixel render,
+     * which shades the composite, keeps the stale mask until an unrelated edit
+     * happens to rebuild it. */
+    if( g_activeLayer != FLAT_LAYER ) g_flatDirty = 1;
     g_renderDirty = 1;
 }
 
@@ -1967,6 +2022,7 @@ static void selSmooth( int flag )
         n++;
     }
     groupEnd();
+    if( g_activeLayer != FLAT_LAYER ) g_flatDirty = 1;   /* see smoothOneFace */
     g_renderDirty = 1;
     { char m[64]; sprintf( m, "%s %d voxels",
         flag ? "Smoothed" : "Unsmoothed", n ); setStatus( m ); }
@@ -2270,6 +2326,32 @@ static void drawGesturePreview( void )
             glLineWidth( 2.0f );
             glColor3f( 1.0f, 0.3f, 0.25f );
             sphereForEach( cbHitMark, NULL );
+            glLineWidth( 1.0f );
+        }
+        glDisable( GL_BLEND );
+        return;
+    }
+    /* pencil paint-drag previews its pending cells as translucent ghost cubes;
+     * on erase it also X-marks the real voxels the stroke will remove */
+    if( g_pencilActive && g_pencilN > 0 ) {
+        int i;
+        glEnable( GL_BLEND );
+        glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+        glDepthMask( GL_FALSE );
+        if( g_mode == 1 ) glColor4f( 1.0f, 0.25f, 0.2f, 0.40f );
+        else              glColor4f( 0.3f, 1.0f, 0.45f, 0.40f );
+        glBegin( GL_QUADS );
+        for( i = 0; i < g_pencilN; i++ )
+            cbGhost( g_pencilCells[i][0], g_pencilCells[i][1],
+                     g_pencilCells[i][2], NULL );
+        glEnd();
+        glDepthMask( GL_TRUE );
+        if( g_mode == 1 ) {
+            glLineWidth( 2.0f );
+            glColor3f( 1.0f, 0.3f, 0.25f );
+            for( i = 0; i < g_pencilN; i++ )
+                cbHitMark( g_pencilCells[i][0], g_pencilCells[i][1],
+                           g_pencilCells[i][2], NULL );
             glLineWidth( 1.0f );
         }
         glDisable( GL_BLEND );
@@ -3932,7 +4014,8 @@ int main( int argc, char **argv )
     } else {
         buildDemoScene();
     }
-    setStatus( "Pencil: left-click paints.  Line/Rect/Box/Select: left-drag.  "
+    setStatus( "Pencil: left-click or drag to scribble voxels.  "
+               "Line/Rect/Box/Select: left-drag.  "
                "Right-drag: orbit  |  Mid-drag: pan  |  Wheel: zoom" );
 
     if( getenv( "OV_SELFTEST" ) ) {
@@ -3987,6 +4070,19 @@ int main( int argc, char **argv )
           setActiveLayer(0);
           if(!voxAt(0,0,0)||!voxAt(0,0,0)->sel)
               {ok=0;fprintf(stderr,"FAIL sel-project\n");} }
+        /* smoothing an active-layer face must flag the composite dirty so the
+         * pixel render (which shades the FLAT composite) picks it up live */
+        layersReset();
+        g_symOn[0]=g_symOn[1]=g_symOn[2]=0; g_mode=0;
+        voxSet(5,0,0,1,1,1);
+        g_flatDirty=1; ensureFlat();          /* composite now has a flat face */
+        g_curGroup=++g_groupSeq;
+        smoothOneFace(5,0,0,0,1,0);            /* mark +Y smooth on active layer */
+        { int sv=g_activeLayer; ensureFlat();  /* must rebuild from the dirty flag */
+          g_activeLayer=FLAT_LAYER;
+          if(!voxAt(5,0,0)||!(voxAt(5,0,0)->smoothFaces&(1<<faceDir6(0,1,0))))
+              {ok=0;fprintf(stderr,"FAIL smooth-composite\n");}
+          g_activeLayer=sv; }
         layersReset();
         fprintf( stderr, ok ? "SELFTEST OK\n" : "SELFTEST FAILED\n" );
         gui_shutdown(); SDL_GL_DeleteContext(glctx); SDL_DestroyWindow(window);
@@ -4065,8 +4161,10 @@ int main( int argc, char **argv )
                             smoothFaceAt( ev.button.x, ev.button.y );
                         } else if( g_dragBtn == SDL_BUTTON_LEFT && g_tool == 7 )
                             sphereBegin( ev.button.x, ev.button.y );
+                        else if( g_dragBtn == SDL_BUTTON_LEFT && g_tool == 0 )
+                            pencilBegin( ev.button.x, ev.button.y );
                         else if( g_dragBtn == SDL_BUTTON_LEFT &&
-                                 g_tool != 0 && g_tool != 9 && g_tool != 10 )
+                                 g_tool != 9 && g_tool != 10 )
                             gestureBegin( ev.button.x, ev.button.y );
                     }
                     break;
@@ -4090,8 +4188,8 @@ int main( int argc, char **argv )
                                 setStatus( g_mode==1 ? "Faces unsmoothed"
                                                      : "Faces smoothed" );
                             }
-                            else if( !g_moved && g_tool == 0 )
-                                applyToolAt( ev.button.x, ev.button.y );
+                            else if( g_pencilActive )
+                                pencilCommit();  /* click or drag: one undo step */
                             else if( !g_moved && g_tool == 10 )
                                 eyedropAt( ev.button.x, ev.button.y );
                             else if( !g_moved && g_tool == 9 )
@@ -4121,6 +4219,8 @@ int main( int argc, char **argv )
                             sphereUpdate( ev.motion.x, ev.motion.y );
                         else if( g_gActive && g_dragBtn == SDL_BUTTON_LEFT )
                             gestureUpdate( ev.motion.x, ev.motion.y );
+                        else if( g_pencilActive && g_dragBtn == SDL_BUTTON_LEFT )
+                            pencilAt( ev.motion.x, ev.motion.y );
                         else if( g_dragBtn == SDL_BUTTON_LEFT ||
                                  g_dragBtn == SDL_BUTTON_RIGHT )
                             orbitDrag( dx, dy );   /* right-drag always orbits */

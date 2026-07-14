@@ -86,8 +86,12 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 ## Controls
 
 * **Right-drag** orbit · **Mid-drag** pan · **Wheel** zoom.
-* **Left-click** (Pencil) place/erase · **Left-drag** (Line/Rect/Box/Select)
-  region gesture with a live ghost, committed as one undo step.
+* **Left-click** (Pencil) place/erase · **Left-drag** (Pencil) scribble: paints a
+  translucent ghost block onto every real surface the cursor sweeps (each sticks
+  to the closest *real* voxel face or the ground, never ghost-on-ghost),
+  committed as one undo step on release — left-drag never orbits (right-drag
+  does).  **Left-drag** (Line/Rect/Box/Select) region gesture with a live ghost,
+  committed as one undo step.
 * Tools **1** Pencil · **2** Line · **3** Rect · **4** Box · **5** Select ·
   **6** Scribble (paint a selection over whatever voxels the drag touches;
   erase mode un-paints) · **7** Cylinder · **8** Sphere · **9** Smoother

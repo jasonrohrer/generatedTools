@@ -1,8 +1,23 @@
-Nice work!
+Both issues from the last round are fixed:
 
-Layers are working great!
+--Smoothness no longer live-updates the pixel preview:
+  Root cause was the layer composite.  The pixel render shades the FLAT
+  composite (union of visible layers), which is only rebuilt when g_flatDirty
+  is set -- and that flag was set only by voxSet/voxErase (add/remove a voxel).
+  Painting smoothness (Smoother tool) or Smooth/Unsmooth in the Selection
+  panel mutate smoothFaces directly, so the composite kept the stale mask until
+  some unrelated edit rebuilt it.  The smoothness *sliders* looked broken for
+  the same reason -- the faces you'd just painted weren't in the composite yet,
+  so the sliders had nothing to act on.  smoothOneFace() and selSmooth() now
+  flag the composite dirty, so both painted smoothness and the sliders update
+  the preview live again.  (Regression covered by OV_SELFTEST: smooth-composite.)
 
-
---One strange new issue:  when adding smooth faces with the smoother, the pixel preview doesn't update the smoothness until something else changes (another voxel is added, triggering a redraw, or toggling the layer on and off to trigger a pixel rendering redraw).  The same is now true for the smoothness settings sliders... they no longer live-update the pixel preview as you slide around, not until you edit the voxels to trigger a redraw.  Any changes to the smoothness faces OR the smoothness sliders used to insta-update the rendering.  Probably something in the layer implementation broke this.
-
---Long-standing issue.... the pencil tool, if you drag instead of clicking, rotates the model.  We already have right click to rotate, so left-clicking with the pencil tool shouldn't rotate too (redundant), and also, we should be able to just drag around and scribble with the pencil too, and add squares to any face hit.  Scribbling in the same spot, while looking down, should build a tower up.  Almost like the pencil tool is gobbing more and more bits of clay in whatever new spot (voxel face or floor face) that you mouse back over.  The other drawing tools allow dragging, but of course you drag a preview and let go to actually place the voxels.  The pencil tool should behave like the Scribble select tool or like the Smoother face tool, but instead of selecting voxels or picking faces to smooth, it should lay down blocks.  It might be too slow to update the pixel rendering as you drag around, so maybe you can drag a preview of little translucent blocks, and then when you let go, they appear all at once (just like the sphere or box).  If that's the case, then probably just add translucent preview blocks stuck only to the closest real (not preview) voxel face hit by the mouse.  In that case, piling up preview blocks on top of each other would be too confusing.  So the pencil drag would "paint" hit surfaces with new preview blocks, and then when you stop dragging, they become real voxels.
+--Pencil tool now scribbles instead of rotating:
+  Left-drag with the Pencil no longer orbits (right-drag still does).  It now
+  works like the Scribble/Smoother tools: dragging paints a translucent ghost
+  block onto every real surface the cursor sweeps over (each block sticks to the
+  closest *real* voxel face, or the ground -- never ghost-on-ghost), and on
+  mouse-up the whole set commits as ONE undo step.  A plain click still paints a
+  single voxel (same code path).  As you noted, towers don't grow within a
+  single drag (ghosts stick to real geometry only) -- scribble, release, and
+  scribble again to build up.

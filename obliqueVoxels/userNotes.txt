@@ -1,5 +1,10 @@
-Incredible work!  This is turning into an amazingly powerful tool.  There's never been anything like it before for making pixel art.  It's borderline revolutionary.
+(Add new testing notes below.)
 
---The select cursor looks good, but there need to be some black pixels around the edges of the white pixels, so it can be seen if you mouse over white voxels.  Same with smoother and eraser cursor, which are pure white currently.  The draw cursor can probably be just a little white box (with black border) instead of the pencil that you have now, which is a little wonky.  The erase can be an empty white box (with black borders inside and out).  Eyedropper is a little weird looking.  See if you can take another pass at that.  Draw vs Erase mode for select cursor should change the cursor too (maybe get rid of the little dot in the center in erase mode).
-
---We probably need some x/y position sliders for the background image, and this offset should get saved in the ovox file.
+--- addressed 2026-07-14 ---
+- Cursors reworked: every white cursor now gets an auto-generated 1px black
+  halo so it reads over white voxels (select, smoother, eraser were pure white).
+  Draw is now a small solid white box, Erase a hollow white box with black
+  borders inside and out, eyedropper redrawn (bulb / barrel / tip), and the
+  Select cursor drops its centre dot in Erase mode.
+- Background image now has BG x / BG y sliders (whole render-pixel offset) plus a
+  Center BG reset; the offset is saved in the .ovox BGIMAGE line.

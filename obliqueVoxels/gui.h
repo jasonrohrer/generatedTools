@@ -115,6 +115,7 @@ void gui_image( unsigned int texId, float w, float h );
  * grid aligns with the render even when their dimensions differ in parity. */
 void gui_pan_zoom_image( unsigned int texId, int imgW, int imgH,
                          unsigned int bgTex, int bgW, int bgH, int showBg,
+                         int bgOffX, int bgOffY,
                          float *zoom, float *panX, float *panY );
 
 /* ---- popups / modals ---- */

@@ -593,6 +593,7 @@ static unsigned char *g_bgPix = NULL;   /* g_bgW*g_bgH*4 RGBA, or NULL */
 static int    g_bgW = 0, g_bgH = 0;
 static GLuint g_bgTex = 0;
 static int    g_bgShow = 1;             /* view toggle: draw the BG image */
+static int    g_bgOffX = 0, g_bgOffY = 0; /* BG image offset in render pixels */
 
 /* the baked oblique render */
 static unsigned char *g_img = NULL;
@@ -3258,6 +3259,7 @@ static void bgClear( void )
     if( g_bgPix ) { stbi_image_free( g_bgPix ); g_bgPix = NULL; }
     if( g_bgTex ) { glDeleteTextures( 1, &g_bgTex ); g_bgTex = 0; }
     g_bgW = g_bgH = 0;
+    g_bgOffX = g_bgOffY = 0;
 }
 
 /* Load a PNG as the preview background image (kept as raw RGBA for baking). */
@@ -3399,7 +3401,7 @@ static void saveSculpture( const char *path )
     /* Optional preview background image, baked in as base64 RGBA so the .ovox
      * stays self-contained (no external file reference). */
     if( g_bgPix && g_bgW > 0 && g_bgH > 0 ) {
-        fprintf( f, "BGIMAGE %d %d\n", g_bgW, g_bgH );
+        fprintf( f, "BGIMAGE %d %d %d %d\n", g_bgW, g_bgH, g_bgOffX, g_bgOffY );
         b64WriteFile( f, g_bgPix, (long)g_bgW * g_bgH * 4 );
     }
     /* Layers, bottom to top.  Each "LAYER idx visible name" is followed by that
@@ -3441,7 +3443,7 @@ static int loadSculpture( const char *path )
     char line[ 256 ];
     int palIdx = 0, palExpected = 0, ver = 1, wantActive = 0;
     char *bgB64 = NULL; long bgB64Len = 0, bgB64Cap = 0;
-    int bgIW = 0, bgIH = 0, haveBg = 0;
+    int bgIW = 0, bgIH = 0, haveBg = 0, bgOX = 0, bgOY = 0;
     if( !f ) { setStatus( "Open failed" ); return 0; }
     if( !fgets( line, sizeof line, f ) ||
         strncmp( line, "OBLIQUEVOXELS", 13 ) != 0 ) {
@@ -3475,8 +3477,10 @@ static int loadSculpture( const char *path )
             if( sscanf( line, "AMBIENT %f", &a ) == 1 ) g_ambient = a;
             else sscanf( line, "ACTIVE %d", &wantActive );
         } else if( line[0] == 'B' && line[1] == 'G' ) {
-            if( line[2] == 'I' ) {                 /* BGIMAGE w h */
-                if( sscanf( line, "BGIMAGE %d %d", &bgIW, &bgIH ) == 2 )
+            if( line[2] == 'I' ) {                 /* BGIMAGE w h [offx offy] */
+                bgOX = bgOY = 0;
+                if( sscanf( line, "BGIMAGE %d %d %d %d",
+                            &bgIW, &bgIH, &bgOX, &bgOY ) >= 2 )
                     haveBg = 1;
             } else if( line[2] == 'D' ) {          /* BGDATA <base64> */
                 char *d = line + 7;                /* skip "BGDATA " */
@@ -3556,6 +3560,7 @@ static int loadSculpture( const char *path )
         if( px && got >= need ) {
             bgClear();
             g_bgPix = px; g_bgW = bgIW; g_bgH = bgIH; g_bgShow = 1;
+            g_bgOffX = bgOX; g_bgOffY = bgOY;
             bgUpload();
         } else if( px ) free( px );
     }
@@ -4114,6 +4119,10 @@ static void buildRightPanel( float top, float h, float winW )
         gui_checkbox( "Show BG", &g_bgShow );
         sprintf( buf, "BG: %d x %d px", g_bgW, g_bgH );
         gui_text( buf );
+        /* nudge the BG image into register with the render (saved in .ovox) */
+        gui_slider_int( "BG x", &g_bgOffX, -g_bgW, g_bgW );
+        gui_slider_int( "BG y", &g_bgOffY, -g_bgH, g_bgH );
+        if( gui_small_button( "Center BG" ) ) g_bgOffX = g_bgOffY = 0;
     } else {
         gui_text( "(no background image)" );
     }
@@ -4124,6 +4133,7 @@ static void buildRightPanel( float top, float h, float winW )
       if( gui_begin_child( "renderview", aw, ah, 0 ) ) {
         gui_pan_zoom_image( g_imgTex, g_imgW, g_imgH,
                             g_bgTex, g_bgW, g_bgH, g_bgShow,
+                            g_bgOffX, g_bgOffY,
                             &g_prevZoom, &g_prevPanX, &g_prevPanY );
       }
       gui_end_child();
@@ -4283,19 +4293,39 @@ static SDL_Cursor *g_curArrow  = NULL;   /* default (over panels) */
 static SDL_Cursor *g_curPencil = NULL;   /* draw mode */
 static SDL_Cursor *g_curErase  = NULL;   /* erase mode */
 static SDL_Cursor *g_curDrop   = NULL;   /* eyedropper */
-static SDL_Cursor *g_curSelect = NULL;   /* marquee / scribble select */
+static SDL_Cursor *g_curSelect = NULL;   /* marquee / scribble select (draw) */
+static SDL_Cursor *g_curSelectE= NULL;   /* marquee / scribble select (erase) */
 static SDL_Cursor *g_curSmooth = NULL;   /* smoother */
 static SDL_Cursor *g_curResize = NULL;   /* panel splitter (system) */
 
+/* Build a cursor from 16x16 ASCII art: '.' = white, '#' = black, ' ' =
+ * transparent.  Any transparent cell 8-adjacent to a white cell is
+ * auto-promoted to black, so every white shape gets a 1px black halo and stays
+ * legible over light voxels *and* the dark 3D background — the art only has to
+ * spell out the white silhouette. */
 static SDL_Cursor *makeCursor( const char *rows[16], int hotx, int hoty )
 {
     Uint8 data[32], mask[32];
-    int y, x;
+    char g[16][16];
+    int y, x, dy, dx;
     memset( data, 0, sizeof data );
     memset( mask, 0, sizeof mask );
     for( y = 0; y < 16; y++ )
+        for( x = 0; x < 16; x++ ) g[y][x] = rows[y][x];
+    /* halo pass: transparent cells touching white become black */
+    for( y = 0; y < 16; y++ )
         for( x = 0; x < 16; x++ ) {
-            char c = rows[y][x];
+            if( g[y][x] != ' ' ) continue;
+            for( dy = -1; dy <= 1; dy++ )
+                for( dx = -1; dx <= 1; dx++ ) {
+                    int ny = y + dy, nx = x + dx;
+                    if( ny < 0 || ny > 15 || nx < 0 || nx > 15 ) continue;
+                    if( rows[ny][nx] == '.' ) { g[y][x] = '#'; dy = dx = 2; }
+                }
+        }
+    for( y = 0; y < 16; y++ )
+        for( x = 0; x < 16; x++ ) {
+            char c = g[y][x];
             int byte = y * 2 + ( x >> 3 );
             int bit  = 7 - ( x & 7 );
             if( c == '#' ) { data[byte] |= (Uint8)( 1 << bit );
@@ -4308,31 +4338,45 @@ static SDL_Cursor *makeCursor( const char *rows[16], int hotx, int hoty )
 
 static void initCursors( void )
 {
+    /* Draw: a small solid white box (halo pass adds the black border). */
     static const char *pencil[16] = {
-        "            ##  ", "           #..# ", "          #..## ",
-        "         #..#.  ", "        #..#.   ", "       #..#.    ",
-        "      #..#.     ", "     #..#.      ", "    #..#.       ",
-        "   #..#.        ", "  #..#.         ", " #..#.          ",
-        " #.#.           ", "###.            ", "#.              ",
-        "                " };
-    static const char *erase[16] = {
-        "                ", "                ", "    ########    ",
-        "    #......#    ", "    #......#    ", "    #......#    ",
-        "    #......#    ", "    #......#    ", "    #......#    ",
-        "    #......#    ", "    #......#    ", "    ########    ",
+        "                ", "                ", "                ",
+        "     ......     ", "     ......     ", "     ......     ",
+        "     ......     ", "     ......     ", "     ......     ",
+        "                ", "                ", "                ",
         "                ", "                ", "                ",
         "                " };
-    static const char *drop[16] = {
-        "          ####  ", "          #..#  ", "          #..#  ",
-        "         ##.#   ", "        #.#.    ", "       #.#      ",
-        "      #.#       ", "     #.#        ", "    #.#         ",
-        "   #.#          ", "  #.#           ", " #.#            ",
-        "#.#             ", "##              ", "#               ",
+    /* Erase: a hollow white box; the halo pass paints black on both the inside
+     * and outside of the ring, so it reads as an empty box over anything. */
+    static const char *erase[16] = {
+        "                ", "                ", "                ",
+        "    ........    ", "    .      .    ", "    .      .    ",
+        "    .      .    ", "    .      .    ", "    .      .    ",
+        "    .      .    ", "    ........    ", "                ",
+        "                ", "                ", "                ",
         "                " };
+    /* Eyedropper: a bulb at the upper-right, a diagonal barrel, a tip at the
+     * lower-left (the hotspot / sampled pixel). */
+    static const char *drop[16] = {
+        "                ", "          ...   ", "         .....  ",
+        "         .....  ", "          ...   ", "        ..      ",
+        "       ..       ", "      ..        ", "     ..         ",
+        "    ..          ", "   ..           ", "  ..            ",
+        " ..             ", "..              ", "                ",
+        "                " };
+    /* Select: corner brackets + a centre dot (draw); erase variant drops the
+     * dot so the mode reads at a glance. */
     static const char *select[16] = {
         "                ", "  ...      ...  ", "  .          .  ",
         "  .          .  ", "                ", "                ",
         "                ", "       ..       ", "       ..       ",
+        "                ", "                ", "  .          .  ",
+        "  .          .  ", "  ...      ...  ", "                ",
+        "                " };
+    static const char *selectE[16] = {
+        "                ", "  ...      ...  ", "  .          .  ",
+        "  .          .  ", "                ", "                ",
+        "                ", "                ", "                ",
         "                ", "                ", "  .          .  ",
         "  .          .  ", "  ...      ...  ", "                ",
         "                " };
@@ -4345,10 +4389,11 @@ static void initCursors( void )
         "                " };
     g_curArrow  = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_ARROW );
     g_curResize = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_SIZEWE );
-    g_curPencil = makeCursor( pencil, 1, 14 );
-    g_curErase  = makeCursor( erase,  8, 7  );
-    g_curDrop   = makeCursor( drop,   0, 14 );
+    g_curPencil = makeCursor( pencil, 7, 6  );
+    g_curErase  = makeCursor( erase,  7, 6  );
+    g_curDrop   = makeCursor( drop,   0, 13 );
     g_curSelect = makeCursor( select, 7, 8  );
+    g_curSelectE= makeCursor( selectE,7, 8  );
     g_curSmooth = makeCursor( smooth, 7, 7  );
 }
 
@@ -4360,6 +4405,7 @@ static void freeCursors( void )
     if( g_curErase  ) SDL_FreeCursor( g_curErase );
     if( g_curDrop   ) SDL_FreeCursor( g_curDrop );
     if( g_curSelect ) SDL_FreeCursor( g_curSelect );
+    if( g_curSelectE) SDL_FreeCursor( g_curSelectE );
     if( g_curSmooth ) SDL_FreeCursor( g_curSmooth );
 }
 
@@ -4375,7 +4421,8 @@ static void updateCursor( int mx, int my, int winW, int overSplitter )
     } else if( inView( mx, my ) && !overGui ) {
         if( g_tool == 10 )      c = g_curDrop;    /* eyedropper */
         else if( g_tool == 8 )  c = g_curSmooth;  /* smoother */
-        else if( g_tool == 4 || g_tool == 5 ) c = g_curSelect;
+        else if( g_tool == 4 || g_tool == 5 )
+            c = ( g_mode == 1 ) ? g_curSelectE : g_curSelect;
         else                    c = ( g_mode == 1 ) ? g_curErase : g_curPencil;
     }
     if( c ) SDL_SetCursor( c );

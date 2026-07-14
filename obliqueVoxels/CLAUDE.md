@@ -114,8 +114,12 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
 * Number keys switch the 3D view preset: **1** Front · **2** Back · **3** Left ·
   **4** Right · **5** Top · **6** Bottom · **7** Iso; **0** toggles orthographic
   projection.  The mouse cursor changes to reflect the active tool/mode over the
-  3D view (pencil / eraser block / eyedropper / marquee / smoother-brush), and
-  to a horizontal-resize cursor over a panel splitter.
+  3D view — a solid box (draw), a hollow box (erase), an eyedropper, a corner-
+  bracket marquee (with a centre dot in Draw, dotless in Erase), a smoother
+  disc — and a horizontal-resize cursor over a panel splitter.  Every cursor is
+  a white silhouette with an auto-generated 1px black halo (`makeCursor` promotes
+  any transparent pixel touching white to black), so all of them stay legible
+  over both light voxels and the dark 3D background.
 * **Layers** (Tools panel): up to 16 independent voxel layers, listed top
   (highest z-order) first.  Every edit acts on the single **active** layer
   (click a layer's name to activate it); the oblique render, the 3D preview and
@@ -263,8 +267,12 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   panel: *Load BG image…* / *Clear BG* / *Show BG*).  It is drawn behind the
   render, centred but snapped to a whole-pixel offset so its pixel grid stays
   aligned with the render even when their dimensions differ in parity, and it
-  zooms/pans with the render.  The image is baked into the `.ovox` file (base64
-  RGBA) so the file stays self-contained; **New** and loading a file clear it.
+  zooms/pans with the render.  **BG x** / **BG y** sliders nudge it by whole
+  render pixels off centre (with a *Center BG* reset), so you can register a
+  reference photo against the sculpture; the offset is baked into the `.ovox`
+  file (extra fields on the `BGIMAGE` line).  The image itself is baked in too
+  (base64 RGBA) so the file stays self-contained; **New** and loading a file
+  clear it.
 * **Ctrl+Z / Ctrl+Y** undo / redo (whole gesture at a time).
 * Clicks are gated on the real 3D-viewport rect + an immediate popup-open
   check (not ImGui's one-frame-late hover), so nothing leaks between panels

@@ -310,6 +310,7 @@ void gui_image( unsigned int texId, float w, float h )
  * preview so it centres, scroll-zooms on the cursor, and drag-pans. */
 void gui_pan_zoom_image( unsigned int texId, int imgW, int imgH,
                          unsigned int bgTex, int bgW, int bgH, int showBg,
+                         int bgOffX, int bgOffY,
                          float *zoom, float *panX, float *panY )
 {
     ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -363,8 +364,10 @@ void gui_pan_zoom_image( unsigned int texId, int imgW, int imgH,
         /* background image first, centred on the render but offset by a whole
          * number of pixels so the two pixel grids stay aligned */
         if( showBg && bgTex && bgW > 0 && bgH > 0 ) {
-            float ox = floorf( ( (float)imgW - (float)bgW ) * 0.5f + 0.5f );
-            float oy = floorf( ( (float)imgH - (float)bgH ) * 0.5f + 0.5f );
+            float ox = floorf( ( (float)imgW - (float)bgW ) * 0.5f + 0.5f )
+                       + (float)bgOffX;
+            float oy = floorf( ( (float)imgH - (float)bgH ) * 0.5f + 0.5f )
+                       + (float)bgOffY;
             ImVec2 b0( p0.x + ox * z, p0.y + oy * z );
             ImVec2 b1( b0.x + bgW * z, b0.y + bgH * z );
             dl->AddImage( (ImTextureID)(intptr_t)bgTex, b0, b1 );

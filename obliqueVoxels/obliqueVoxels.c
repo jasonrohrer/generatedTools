@@ -579,7 +579,9 @@ static int g_voxPx        = 6;     /* voxel pixel size (horizontal & base) */
 static int g_frontScrunch = 1;     /* 1..3 : front face height = voxPx/scrunch */
 static int g_topScrunch   = 1;     /* 1..3 : top face height   = voxPx/scrunch */
 static int g_orient       = 0;     /* 0..3 : 90-degree yaw of the oblique view */
-static int g_renderZoom   = 3;     /* integer display magnification */
+static float g_prevZoom   = 3.0f;  /* preview magnification (wheel + slider) */
+static float g_prevPanX   = 0.0f;  /* preview pan offset, screen px from centre */
+static float g_prevPanY   = 0.0f;
 static int g_selLight     = -1;    /* selected light in the panel (-1 none) */
 
 /* the baked oblique render */
@@ -1745,6 +1747,22 @@ static void gestureBegin( int mx, int my )
     int cx, cy, cz, axis, dir, ground;
     g_gActive = 0; g_gHaveB = 0;
     if( !pickCell( mx, my, &cx, &cy, &cz, &axis, &dir, &ground ) ) return;
+    /* Select tool: the marquee sits IN the clicked voxel's layer (not the empty
+     * cell above it), with the below/above sliders sweeping into/out of the
+     * surface.  This must be identical in Draw and Erase mode so dragging Erase
+     * over the same spot deselects exactly what Draw selected -- so we normalise
+     * to the solid hit cell + outward dir regardless of g_mode.  (pickCell gives
+     * the empty neighbour + outward dir in draw mode, and the solid cell +
+     * inward dir in erase mode.) */
+    if( g_tool == 4 && !ground ) {
+        if( g_mode != 1 ) {
+            /* draw mode: step back from the empty neighbour into the solid */
+            if( axis == 0 ) cx -= dir; else if( axis == 1 ) cy -= dir;
+            else cz -= dir;
+        } else {
+            dir = -dir;              /* erase mode: flip inward dir to outward */
+        }
+    }
     g_gAx = g_gBx = cx; g_gAy = g_gBy = cy; g_gAz = g_gBz = cz;
     g_gAxis = axis; g_gDir = dir;
     g_gActive = 1; g_gHaveB = 1;
@@ -2964,6 +2982,33 @@ static void renderOblique( void )
     free( zbuf );
 }
 
+/* Context for the smooth self-shadow suppression below.  Set by shadeWorld
+ * before each face's shadow rays: the receiver voxel cell and whether the
+ * receiver face being shaded is itself smooth. */
+static int g_shadRecvX, g_shadRecvY, g_shadRecvZ;
+static int g_shadRecvSmooth = 0;
+
+/* True if every *visible* (exposed) face of the voxel at (x,y,z) is smooth --
+ * i.e. it is part of a contiguous smoothed surface with no flat facets showing.
+ * Such a voxel should not cast a hard self-shadow onto an immediate smooth
+ * neighbour, which otherwise shows up as a dark stripe where the fitted surface
+ * curves away from the light. */
+static int allVisibleFacesSmooth( int x, int y, int z )
+{
+    static const int nb[6][3] = {
+        { 0, 1, 0 }, { 0,-1, 0 }, { 0, 0, 1 },
+        { 0, 0,-1 }, { 1, 0, 0 }, {-1, 0, 0 } };   /* faceDir6 order */
+    Voxel *v = voxAt( x, y, z );
+    int f, anyVisible = 0;
+    if( !v ) return 0;
+    for( f = 0; f < 6; f++ ) {
+        if( voxAt( x+nb[f][0], y+nb[f][1], z+nb[f][2] ) ) continue;  /* hidden */
+        anyVisible = 1;
+        if( !( ( v->smoothFaces >> f ) & 1 ) ) return 0;  /* a flat facet shows */
+    }
+    return anyVisible;   /* fully-enclosed voxel (no visible face) can't shadow */
+}
+
 /* World-frame shadow ray: 1 if a voxel blocks P->L before reaching L. */
 static int shadowedWorld( double px, double py, double pz,
                           double lx, double ly, double lz )
@@ -2989,7 +3034,24 @@ static int shadowedWorld( double px, double py, double pz,
         else if( tMaxY < tMaxZ )             { t = tMaxY; y += sy; tMaxY += tDY; }
         else                                 { t = tMaxZ; z += sz; tMaxZ += tDZ; }
         if( t > len - 0.02 ) return 0;
-        if( voxAt( x, y, z ) ) return 1;
+        if( voxAt( x, y, z ) ) {
+            /* Smooth self-shadow suppression: when shading a smooth face, ignore
+             * an occluder that sits in the receiver's own 3x3x3 neighbourhood
+             * AND whose every visible face is smooth (part of the same
+             * contiguous curved surface).  This kills the dark stripe from a
+             * smooth voxel shadowing its immediate smooth neighbour as the
+             * surface curves away from the light, while more distant
+             * protrusions -- and any voxel showing a flat facet -- still cast
+             * real shadows. */
+            if( g_shadRecvSmooth ) {
+                int ddx = x - g_shadRecvX, ddy = y - g_shadRecvY,
+                    ddz = z - g_shadRecvZ;
+                if( ddx >= -1 && ddx <= 1 && ddy >= -1 && ddy <= 1 &&
+                    ddz >= -1 && ddz <= 1 && allVisibleFacesSmooth( x, y, z ) )
+                    continue;
+            }
+            return 1;
+        }
     }
     return 0;
 }
@@ -3005,6 +3067,14 @@ static void shadeWorld( double px, double py, double pz,
     int i;
     double accR = g_ambient, accG = g_ambient, accB = g_ambient;
     double scalarLit = g_ambient;
+    /* publish the receiver cell + face-smoothness for smooth self-shadow
+     * suppression inside shadowedWorld */
+    if( v ) {
+        g_shadRecvX = v->x; g_shadRecvY = v->y; g_shadRecvZ = v->z;
+        g_shadRecvSmooth = ( v->smoothFaces >> faceDir6( gnx, gny, gnz ) ) & 1;
+    } else {
+        g_shadRecvSmooth = 0;
+    }
     for( i = 0; i < g_numLights; i++ ) {
         double ldx, ldy, ldz, len, nl, atten, f, lx, ly, lz, vis;
         if( !g_lights[i].enabled ) continue;
@@ -3815,7 +3885,10 @@ static void buildRightPanel( float top, float h, float winW )
     if( gui_slider_int( "smooth radius", &g_smoothRadius, 1, 4 ) ) g_renderDirty = 1;
     if( gui_slider_float( "smooth amount", &g_smoothAmt, 0.0f, 1.0f, "%.2f" ) )
         g_renderDirty = 1;
-    gui_slider_int( "zoom", &g_renderZoom, 1, 12 );
+    gui_slider_float( "zoom", &g_prevZoom, 0.25f, 32.0f, "%.2fx" );
+    gui_same_line();
+    if( gui_small_button( "reset" ) )
+        { g_prevPanX = g_prevPanY = 0.0f; g_prevZoom = 3.0f; }
 
     ensureRender();
     sprintf( buf, "render: %d x %d px", g_imgW, g_imgH );
@@ -3826,10 +3899,9 @@ static void buildRightPanel( float top, float h, float winW )
     gui_separator();
     { float aw, ah;
       gui_content_avail( &aw, &ah );
-      if( gui_begin_child( "renderview", aw, ah, 1 ) ) {
-        if( g_imgTex && g_imgW > 0 )
-            gui_image( g_imgTex, (float)g_imgW * g_renderZoom,
-                       (float)g_imgH * g_renderZoom );
+      if( gui_begin_child( "renderview", aw, ah, 0 ) ) {
+        gui_pan_zoom_image( g_imgTex, g_imgW, g_imgH,
+                            &g_prevZoom, &g_prevPanX, &g_prevPanY );
       }
       gui_end_child();
     }
@@ -3938,17 +4010,26 @@ static void orbitDrag( int dx, int dy )
 
 static void panDrag( int dx, int dy )
 {
-    /* move the target in the camera's right/up plane */
+    /* Move the target within the camera's screen-right/up plane so a pan always
+     * tracks the mouse regardless of orbit angle.  Basis matches gluLookAt's:
+     * forward = normalize(target-eye); right = normalize(forward x worldUp);
+     * up = right x forward.  (The previous version had a scrambled cross
+     * product that flipped the axes after some orbits.) */
     double cp = cos( cam_pitch ), sp = sin( cam_pitch );
     double cy = cos( cam_yaw ),   sy = sin( cam_yaw );
-    double fx = -cp*cy, fy = -sp, fz = -cp*sy;      /* forward */
-    double rx, ry, rz, ux, uy, uz, s;
-    /* right = forward x worldUp */
-    rx = fz*0.0 - fy*1.0; ry = fx*1.0 - fz*0.0; rz = fy*0.0 - fx*1.0;
-    { double l = sqrt(rx*rx+ry*ry+rz*rz); if(l>1e-6){rx/=l;ry/=l;rz/=l;} }
+    double fx = -cp*cy, fy = -sp, fz = -cp*sy;      /* forward (eye->target) */
+    double rx, ry, rz, ux, uy, uz, s, l;
+    /* right = forward x worldUp, worldUp = (0,1,0) */
+    rx = fy*0.0 - fz*1.0;   /* = -fz */
+    ry = fz*0.0 - fx*0.0;   /* = 0    */
+    rz = fx*1.0 - fy*0.0;   /* = fx   */
+    l = sqrt( rx*rx + ry*ry + rz*rz );
+    if( l > 1e-6 ) { rx/=l; ry/=l; rz/=l; }
     /* up = right x forward */
     ux = ry*fz - rz*fy; uy = rz*fx - rx*fz; uz = rx*fy - ry*fx;
     s = cam_dist * 0.0016;
+    /* drag right -> scene moves right -> target moves left (-right);
+       drag down (screen y grows down) -> scene moves down -> target up (+up) */
     cam_tx += (float)( ( -dx*rx + dy*ux ) * s );
     cam_ty += (float)( ( -dx*ry + dy*uy ) * s );
     cam_tz += (float)( ( -dx*rz + dy*uz ) * s );
@@ -4285,7 +4366,10 @@ int main( int argc, char **argv )
         buildDialogs();
 
         /* draggable splitter handles at each panel/view boundary (drawn on the
-         * foreground; the drag itself is handled in the SDL event loop) */
+         * foreground; the drag itself is handled in the SDL event loop).
+         * Suppressed while any menu/popup is open so the foreground handle can't
+         * paint over an open dropdown's text. */
+        if( !gui_any_popup_open() )
         { int mx, my, hotL, hotR;
           float sy = menuH, sh = winH - menuH - 26.0f;
           SDL_GetMouseState( &mx, &my );

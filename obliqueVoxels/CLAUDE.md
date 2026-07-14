@@ -45,6 +45,16 @@ rays over a sphere of source points (a jittered direction for a sun), producing
 a soft penumbra like a soft-box.  A separate **soft rays** slider (1..64) sets
 exactly how many rays are spent — radius and cost are decoupled, so a wide
 penumbra can stay cheap.
+
+**Smooth self-shadow suppression:** when a shadow ray for a *smooth* face is
+blocked by a voxel in the receiver's own 3×3×3 neighbourhood whose every
+*visible* face is also smooth (part of the same contiguous curved surface),
+that occlusion is ignored (the DDA steps past it).  This kills the dark stripe a
+smooth voxel would otherwise cast onto its immediate smooth neighbour as the
+fitted surface curves away from the light, while more distant protrusions — and
+any occluder that shows a flat facet — still cast real shadows onto the smooth
+surface.  (`shadowedWorld` reads the receiver cell / face-smoothness that
+`shadeWorld` publishes into `g_shadRecv*`.)
 Two modes:
 
 1. **Natural** — base color × accumulated (colored) light; may go off-palette.
@@ -217,8 +227,12 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   stays loaded so you can stamp more copies.  The image itself is not saved in
   `.ovox` — only the placed voxels are.
 * Selection: marquee-drag adds voxels (erase mode removes), single-click
-  toggles one.  The Select tool has **below/above** depth sliders that sweep the
-  marquee down into the solid (and up out of it) from the clicked surface.
+  toggles one.  The Select tool's marquee sits **in the layer of voxels you drag
+  on** (the clicked solid cell, not the empty cell above it); the **below/above**
+  depth sliders then sweep it *below* (into the solid) and *above* (out of the
+  surface) that layer.  This anchoring is identical in Draw and Erase mode — so
+  dragging Erase over the same spot with the same below/above deselects exactly
+  the voxels a Draw drag there would select (Erase no longer mirrors the sweep).
   **Ctrl+A** all · **Esc** clear · **Del** delete · Copy/Recolor and
   **Ctrl+C / Ctrl+V** paste (at an editable x,y,z offset).  **Invert** selects
   every unselected voxel.  **Extrude** sweeps the selected shape along a chosen
@@ -226,7 +240,12 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   selection (copies inherit each source voxel's color/ramp) — the whole
   extruded volume becomes the new selection so it can be repeated.
 * Drag the thin handle at either **panel/view boundary** to resize the side
-  panels; the palette grid re-wraps to the new width.
+  panels; the palette grid re-wraps to the new width.  (The handles are hidden
+  while a menu/popup is open so they can't paint over an open dropdown's text.)
+* The **oblique-render preview** (right panel) is centred in its area.  The
+  **zoom** slider magnifies about the centre; the **scroll wheel** over the
+  preview zooms about the cursor; **left-drag** pans; **reset** recentres and
+  restores the default zoom.
 * **Ctrl+Z / Ctrl+Y** undo / redo (whole gesture at a time).
 * Clicks are gated on the real 3D-viewport rect + an immediate popup-open
   check (not ImGui's one-frame-late hover), so nothing leaks between panels

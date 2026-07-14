@@ -100,6 +100,13 @@ void gui_overlay_rect( float x0, float y0, float x1, float y1,
 /* ---- image (the oblique render texture) ---- */
 void gui_image( unsigned int texId, float w, float h );
 
+/* Pan/zoom image canvas filling the available content region.  Draws texId
+ * centred + (*panX,*panY) screen-px offset, scaled by *zoom.  Scroll wheel
+ * over the canvas zooms about the cursor; left-drag pans.  Updates the three
+ * state values in place. */
+void gui_pan_zoom_image( unsigned int texId, int imgW, int imgH,
+                         float *zoom, float *panX, float *panY );
+
 /* ---- popups / modals ---- */
 int  gui_any_popup_open( void );
 void gui_open_popup( const char *id );

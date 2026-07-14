@@ -288,6 +288,65 @@ void gui_image( unsigned int texId, float w, float h )
     ImGui::Image( (ImTextureID)(intptr_t)texId, ImVec2( w, h ) );
 }
 
+/* Pan/zoom image canvas: fills the available content region, draws the texture
+ * centred plus a (*panX,*panY) screen-pixel offset, scaled by *zoom.  Scroll
+ * wheel over the canvas zooms about the mouse point; a left-drag pans.  All
+ * three state values are updated in place.  Used for the oblique-render
+ * preview so it centres, scroll-zooms on the cursor, and drag-pans. */
+void gui_pan_zoom_image( unsigned int texId, int imgW, int imgH,
+                         float *zoom, float *panX, float *panY )
+{
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    if( avail.x < 16.0f ) avail.x = 16.0f;
+    if( avail.y < 16.0f ) avail.y = 16.0f;
+
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImVec2 cMin = origin;
+    ImVec2 cMax( origin.x + avail.x, origin.y + avail.y );
+    ImVec2 center( origin.x + avail.x * 0.5f, origin.y + avail.y * 0.5f );
+
+    ImGui::InvisibleButton( "pzcanvas", avail );
+    bool hovered = ImGui::IsItemHovered();
+    bool active  = ImGui::IsItemActive();
+    ImGuiIO &io  = ImGui::GetIO();
+
+    /* wheel zoom, anchored on the point under the cursor */
+    if( hovered && io.MouseWheel != 0.0f ) {
+        float old = *zoom;
+        float nz  = old * powf( 1.15f, io.MouseWheel );
+        if( nz < 0.25f ) nz = 0.25f;
+        if( nz > 64.0f ) nz = 64.0f;
+        {
+            float icx = center.x + *panX;      /* image centre on screen */
+            float icy = center.y + *panY;
+            float ux  = ( io.MousePos.x - icx ) / old;  /* img-space offset */
+            float uy  = ( io.MousePos.y - icy ) / old;
+            *panX = ( io.MousePos.x - center.x ) - ux * nz;
+            *panY = ( io.MousePos.y - center.y ) - uy * nz;
+            *zoom = nz;
+        }
+    }
+
+    /* left-drag pans */
+    if( active && ImGui::IsMouseDragging( ImGuiMouseButton_Left, 0.0f ) ) {
+        *panX += io.MouseDelta.x;
+        *panY += io.MouseDelta.y;
+    }
+
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled( cMin, cMax, IM_COL32( 18, 19, 22, 255 ) );
+    dl->PushClipRect( cMin, cMax, true );
+    if( texId && imgW > 0 && imgH > 0 ) {
+        float hw = imgW * (*zoom) * 0.5f;
+        float hh = imgH * (*zoom) * 0.5f;
+        ImVec2 p0( center.x + *panX - hw, center.y + *panY - hh );
+        ImVec2 p1( center.x + *panX + hw, center.y + *panY + hh );
+        dl->AddImage( (ImTextureID)(intptr_t)texId, p0, p1 );
+    }
+    dl->PopClipRect();
+    dl->AddRect( cMin, cMax, IM_COL32( 90, 90, 100, 255 ) );
+}
+
 /* ---- popups ---- */
 void gui_open_popup( const char *id ) { ImGui::OpenPopup( id ); }
 int  gui_begin_popup( const char *id ) { return ImGui::BeginPopup( id ) ? 1 : 0; }

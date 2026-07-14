@@ -1,16 +1,18 @@
 Incredible work!  This is turning into an amazingly powerful tool.  There's never been anything like it before for making pixel art.  It's borderline revolutionary.
 
---Long-standing issue I keep forgetting about:  the draggable separator to change the side panel widths is drawn ABOVE the drop-down menus at the top, causing the text in the menu to get covered by the separator.
-
---We should be able to zoom in and out of the pixel preview with the scroll wheel, and pan around by clicking and dragging in there.
-
---The pixel preview should be centered in that side area instead of slammed top-left.  So we zoom in and out of the center with the slider.  Scroll wheel should zoom centered on wherever the mouse is.
-
---The draw tools make sense in both Draw mode, where the thickness is ABOVE the surface, and Erase mode, where the thickness digs into the surface.  However, for Selection, this reversal does not make sense, because we already have above/below settings for that tool.  Currently, switching to ERASE for selection makes it do the opposite thing that Draw would do (so if you drew 2 below, with the marquee on the surface, and erase with the same setting, the marqee digs 1 into the surface and then we erase 2 ABOVE that).  When select is 0,0 (below,above), it's already a little weird that the marquee is above what you click on, instead of in the layer that you click on.  So... select should be changed so the marquee is IN the layer of voxels you drag on, instead of above it, and then the above/below sliders should go above/below that.  Then switching to ERASE and dragging in the same place should erase exactly the same blocks from the selection that were just drawn.  Above and below should have the same effect on ERASE and Draw (for selections only), instead of reversing.
-
---There's something weird with dragging with the middle mouse button to move the view around.  It works intuitively sometimes, but then it seems to get discombobulated and move in the opposite way (up is down, left is right)after rotating the view.  I guess the move should always be relative to the camera and angle.
+Wow, the self-shadow fix worked great!
 
 
---Smoothed surfaces are looking great, generally!  There's still a small problem with blocks casting shadows on neighboring blocks, especially as the curved surface curves away from the light source.  There are no shading stripes (good!) but sometimes we can get dark stripes from shadows.   We still want voxels to cast shadows on smoothed surfaces... we don't want to lose that, and sometimes smoothed voxels should cast shadows on other smoothed voxels.  How about this:
+--Since this is a perfect pixel art program, we actually don't need anything but integer zoom factors in the pixel preview.  It should stop at 1, and go up and down by integer steps.  3 is a fine default (for the reset button), but even the scroll wheel should go up and down by integer steps.
 
-We look at the source of the shadow that's hitting a smoothed face, and if it's coming from a very close voxel (like in the 3x3 neighborhood around our voxel) AND all of that shadow-causing voxel's visible surfaces are smooth, then we ignore that shadow.  This would fix very local self-shadowing on contiguous smoothed surface, I think, but still alow more distant protrusions on a smooth surface to cast shadows on the rest of the surface.
+--It seems like an orthographic mode (no perspective) would be useful in the 3D view, especially for top, front, etc.   Can the view menu have an orthographic checkbox?  Not sure what will happen when we go to rotate... but let's just try it and see how it feels.
+
+--We need keyboard shortcuts for the different views.  Probably the numbers are better for those, and then come up with letters for each of the drawing tools.  Maybe look at what Aseprite uses as letter shortcuts for their drawing tools?  Holding ALT quick-toggles the eyedropper, for example.
+
+--Also, can we get a cursor change when we're in eyedropper mode?  Also a cursor change when in erase vs drawing mode vs select mode vs smoother mode.
+
+--We should have keyboard shortcuts for the different views.  Since the numbers will be freed up, probably use those.  Also a shortcut to toggle ortho on and off (maybe 0 would be good for that).
+
+--There should be a little text display, dead-center above the 3D window, that tells you what view you're in, and whether it's orthographic or not (the name of a fixed view should disappear if you rotate out of that view with the mouse, but not if you pan around).
+
+--It would be nice to be able to load a BG pixel image to show behind the pixel render, to give it context.  Whatever image is loaded should be centered behind our pixel preview, with perfect pixel alignment (even if our BG is even dimensions while our pixel preview is odd dimensions), and zoom in and out with it, and we should have a checkbox in the view settings on the right sidebar to toggle it.  The load bg image button can be over there too, and one to clear it.  Can the BG image pixels just be baked right into the ovox file format, so there are no external references?

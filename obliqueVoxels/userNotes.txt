@@ -1,6 +1,6 @@
 Amazing!
 
 
-One last thing, for now:
+--We should be able to import VOX files that were saved by Magica Voxel.  I'm sure you can find explanations of the file format online.  We don't need to import colors or anything, just the voxels themselves.  Look at the sample knight.vox
 
---In Ortho view mode, I'm noticing that paralle lines diverge a small bit as they go back away from the camera.  I've confirmed that this is not just an illusion.  Hopefully it can be fixed.
+

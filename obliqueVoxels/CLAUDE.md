@@ -68,11 +68,16 @@ Two modes:
 
 ```
 make                # gcc -std=c89 app + g++ imgui shim, links SDL2/GLU/GL
-./obliqueVoxels [file.ovox]
+./obliqueVoxels [file.ovox | file.vox]
 ./shot.sh out.png [args]           # headless Xvfb screenshot
 OV_QUIT=N ./obliqueVoxels          # auto-quit after N frames (launch timing)
 OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
+OV_SELFTEST=1 OV_QUIT=5 ...        # run the built-in self-tests, print result
 ```
+
+A command-line argument ending in `.vox` is imported as a MagicaVoxel model
+into an empty scene rather than loaded as a sculpture (see **Importing
+MagicaVoxel `.vox`** below).
 
 ## Layout
 
@@ -81,8 +86,8 @@ OV_EXPORT=out.png OV_QUIT=30 ...   # auto-export the oblique render on quit
   orbit camera, fixed-function 3D preview (with a cached real-lit face list for
   "match render" mode), mouse→ray picking (Amanatides-Woo DDA), plane-locked
   region-gesture tools (line/rect/box) + marquee selection & clipboard, the CPU
-  oblique renderer, `.ovox` and PNG I/O, and all the ImGui panel logic driven
-  through the shim.
+  oblique renderer, `.ovox` / MagicaVoxel `.vox` / PNG I/O, and all the ImGui
+  panel logic driven through the shim.
 * `gui.h` / `gui.cpp` — thin **C** API over Dear ImGui + SDL2/OpenGL2 backends
   (C++), so the app stays C89.  Adds a color-swatch and drag-to-select palette
   grid widget.
@@ -335,6 +340,52 @@ optional trailing fields).  (Legacy `S x y z` smoother-cell lines from older
 builds are silently ignored.)  **File ▸ Import lighting** reads just the
 `AMBIENT`/`L` lines from another `.ovox` and replaces the current scene's
 lighting (for lighting a matched set identically).
+
+## Importing MagicaVoxel `.vox`
+
+**File ▸ Import MagicaVoxel (.vox)…** (or `./obliqueVoxels model.vox`) reads a
+MagicaVoxel model into the **active layer** as one undo step.  `.vox` is a
+RIFF-ish chunk tree — a `VOX ` magic + version, then a `MAIN` chunk whose
+children carry the payload; every chunk is a 4-byte id, an int32 content size,
+an int32 children size, the content, then the children.  We read:
+
+* `SIZE` + `XYZI` pairs — each pair is one **model** (`XYZI` is a count then one
+  `x,y,z,colorIndex` byte quad per voxel).
+* `nTRN` / `nGRP` / `nSHP` — the **scene graph** that places the models.  A file
+  with several models relies on it, so ignoring it would pile them all at the
+  origin.  We walk from root node id 0, composing each `nTRN`'s frame-0 `_t`
+  translation and `_r` rotation byte (bits 0-1 and 2-3 pick the column of the
+  single non-zero in rows 0 and 1, row 2 takes the one left over; bits 4/5/6 are
+  their signs).  A model's local origin is its **centre**, so a voxel's model
+  point is `v - size/2` — that pivot is what sets models' placement relative to
+  each other.  Only frame 0 is used (later frames are animation).
+* `RGBA` — the file's 256-entry palette.  A voxel's colour index `c` reads entry
+  **`c-1`**.  Each imported voxel becomes a flat one-colour voxel at the nearest
+  sample in our palette (like the PNG wall import).  This is more than
+  `userNotes` asked for, but importing in the default paint colour (index 15 =
+  pure black) would arrive as an unreadable black blob; **Ctrl+A** then
+  **Recolor** puts the whole model on one ramp.  A file with no `RGBA` chunk
+  falls back to the current paint colour/ramp.
+
+Everything else (`PACK`, `LAYR`, `MATL`, `rOBJ`, `rCAM`, `NOTE`) is skipped.  A
+file with no scene graph at all (older versions) places each model at its raw
+coordinates.
+
+**Coordinates:** MagicaVoxel is z-up with +y receding from the viewer in its
+front view; we are y-up with −z facing the viewer.  So `(x,y,z)vox ->
+(-x, z, y)` here — a proper rotation (determinant +1), so a model arrives
+**unmirrored**, facing our Front view exactly as it faces MagicaVoxel's.  The
+result is then re-centred on the origin in x/z and dropped onto `y=0`, so a
+model shows up where you can see it no matter where its scene graph put it; the
+3D view frames it, and an import into an unlit scene gets a default key light
+(otherwise a fresh command-line import would render solid black).
+
+The parser is bounds-checked against every chunk's own extent, so truncated or
+corrupt files fail cleanly rather than crashing (verified with a truncation
+sweep and ASan).  `OV_SELFTEST=1` covers the coordinate mapping (with an
+*asymmetric* test shape — a symmetric one maps onto itself under a mirror and
+would let a flipped axis pass), the rotation decode, the multi-model pivot, the
+`c-1` palette convention, and the single-step undo.
 
 ## Notes
 

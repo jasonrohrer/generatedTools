@@ -1,6 +1,1 @@
-Amazing!
-
-
---We should be able to import VOX files that were saved by Magica Voxel.  I'm sure you can find explanations of the file format online.  We don't need to import colors or anything, just the voxels themselves.  Look at the sample knight.vox
-
-
+(Add new testing notes below.)

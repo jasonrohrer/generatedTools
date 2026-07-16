@@ -64,6 +64,53 @@ Two modes:
    (dragged out on the palette grid).  Auto-oriented by luminance so the dark
    end always maps to the least-lit sample.  A 1-color ramp is flat.
 
+### Specular (shininess)
+
+A **shininess** slider (0..1) mixes a specular highlight into either mode.  It
+is a pure mix amount: at **0 no specular term is computed or added at all**, so
+the render is bit-for-bit the plain Lambert result it has always been (verified
+by exporting the sample `.ovox` files before/after and comparing PNGs).  Above
+0, a **spec power** slider (1..128) sets the highlight tightness and a
+**Blinn-Phong (off = Phong)** checkbox picks the algorithm.
+
+The highlight is accumulated per light, inside the same loop and gated on the
+same `nl > 0`, shadow visibility and attenuation as the diffuse term — so a
+highlight can never appear on a back face or inside a shadow.  It uses the
+*shading* normal, so a smooth face's fitted normal carries the highlight
+smoothly across a curved surface.  It is added, not multiplied:
+
+* **Natural** — `base*diffuse + specular`, the specular tinted by the light's
+  color (not the base color), so a hot spot goes toward the light's color.
+* **Palette ramp** — there are no off-palette colors to spend on a highlight,
+  so the specular is added to the scalar brightness *before* it indexes the
+  ramp: a hot spot reads as a patch of the ramp's lightest samples.
+
+**The eye vector comes from the oblique projection, not the 3D orbit camera**
+(`obliqueViewDir`).  This is deliberate: the highlight belongs to the baked
+pixel art, so it must not swim around as you orbit, and deriving it this way is
+what keeps the "match render" preview agreeing with the render face-for-face.
+In the view frame a point's image position is `(u*voxPx, C - v*frontH +
+w*topH)`, so a displacement leaves the image unchanged iff `du = 0` and
+`-dv*frontH + dw*topH = 0`; `(0, topH, frontH)` satisfies that with `dw > 0`
+(toward the viewer), so it *is* the projector direction — the classic `(0,1,1)`
+45° top-front oblique when nothing is scrunched, and it correctly follows the
+scrunch sliders and `orient` (via `fromUVW`).
+
+## Palette
+
+The default palette is **Sheltzy32 with ramps** — the contents of
+`sheltzy32_withRamps.gpl` **baked into the binary** as `g_palDefault`
+(`paletteDefault`), so a fresh scene never depends on a `.gpl` sitting in the
+working directory.  It is 140 entries: 32 base colors, 8 black padding entries
+that align what follows to rows of 10, then ten 10-entry hue ramps (dark →
+light) to drag across on the palette grid.  **File ▸ Load palette (.gpl)** still
+loads any other GIMP palette, and a `.ovox` carries its own palette inline.
+
+Because of that padding, a *fixed* palette index is not a safe default color for
+a light — index 33 is one of the blacks, and a black light renders nothing.  So
+`paletteBrightest()` picks the brightest entry instead, and every default light
+uses it.
+
 ## Build & run
 
 ```
@@ -256,7 +303,9 @@ MagicaVoxel `.vox`** below).
   **world space** at the same surface point, so a voxel's baked pixels and its
   3D-preview faces always agree (an earlier mismatch came from the renderer
   shading in the negated-axis view frame, which shifted local-light distances).
-* **Display** menu toggles: preview shading mode, voxel edges, **Smooth faces
+* **Display** menu toggles: preview shading mode (**match render** is the
+  default, so what you sculpt already looks like what bakes), voxel edges,
+  **Smooth faces
   (cyan X)** which draws a cyan outline and an X across every visible smooth
   face, **Surface normals** (every visible face gets a translucent tile lying in
   the plane perpendicular to the shading normal it will actually use — tilted
@@ -335,8 +384,10 @@ trailing `infinite` flag (1 = directional "sun", parallel rays and no distance
 falloff, with x,y,z read as a direction), `size` (soft-light radius, 0 = hard)
 and `samples` (soft-shadow ray count, default 8) are optional so older files
 still load.  The `RENDER` line is `RENDER shadingMode voxPx frontScrunch
-topScrunch orient [smoothRadius [smoothAmount]]` (the two smoothing params are
-optional trailing fields).  (Legacy `S x y z` smoother-cell lines from older
+topScrunch orient [smoothRadius [smoothAmount [shininess [specPower
+[specBlinn]]]]]` — every trailing field is optional, so a file written before
+the specular existed still loads and, describing a matte render, defaults
+`shininess` to 0 and renders exactly as it always did.  (Legacy `S x y z` smoother-cell lines from older
 builds are silently ignored.)  **File ▸ Import lighting** reads just the
 `AMBIENT`/`L` lines from another `.ovox` and replaces the current scene's
 lighting (for lighting a matched set identically).
@@ -392,4 +443,10 @@ would let a flipped axis pass), the rotation decode, the multi-model pivot, the
 * No threads; launches in ~0.2 s.
 * The oblique render recomputes on every edit (`g_renderDirty`); shadow rays are
   capped so large sculptures stay responsive.
+* **Watch the sign of x when placing a light.**  In the Front view screen-right
+  is **−x**, not +x (`toUVW` case 0 is `u = -x`, `w = -z`; the 3D Front preset
+  agrees, since a camera at −z looking toward +z with +y up has right = −x).  So
+  "front upper right" — where every default key light goes — is **negative x,
+  positive y, negative z**.  Reading it as (+x,+y,+z) puts the light *behind* the
+  sculpture on the *left*, leaving the front faces unlit.
 * `userNotes.txt` is where testers log issues to fix — check it each session.

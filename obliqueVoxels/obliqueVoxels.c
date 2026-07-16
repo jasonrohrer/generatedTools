@@ -55,30 +55,60 @@ static unsigned char g_pal[ MAX_COLORS * 3 ]; /* r,g,b per color */
 static int  g_palCount = 0;
 static char g_palName[ 128 ] = "default";
 
-/* Build a simple default palette: a dark->light grey ramp plus a few hues,
- * used if no .gpl is found next to the binary. */
+/* The default palette, baked in so a fresh scene never depends on a .gpl
+ * sitting in the working directory: Sheltzy32 with ramps, exactly the contents
+ * of sheltzy32_withRamps.gpl.  The first 32 entries are the base palette; then
+ * 8 black padding entries align what follows to rows of 10; then ten 10-entry
+ * hue ramps (dark -> light) that the palette grid can be dragged across. */
+static const unsigned char g_palDefault[ 140 * 3 ] = {
+    140,255,222,  69,184,179, 131,151, 64, 201,236,133,  70,198, 87,
+     21,137,104,  44, 91,109,  34, 42, 92,  86,106,137, 139,171,191,
+    204,226,225, 255,219,165, 204,172,104, 163,109, 62, 104, 60, 52,
+      0,  0,  0,  56,  0, 44, 102, 59,147, 139,114,222, 156,216,252,
+     94,150,221,  57, 83,192, 128, 12, 83, 195, 75,145, 255,148,179,
+    189, 31, 63, 236, 97, 74, 255,164,104, 255,246,174, 255,218,112,
+    244,176, 60, 255,255,255,   0,  0,  0,   0,  0,  0,   0,  0,  0,
+      0,  0,  0,   0,  0,  0,   0,  0,  0,   0,  0,  0,   0,  0,  0,
+      0,  0,  0,   0,  0,  0,   0,  0,  0,   0,  0,  0,  56,  0, 44,
+     34, 42, 92,  44, 91,109,  69,184,179, 156,216,252, 255,255,255,
+      0,  0,  0,   0,  0,  0,   0,  0,  0,   0,  0,  0,  56,  0, 44,
+     34, 42, 92,  57, 83,192,  94,150,221, 156,216,252, 255,255,255,
+      0,  0,  0,   0,  0,  0,   0,  0,  0,   0,  0,  0,  56,  0, 44,
+     34, 42, 92,  86,106,137, 139,171,191, 204,226,225, 255,255,255,
+      0,  0,  0,   0,  0,  0,   0,  0,  0,   0,  0,  0,   0,  0,  0,
+     56,  0, 44, 102, 59,147, 139,114,222, 156,216,252, 255,255,255,
+      0,  0,  0,   0,  0,  0,   0,  0,  0,   0,  0,  0,   0,  0,  0,
+     56,  0, 44, 128, 12, 83, 195, 75,145, 255,148,179, 255,255,255,
+      0,  0,  0,   0,  0,  0,   0,  0,  0,  56,  0, 44, 128, 12, 83,
+    189, 31, 63, 236, 97, 74, 255,164,104, 255,219,165, 255,255,255,
+      0,  0,  0,   0,  0,  0,   0,  0,  0,   0,  0,  0,  56,  0, 44,
+    104, 60, 52, 163,109, 62, 204,172,104, 255,219,165, 255,255,255,
+      0,  0,  0,   0,  0,  0,   0,  0,  0,  56,  0, 44, 104, 60, 52,
+    163,109, 62, 244,176, 60, 255,218,112, 255,246,174, 255,255,255,
+      0,  0,  0,   0,  0,  0,   0,  0,  0,   0,  0,  0,  56,  0, 44,
+     34, 42, 92,  44, 91,109, 131,151, 64, 201,236,133, 255,255,255,
+      0,  0,  0,   0,  0,  0,   0,  0,  0,  56,  0, 44,  34, 42, 92,
+     44, 91,109,  21,137,104,  70,198, 87, 201,236,133, 255,255,255
+};
+
 static void paletteDefault( void )
 {
-    int i;
-    g_palCount = 0;
-    for( i = 0; i < 8; i++ ) {
-        int v = i * 255 / 7;
-        g_pal[ g_palCount*3+0 ] = (unsigned char)v;
-        g_pal[ g_palCount*3+1 ] = (unsigned char)v;
-        g_pal[ g_palCount*3+2 ] = (unsigned char)v;
-        g_palCount++;
+    memcpy( g_pal, g_palDefault, sizeof g_palDefault );
+    g_palCount = (int)( sizeof g_palDefault / 3 );
+    strcpy( g_palName, "Sheltzy32" );
+}
+
+/* Palette index of the brightest entry -- the sane default color for a new
+ * light.  A fixed index would land on one of the ramp-alignment padding blacks
+ * in a palette like the default one, and a black light renders nothing. */
+static int paletteBrightest( void )
+{
+    int i, best = 0, bestLum = -1;
+    for( i = 0; i < g_palCount; i++ ) {
+        int lum = g_pal[i*3+0] + g_pal[i*3+1] + g_pal[i*3+2];
+        if( lum > bestLum ) { bestLum = lum; best = i; }
     }
-    /* a few saturated hues */
-    { static const unsigned char hues[8][3] = {
-        {190,60,60},{60,150,80},{70,90,180},{200,170,60},
-        {150,80,170},{60,170,180},{210,120,60},{230,230,140} };
-      for( i = 0; i < 8; i++ ) {
-        g_pal[ g_palCount*3+0 ] = hues[i][0];
-        g_pal[ g_palCount*3+1 ] = hues[i][1];
-        g_pal[ g_palCount*3+2 ] = hues[i][2];
-        g_palCount++;
-      } }
-    strcpy( g_palName, "default" );
+    return best;
 }
 
 /* Load a GIMP .gpl palette.  Returns 1 on success. */
@@ -566,7 +596,7 @@ static int   g_impUx = 1, g_impUy = 0, g_impUz = 0; /* image-width axis (live in
 static int   g_impVx = 0, g_impVy = 1, g_impVz = 0; /* image-height axis (live in stage 2) */
 
 /* preview toggles */
-static int g_previewShade = 1;     /* 0 flat, 1 quick preview, 2 match render */
+static int g_previewShade = 2;     /* 0 flat, 1 quick preview, 2 match render */
 static int g_previewEdges = 1;
 static int g_showSmoothWire = 1;   /* cyan outline + X on smoothed voxel faces   */
 static int g_showSurfNormals = 0;  /* draw fitted surface normals (best-fit viz) */
@@ -578,6 +608,13 @@ static int g_pasteDX = 2, g_pasteDY = 0, g_pasteDZ = 0;
 
 /* oblique render parameters */
 static int g_shadingMode  = 0;     /* 0 natural, 1 palette-ramp */
+
+/* Specular highlight.  g_shininess is a pure MIX amount: at 0 no specular term
+ * is computed or added at all, so the render is bit-for-bit the plain
+ * Lambert + shadow result it has always been. */
+static float g_shininess = 0.0f;   /* 0 = off (matte, the original look)      */
+static float g_specPower = 24.0f;  /* Phong / Blinn-Phong exponent            */
+static int   g_specBlinn = 1;      /* 1 = Blinn-Phong, 0 = classic Phong      */
 static int g_voxPx        = 6;     /* voxel pixel size (horizontal & base) */
 static int g_frontScrunch = 1;     /* 1..3 : front face height = voxPx/scrunch */
 static int g_topScrunch   = 1;     /* 1..3 : top face height   = voxPx/scrunch */
@@ -825,6 +862,32 @@ static void fromUVW( double u, double v, double w, double *x, double *y, double 
         case 2:  *x =  u; *z =  w; break;
         default: *x = -w; *z =  u; break;
     }
+}
+
+/* Unit world-space direction from any surface point TOWARD the viewer, for the
+ * oblique projection -- the eye vector a specular highlight needs.
+ *
+ * Derived from the projection itself rather than from the 3D orbit camera, on
+ * purpose: the highlight belongs to the baked pixel art, so it must not swim
+ * around as you orbit, and shading it this way keeps the "match render" preview
+ * agreeing with the render face-for-face.
+ *
+ * In the view frame a point's image position is (u*voxPx, C - v*frontH +
+ * w*topH), so a displacement leaves the image unchanged iff du = 0 and
+ * -dv*frontH + dw*topH = 0.  (0, topH, frontH) satisfies that and has dw > 0
+ * (toward the viewer), so it IS the projector direction.  With no scrunch it
+ * reduces to (0,1,1) -- the classic 45 degree top-front oblique.  Being a
+ * parallel projection, it is constant over the whole image. */
+static void obliqueViewDir( double *vx, double *vy, double *vz )
+{
+    int frontH = g_voxPx / g_frontScrunch;
+    int topH   = g_voxPx / g_topScrunch;
+    double len;
+    if( frontH < 1 ) frontH = 1;
+    if( topH   < 1 ) topH   = 1;
+    fromUVW( 0.0, (double)topH, (double)frontH, vx, vy, vz );
+    len = sqrt( (*vx)*(*vx) + (*vy)*(*vy) + (*vz)*(*vz) );
+    if( len > 1e-9 ) { *vx /= len; *vy /= len; *vz /= len; }
 }
 
 /* Occupancy test in the view frame (integer cell). */
@@ -3034,7 +3097,7 @@ static int importVox( const char *path )
          * model: up and in front, on the side the Front view calls right. */
         if( g_numLights == 0 )
             lightAdd( cam_tx - big, big * 2.0f, cam_tz - big,
-                      g_palCount > 34 ? 33 : g_palCount - 1, 1.4f );
+                      paletteBrightest(), 1.4f );
     }
     sprintf( m, "Imported %d voxels (%d x %d x %d) from .vox", count,
              maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1 );
@@ -3708,6 +3771,13 @@ static void shadeWorld( double px, double py, double pz,
     int i;
     double accR = g_ambient, accG = g_ambient, accB = g_ambient;
     double scalarLit = g_ambient;
+    /* Specular is accumulated separately from the diffuse light so it can be
+     * ADDED on top at the end (the usual way: base*diffuse + specular), rather
+     * than tinting the highlight by the base color.  All of it is skipped when
+     * shininess is 0, leaving the original matte result untouched. */
+    double specR = 0.0, specG = 0.0, specB = 0.0, specLit = 0.0;
+    double vdx = 0.0, vdy = 0.0, vdz = 0.0;
+    if( g_shininess > 0.0f ) obliqueViewDir( &vdx, &vdy, &vdz );
     /* publish the receiver cell + face-smoothness for smooth self-shadow
      * suppression inside shadowedWorld */
     if( v ) {
@@ -3746,6 +3816,35 @@ static void shadeWorld( double px, double py, double pz,
         accG += f * g_pal[ g_lights[i].color*3+1 ] / 255.0;
         accB += f * g_pal[ g_lights[i].color*3+2 ] / 255.0;
         scalarLit += f;
+
+        /* Specular, from the same light, shadow term and attenuation as the
+         * diffuse above -- so a highlight cannot appear in shadow.  It uses the
+         * SHADING normal (n), not the geometric one, so a smooth face's fitted
+         * normal carries the highlight across a curved surface. */
+        if( g_shininess > 0.0f ) {
+            double sp;
+            if( g_specBlinn ) {
+                /* Blinn-Phong: n . halfway(light, eye) */
+                double hx = ldx + vdx, hy = ldy + vdy, hz = ldz + vdz;
+                double hlen = sqrt( hx*hx + hy*hy + hz*hz );
+                sp = hlen < 1e-9 ? 0.0 : ( nx*hx + ny*hy + nz*hz ) / hlen;
+            } else {
+                /* Phong: reflect(-light, n) . eye.  n and ld are unit, so the
+                 * reflected vector is unit already. */
+                double rx = 2.0*nl*nx - ldx;
+                double ry = 2.0*nl*ny - ldy;
+                double rz = 2.0*nl*nz - ldz;
+                sp = rx*vdx + ry*vdy + rz*vdz;
+            }
+            if( sp > 0.0 ) {
+                double s = pow( sp, (double)g_specPower )
+                           * g_shininess * atten * vis;
+                specR += s * g_pal[ g_lights[i].color*3+0 ] / 255.0;
+                specG += s * g_pal[ g_lights[i].color*3+1 ] / 255.0;
+                specB += s * g_pal[ g_lights[i].color*3+2 ] / 255.0;
+                specLit += s;
+            }
+        }
     }
     if( g_shadingMode == 1 ) {
         int rl = v->rampLen < 1 ? 1 : v->rampLen;
@@ -3753,7 +3852,10 @@ static void shadeWorld( double px, double py, double pz,
         int hi = clampi( v->rampStart + rl - 1, 0, g_palCount - 1 );
         int lumLo = g_pal[lo*3]+g_pal[lo*3+1]+g_pal[lo*3+2];
         int lumHi = g_pal[hi*3]+g_pal[hi*3+1]+g_pal[hi*3+2];
-        double t = clampf( (float)scalarLit, 0.0f, 1.0f );
+        /* Ramp mode has no off-palette colors to spend on a highlight, so the
+         * specular simply pushes the brightness up the voxel's own ramp -- a
+         * hot spot reads as a patch of the ramp's lightest samples. */
+        double t = clampf( (float)( scalarLit + specLit ), 0.0f, 1.0f );
         int idx = (int)( t * rl );
         if( idx >= rl ) idx = rl - 1;
         if( lumLo > lumHi ) idx = rl - 1 - idx;
@@ -3764,9 +3866,9 @@ static void shadeWorld( double px, double py, double pz,
         double br = g_pal[ bc*3+0 ] / 255.0;
         double bg = g_pal[ bc*3+1 ] / 255.0;
         double bb = g_pal[ bc*3+2 ] / 255.0;
-        out[0] = (unsigned char)clampi( (int)( br * accR * 255.0 + 0.5 ), 0, 255 );
-        out[1] = (unsigned char)clampi( (int)( bg * accG * 255.0 + 0.5 ), 0, 255 );
-        out[2] = (unsigned char)clampi( (int)( bb * accB * 255.0 + 0.5 ), 0, 255 );
+        out[0] = (unsigned char)clampi( (int)( ( br*accR + specR ) * 255.0 + 0.5 ), 0, 255 );
+        out[1] = (unsigned char)clampi( (int)( ( bg*accG + specG ) * 255.0 + 0.5 ), 0, 255 );
+        out[2] = (unsigned char)clampi( (int)( ( bb*accB + specB ) * 255.0 + 0.5 ), 0, 255 );
     }
     out[3] = 255;   /* opaque: the oblique renderer bakes onto a clear buffer */
 }
@@ -4008,9 +4110,10 @@ static void saveSculpture( const char *path )
                  g_lights[i].x, g_lights[i].y, g_lights[i].z,
                  g_lights[i].color, g_lights[i].intensity, g_lights[i].enabled,
                  g_lights[i].infinite, g_lights[i].size, g_lights[i].samples );
-    fprintf( f, "RENDER %d %d %d %d %d %d %.4f\n", g_shadingMode, g_voxPx,
-             g_frontScrunch, g_topScrunch, g_orient,
-             g_smoothRadius, g_smoothAmt );
+    fprintf( f, "RENDER %d %d %d %d %d %d %.4f %.4f %.4f %d\n", g_shadingMode,
+             g_voxPx, g_frontScrunch, g_topScrunch, g_orient,
+             g_smoothRadius, g_smoothAmt,
+             g_shininess, g_specPower, g_specBlinn );
     fprintf( f, "ACTIVE %d\n", g_activeLayer );
     /* Optional preview background image, baked in as base64 RGBA so the .ovox
      * stays self-contained (no external file reference). */
@@ -4144,10 +4247,18 @@ static int loadSculpture( const char *path )
             }
         } else if( line[0] == 'R' ) {
             float sa = g_smoothAmt; int sr = g_smoothRadius;
-            sscanf( line, "RENDER %d %d %d %d %d %d %f", &g_shadingMode, &g_voxPx,
-                    &g_frontScrunch, &g_topScrunch, &g_orient, &sr, &sa );
+            /* The specular fields are optional trailing values; a file written
+             * before they existed describes a matte render, so default to 0. */
+            float sh = 0.0f, sp = 24.0f; int sb = 1;
+            sscanf( line, "RENDER %d %d %d %d %d %d %f %f %f %d",
+                    &g_shadingMode, &g_voxPx,
+                    &g_frontScrunch, &g_topScrunch, &g_orient, &sr, &sa,
+                    &sh, &sp, &sb );
             g_smoothRadius = clampi( sr, 1, 4 );
             g_smoothAmt = clampf( sa, 0.0f, 1.0f );
+            g_shininess = clampf( sh, 0.0f, 1.0f );
+            g_specPower = clampf( sp, 1.0f, 128.0f );
+            g_specBlinn = sb ? 1 : 0;
         } else if( line[0] == 'V' && line[1] == ' ' ) {
             int x,y,z,col,rs,rl,sm=0;
             int got = sscanf( line, "V %d %d %d %d %d %d %d",
@@ -4263,7 +4374,11 @@ static void buildDemoScene( void )
     voxSet( 2, 5, 3, 15, 15, 1 );
     voxSet( 3, 5, 3, 15, 15, 1 );
 
-    lightAdd( 10.0f, 12.0f, 6.0f, g_palCount>34?33:g_palCount-1, 1.1f );
+    /* Key light up and in FRONT, on the side the Front view calls right.  The
+     * oblique Front view has screen-right = -x and the viewer at -z (toUVW:
+     * u = -x, w = -z), so front-upper-right is negative x, positive y,
+     * negative z. */
+    lightAdd( -10.0f, 12.0f, -6.0f, paletteBrightest(), 1.1f );
     cam_tx = 3.0f; cam_ty = 2.5f; cam_tz = 3.0f;
 }
 
@@ -4634,6 +4749,17 @@ static void buildLeftPanel( float top, float h )
     if( gui_combo( "mode", &g_shadingMode, shadeItems, 2 ) ) g_renderDirty = 1;
     if( gui_slider_float( "ambient", &g_ambient, 0.0f, 1.0f, "%.2f" ) )
         g_renderDirty = 1;
+    if( gui_slider_float( "shininess", &g_shininess, 0.0f, 1.0f, "%.2f" ) )
+        g_renderDirty = 1;
+    if( g_shininess > 0.0f ) {
+        if( gui_slider_float( "spec power", &g_specPower, 1.0f, 128.0f, "%.0f" ) )
+            g_renderDirty = 1;
+        if( gui_checkbox( "Blinn-Phong (off = Phong)", &g_specBlinn ) )
+            g_renderDirty = 1;
+        gui_text( "higher power = tighter highlight" );
+    } else {
+        gui_text( "0 = matte (no specular)" );
+    }
 
     gui_separator_text( "Lights" );
     { int i;
@@ -4657,8 +4783,9 @@ static void buildLeftPanel( float top, float h )
       }
     }
     if( g_numLights < MAX_LIGHTS && gui_button( "Add light" ) ) {
-        lightAdd( cam_tx + 6.0f, cam_ty + 8.0f, cam_tz + 6.0f,
-                  g_palCount>34?33:g_palCount-1, 1.0f );
+        /* front upper right of the target (see buildDemoScene) */
+        lightAdd( cam_tx - 6.0f, cam_ty + 8.0f, cam_tz - 6.0f,
+                  paletteBrightest(), 1.0f );
         g_selLight = g_numLights - 1;
         g_renderDirty = 1;
     }
@@ -5234,7 +5361,7 @@ int main( int argc, char **argv )
     long frameNum = 0;
 
     /* palette: try the bundled sheltzy32.gpl, else a default */
-    if( !paletteLoad( "sheltzy32.gpl" ) ) paletteDefault();
+    paletteDefault();   /* Sheltzy32-with-ramps, baked in (File menu loads .gpl) */
     g_pick = clampi( 15, 0, g_palCount-1 );
     g_rampStart = g_rampEnd = g_pick;
 

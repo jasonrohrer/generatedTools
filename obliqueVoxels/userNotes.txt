@@ -1,1 +1,10 @@
-(Add new testing notes below.)
+Everything is working perfectly!
+
+
+--Can we represent "shininess" with a slider, using Binn-Phong or regular Phong shading (paying attention to camera direction in the view) to get a specular highlight mixed in.  This can be computed in isolation, per face, just like you do now for the regular shading.  I love the way the rendering looks now, so don't break that...  if the "shininess" slider was down to 0, it should look exactly like it does now.  Not sure, but perhaps this slider should just mix in the specular highlight component with the existing shading.  I think that's how it usually works.  Do what you think is best here.  Maybe you can implement both Binn-Phong and Phong, and give us a checkbox under the Shininess slider to switch algorithms.
+
+--Default light position (either when placing a new light, or the default project when opening the program from scratch) is from the back upper left.  Should be from the front upper right instead.
+
+--Match Render should be the default shading mode.
+
+--Sheltzy32 with ramps (the gpl in this folder) should be the default palette for new files, etc.  Can you bake that one into the program for now?

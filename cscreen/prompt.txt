@@ -52,6 +52,12 @@ During a stream, other people should be able to connect (and leave) and just joi
 
 
 
+Note that the C89 code can be quite simple (it's all about simply forwarding the encoded video data between the web clients), so it doesn't need to know ANYTHING about video codecs, keyframes, decoding video, etc.  Maybe there can be a simple wrapper protocol, with blocks of opaque data sent between the clients, interpersed with control block that the relay server might understand (or generate), if needed.   For example, if a different client asks to start sharing, maybe one of these control messages is sent to the relay server, and it inerjetcs a "stop sharing" message to the client that's currently sharing, etc.
+
+This means that whatever video codecs are most convenient for the browsers are the ones to use.
+
+
+
 And most importantly:  the stream should keep going come hell or high water.  If it drops for any reason, it should try to reconnect and resume.  If a receiver drops, it should reconnect to the relay and jump right back into receiving.  And everything should keep retrying forever, with short timeouts, as long as the outage continues.
 
 

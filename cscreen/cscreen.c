@@ -1,20 +1,29 @@
 /*
- * cscreen -- a tiny, dependency-free screen sharing relay.
+ * cscreen -- a tiny, near-dependency-free screen sharing relay.
  *
- * Build:
+ * Build (plain, for localhost / no HTTPS):
  *     gcc -o cscreen -lpthread cscreen.c
  *
- * Run:
- *     cscreen 5050 5051
+ * Build (with TLS, for a public relay -- adds OpenSSL):
+ *     gcc -DUSE_TLS -o cscreen -lpthread -lssl -lcrypto cscreen.c
  *
- *     5050 = HTTP port (serves the browser client)
+ * Run:
+ *     cscreen 5050 5051                                  (no gate, no TLS)
+ *     cscreen 5050 5051 secretword                       (access code)
+ *     cscreen 5050 5051 fullchain.pem privkey.pem        (HTTPS)
+ *     cscreen 5050 5051 secretword fullchain.pem privkey.pem
+ *
+ *     5050 = HTTP(S) port (serves the browser client)
  *     5051 = relay port (WebSocket, carries opaque media blocks)
  *
  * The relay knows nothing about video.  It shuttles opaque binary blocks
  * from the one designated sharer to every viewer, and understands a
  * handful of tiny text control messages.
  *
- * Pure C89 + pthreads + BSD sockets.  Nothing else.
+ * Pure C89 + pthreads + BSD sockets.  The one optional extra is OpenSSL,
+ * compiled in only with -DUSE_TLS: browsers refuse getDisplayMedia() over
+ * plain http to any host but localhost, so a relay on a real machine has
+ * to speak https.  A clean-room TLS stack is out of scope, hence -lssl.
  */
 
 #include <stdio.h>
@@ -31,6 +40,13 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+
+#ifdef USE_TLS
+#include <fcntl.h>
+#include <poll.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#endif
 
 
 #define MAX_CONNS        64
@@ -51,11 +67,11 @@ typedef struct {
     unsigned char block[64];
     unsigned int blockLen;
     unsigned long totalBits;
-} SHA1;
+} Sha1;
 
 #define ROL32( v, n )  ( ( ( (v) << (n) ) | ( (v) >> ( 32 - (n) ) ) ) & 0xFFFFFFFFUL )
 
-static void sha1_init( SHA1 *c ) {
+static void sha1_init( Sha1 *c ) {
     c->h[0] = 0x67452301UL;
     c->h[1] = 0xEFCDAB89UL;
     c->h[2] = 0x98BADCFEUL;
@@ -65,7 +81,7 @@ static void sha1_init( SHA1 *c ) {
     c->totalBits = 0;
     }
 
-static void sha1_block( SHA1 *c, const unsigned char *p ) {
+static void sha1_block( Sha1 *c, const unsigned char *p ) {
     unsigned long w[80];
     unsigned long a, b, d, e, f, k, t;
     int i;
@@ -104,7 +120,7 @@ static void sha1_block( SHA1 *c, const unsigned char *p ) {
     c->h[4] = ( c->h[4] + f ) & 0xFFFFFFFFUL;
     }
 
-static void sha1_update( SHA1 *c, const unsigned char *p, unsigned int len ) {
+static void sha1_update( Sha1 *c, const unsigned char *p, unsigned int len ) {
     unsigned int i;
     for( i = 0; i < len; i++ ) {
         c->block[ c->blockLen++ ] = p[i];
@@ -116,7 +132,7 @@ static void sha1_update( SHA1 *c, const unsigned char *p, unsigned int len ) {
         }
     }
 
-static void sha1_final( SHA1 *c, unsigned char out[20] ) {
+static void sha1_final( Sha1 *c, unsigned char out[20] ) {
     unsigned long bits = c->totalBits;
     unsigned char pad = 0x80;
     unsigned char zero = 0x00;
@@ -189,6 +205,12 @@ typedef struct {
     int inSync;          /* has been told to reset, so may receive media */
     int closing;
 
+    void *ssl;           /* SSL* when TLS is active, else NULL          */
+    pthread_mutex_t sslLock;  /* serialises the one SSL object's read/  */
+                              /* write, held only across a single SSL   */
+                              /* call so neither thread ever blocks the */
+                              /* other on the poll wait                 */
+
     unsigned char *out;  /* pending bytes to write                      */
     size_t outLen;
     size_t outCap;
@@ -211,6 +233,13 @@ static char gMime[ MIME_MAX ];
 static int gHttpPort = 0;
 static int gRelayPort = 0;
 
+/* Non-zero once a certificate has been loaded, so both listeners wrap    */
+/* every accepted socket in TLS.  Only ever set in a -DUSE_TLS build.     */
+static int gTLS = 0;
+#ifdef USE_TLS
+static SSL_CTX *gCtx = NULL;
+#endif
+
 /* Access code derived from the optional security string on the command   */
 /* line.  Empty means "no gate, serve anybody".  When set, both the HTTP  */
 /* page and the relay WebSocket demand it as the URL path.                */
@@ -228,7 +257,7 @@ static char gCode[ CODE_LEN + 1 ] = "";
 static void derive_code( const char *secret, char *out ) {
     static const char *hex = "0123456789ABCDEF";
     unsigned char digest[20];
-    SHA1 ctx;
+    Sha1 ctx;
     int i;
 
     sha1_init( &ctx );
@@ -306,15 +335,73 @@ static int path_authorized( const char *req ) {
 
 
 /* ------------------------------------------------------------------ */
-/* Low level socket helpers                                            */
+/* Low level I/O -- transparently plain TCP or TLS                     */
+/*                                                                     */
+/* Every read and write goes through these three wrappers.  When the   */
+/* ssl argument is NULL the fd is an ordinary blocking socket and we    */
+/* use send()/recv() exactly as before.  When ssl is non-NULL (only    */
+/* reachable in a -DUSE_TLS build) the fd is non-blocking and each SSL  */
+/* call is retried around poll().  The lock, when given, is taken only  */
+/* for the duration of one SSL call and never across the poll: that is  */
+/* what lets the relay's reader thread sit parked waiting for bytes     */
+/* without ever stopping the writer thread from sending, even though    */
+/* the two share a single SSL object.                                  */
 /* ------------------------------------------------------------------ */
 
-static int send_all( int sock, const unsigned char *buf, size_t len ) {
+static void set_nodelay( int sock ) {
+    int one = 1;
+    setsockopt( sock, IPPROTO_TCP, TCP_NODELAY, (void *)&one, sizeof( one ) );
+    }
+
+
+#ifdef USE_TLS
+/* Wait up to a second for the socket to become readable or writable.
+   Returns poll()'s result: >0 ready, 0 timeout, <0 interrupted. */
+static int io_wait( int sock, int forWrite ) {
+    struct pollfd pfd;
+    pfd.fd = sock;
+    pfd.events = (short)( forWrite ? POLLOUT : POLLIN );
+    pfd.revents = 0;
+    return poll( &pfd, 1, 1000 );
+    }
+#endif
+
+
+static int io_send_all( int sock, void *ssl, pthread_mutex_t *lock,
+                        const unsigned char *buf, size_t len ) {
     size_t sent = 0;
+
+#ifdef USE_TLS
+    if( ssl != NULL ) {
+        while( sent < len ) {
+            int n, err;
+            if( lock != NULL ) {
+                pthread_mutex_lock( lock );
+                }
+            n = SSL_write( (SSL *)ssl, buf + sent, (int)( len - sent ) );
+            err = ( n <= 0 ) ? SSL_get_error( (SSL *)ssl, n ) : 0;
+            if( lock != NULL ) {
+                pthread_mutex_unlock( lock );
+                }
+            if( n > 0 ) {
+                sent += (size_t)n;
+                continue;
+                }
+            if( err == SSL_ERROR_WANT_WRITE ) { io_wait( sock, 1 ); continue; }
+            if( err == SSL_ERROR_WANT_READ )  { io_wait( sock, 0 ); continue; }
+            return -1;
+            }
+        return 0;
+        }
+#else
+    (void)ssl;
+    (void)lock;
+#endif
+
     while( sent < len ) {
         int n = (int)send( sock, buf + sent, len - sent, 0 );
         if( n <= 0 ) {
-            if( n < 0 && ( errno == EINTR ) ) {
+            if( n < 0 && errno == EINTR ) {
                 continue;
                 }
             return -1;
@@ -324,8 +411,38 @@ static int send_all( int sock, const unsigned char *buf, size_t len ) {
     return 0;
     }
 
-static int recv_all( int sock, unsigned char *buf, size_t len ) {
+
+static int io_recv_all( int sock, void *ssl, pthread_mutex_t *lock,
+                        unsigned char *buf, size_t len ) {
     size_t got = 0;
+
+#ifdef USE_TLS
+    if( ssl != NULL ) {
+        while( got < len ) {
+            int n, err;
+            if( lock != NULL ) {
+                pthread_mutex_lock( lock );
+                }
+            n = SSL_read( (SSL *)ssl, buf + got, (int)( len - got ) );
+            err = ( n <= 0 ) ? SSL_get_error( (SSL *)ssl, n ) : 0;
+            if( lock != NULL ) {
+                pthread_mutex_unlock( lock );
+                }
+            if( n > 0 ) {
+                got += (size_t)n;
+                continue;
+                }
+            if( err == SSL_ERROR_WANT_READ )  { io_wait( sock, 0 ); continue; }
+            if( err == SSL_ERROR_WANT_WRITE ) { io_wait( sock, 1 ); continue; }
+            return -1;
+            }
+        return 0;
+        }
+#else
+    (void)ssl;
+    (void)lock;
+#endif
+
     while( got < len ) {
         int n = (int)recv( sock, buf + got, len - got, 0 );
         if( n <= 0 ) {
@@ -339,10 +456,93 @@ static int recv_all( int sock, unsigned char *buf, size_t len ) {
     return 0;
     }
 
-static void set_nodelay( int sock ) {
-    int one = 1;
-    setsockopt( sock, IPPROTO_TCP, TCP_NODELAY, (void *)&one, sizeof( one ) );
+
+/* One read, returning as soon as any bytes arrive.  Mirrors recv()'s
+   contract: >0 bytes, 0 on a clean close, <0 on error. */
+static int io_recv_some( int sock, void *ssl, pthread_mutex_t *lock,
+                         unsigned char *buf, size_t len ) {
+#ifdef USE_TLS
+    if( ssl != NULL ) {
+        for( ;; ) {
+            int n, err;
+            if( lock != NULL ) {
+                pthread_mutex_lock( lock );
+                }
+            n = SSL_read( (SSL *)ssl, buf, (int)len );
+            err = ( n <= 0 ) ? SSL_get_error( (SSL *)ssl, n ) : 0;
+            if( lock != NULL ) {
+                pthread_mutex_unlock( lock );
+                }
+            if( n > 0 ) {
+                return n;
+                }
+            if( err == SSL_ERROR_WANT_READ )  { io_wait( sock, 0 ); continue; }
+            if( err == SSL_ERROR_WANT_WRITE ) { io_wait( sock, 1 ); continue; }
+            return ( err == SSL_ERROR_ZERO_RETURN ) ? 0 : -1;
+            }
+        }
+#else
+    (void)ssl;
+    (void)lock;
+#endif
+    return (int)recv( sock, buf, len, 0 );
     }
+
+
+#ifdef USE_TLS
+/* Promote a freshly accepted plain socket to TLS.  The fd is switched to
+   non-blocking for the rest of its life, so the duplex relay never blocks
+   one direction inside an SSL call.  A handshake that makes no progress
+   for a while is abandoned rather than parking a thread forever (a port
+   scanner or a plain-http probe hitting the TLS port must not leak
+   threads).  Returns the SSL* or NULL on failure. */
+static void *tls_accept( int sock ) {
+    SSL *ssl;
+    int flags;
+    int idle = 0;
+
+    flags = fcntl( sock, F_GETFL, 0 );
+    if( flags >= 0 ) {
+        fcntl( sock, F_SETFL, flags | O_NONBLOCK );
+        }
+
+    ssl = SSL_new( gCtx );
+    if( ssl == NULL ) {
+        return NULL;
+        }
+    SSL_set_fd( ssl, sock );
+
+    for( ;; ) {
+        int r = SSL_accept( ssl );
+        int err;
+        int forWrite;
+
+        if( r == 1 ) {
+            return ssl;
+            }
+        err = SSL_get_error( ssl, r );
+        if( err == SSL_ERROR_WANT_READ ) {
+            forWrite = 0;
+            }
+        else if( err == SSL_ERROR_WANT_WRITE ) {
+            forWrite = 1;
+            }
+        else {
+            SSL_free( ssl );
+            return NULL;
+            }
+        if( io_wait( sock, forWrite ) == 0 ) {
+            if( ++idle > 15 ) {
+                SSL_free( ssl );
+                return NULL;
+                }
+            }
+        else {
+            idle = 0;
+            }
+        }
+    }
+#endif
 
 
 /* ------------------------------------------------------------------ */
@@ -673,7 +873,8 @@ static void *writer_thread( void *arg ) {
         c->outCap = 0;
         pthread_mutex_unlock( &c->lock );
 
-        if( send_all( c->sock, chunk, chunkLen ) != 0 ) {
+        if( io_send_all( c->sock, c->ssl, &c->sslLock, chunk, chunkLen )
+            != 0 ) {
             free( chunk );
             pthread_mutex_lock( &c->lock );
             c->closing = 1;
@@ -692,7 +893,10 @@ static void *writer_thread( void *arg ) {
 /* WebSocket handshake                                                 */
 /* ------------------------------------------------------------------ */
 
-static int ws_handshake( int sock ) {
+/* Runs in the reader thread before the writer exists, so there is no
+   concurrent SSL access yet and the I/O calls pass a NULL lock. */
+static int ws_handshake( Conn *c ) {
+    int sock = c->sock;
     char req[4096];
     int total = 0;
     char *keyStart;
@@ -702,11 +906,13 @@ static int ws_handshake( int sock ) {
     unsigned char digest[20];
     char accept[64];
     char response[512];
-    SHA1 ctx;
+    Sha1 ctx;
     int keyLen;
 
     for( ;; ) {
-        int n = (int)recv( sock, req + total, sizeof( req ) - 1 - total, 0 );
+        int n = io_recv_some( sock, c->ssl, NULL,
+                              (unsigned char *)( req + total ),
+                              sizeof( req ) - 1 - total );
         if( n <= 0 ) {
             return -1;
             }
@@ -726,7 +932,8 @@ static int ws_handshake( int sock ) {
         static const char *deny =
             "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n"
             "Connection: close\r\n\r\n";
-        send_all( sock, (const unsigned char *)deny, strlen( deny ) );
+        io_send_all( sock, c->ssl, NULL,
+                     (const unsigned char *)deny, strlen( deny ) );
         return -1;
         }
 
@@ -767,8 +974,8 @@ static int ws_handshake( int sock ) {
              "Connection: Upgrade\r\n"
              "Sec-WebSocket-Accept: %s\r\n\r\n", accept );
 
-    return send_all( sock, (const unsigned char *)response,
-                     strlen( response ) );
+    return io_send_all( sock, c->ssl, NULL,
+                        (const unsigned char *)response, strlen( response ) );
     }
 
 
@@ -793,6 +1000,12 @@ static void conn_teardown( Conn *c ) {
         broadcast_idle();
         }
     logmsg( "client %d disconnected", c->id );
+#ifdef USE_TLS
+    if( c->ssl != NULL ) {
+        SSL_free( (SSL *)c->ssl );
+        c->ssl = NULL;
+        }
+#endif
     close( c->sock );
     free( c->out );
     c->out = NULL;
@@ -802,6 +1015,7 @@ static void conn_teardown( Conn *c ) {
        accept loop may claim this slot and re-init these primitives. */
     pthread_mutex_destroy( &c->lock );
     pthread_cond_destroy( &c->wake );
+    pthread_mutex_destroy( &c->sslLock );
     c->used = 0;
     broadcast_count();
     pthread_mutex_unlock( &gLock );
@@ -815,12 +1029,35 @@ static void *reader_thread( void *arg ) {
     size_t messageCap = 0;
     int messageOp = 0;
 
-    if( ws_handshake( c->sock ) != 0 ||
+#ifdef USE_TLS
+    if( gCtx != NULL ) {
+        c->ssl = tls_accept( c->sock );
+        if( c->ssl == NULL ) {
+            close( c->sock );
+            pthread_mutex_lock( &gLock );
+            pthread_mutex_destroy( &c->lock );
+            pthread_cond_destroy( &c->wake );
+            pthread_mutex_destroy( &c->sslLock );
+            c->used = 0;
+            pthread_mutex_unlock( &gLock );
+            return NULL;
+            }
+        }
+#endif
+
+    if( ws_handshake( c ) != 0 ||
         pthread_create( &c->writer, NULL, writer_thread, c ) != 0 ) {
+#ifdef USE_TLS
+        if( c->ssl != NULL ) {
+            SSL_free( (SSL *)c->ssl );
+            c->ssl = NULL;
+            }
+#endif
         close( c->sock );
         pthread_mutex_lock( &gLock );
         pthread_mutex_destroy( &c->lock );
         pthread_cond_destroy( &c->wake );
+        pthread_mutex_destroy( &c->sslLock );
         c->used = 0;
         pthread_mutex_unlock( &gLock );
         return NULL;
@@ -840,7 +1077,7 @@ static void *reader_thread( void *arg ) {
         unsigned char *payload = NULL;
         unsigned long i;
 
-        if( recv_all( c->sock, head, 2 ) != 0 ) {
+        if( io_recv_all( c->sock, c->ssl, &c->sslLock, head, 2 ) != 0 ) {
             break;
             }
         fin = ( head[0] & 0x80 ) ? 1 : 0;
@@ -849,13 +1086,13 @@ static void *reader_thread( void *arg ) {
         payloadLen = (unsigned long)( head[1] & 0x7F );
 
         if( payloadLen == 126 ) {
-            if( recv_all( c->sock, ext, 2 ) != 0 ) {
+            if( io_recv_all( c->sock, c->ssl, &c->sslLock, ext, 2 ) != 0 ) {
                 break;
                 }
             payloadLen = ( (unsigned long)ext[0] << 8 ) | ext[1];
             }
         else if( payloadLen == 127 ) {
-            if( recv_all( c->sock, ext, 8 ) != 0 ) {
+            if( io_recv_all( c->sock, c->ssl, &c->sslLock, ext, 8 ) != 0 ) {
                 break;
                 }
             if( ext[0] || ext[1] || ext[2] || ext[3] ) {
@@ -871,7 +1108,7 @@ static void *reader_thread( void *arg ) {
             break;
             }
         if( masked ) {
-            if( recv_all( c->sock, mask, 4 ) != 0 ) {
+            if( io_recv_all( c->sock, c->ssl, &c->sslLock, mask, 4 ) != 0 ) {
                 break;
                 }
             }
@@ -881,7 +1118,7 @@ static void *reader_thread( void *arg ) {
             if( payload == NULL ) {
                 break;
                 }
-            if( recv_all( c->sock, payload, payloadLen ) != 0 ) {
+            if( io_recv_all( c->sock, c->ssl, &c->sslLock, payload, payloadLen ) != 0 ) {
                 free( payload );
                 break;
                 }
@@ -1131,8 +1368,11 @@ static const char *gPage[] = {
 "\n",
 "function connect(){\n",
 "/* The relay port demands the same access code the page was served\n",
-"   under, so just carry our own path over to the socket URL. */\n",
-" var url='ws://'+location.hostname+':'+WSPORT+location.pathname;\n",
+"   under, so just carry our own path over to the socket URL.  When the\n",
+"   page itself came over https the browser forbids a plain ws:// socket\n",
+"   (mixed content), so match the page's scheme: https -> wss. */\n",
+" var scheme=(location.protocol==='https:')?'wss://':'ws://';\n",
+" var url=scheme+location.hostname+':'+WSPORT+location.pathname;\n",
 " try{ws=new WebSocket(url);}catch(e){setTimeout(connect,500);return;}\n",
 " ws.binaryType='arraybuffer';\n",
 " ws.onopen=function(){\n",
@@ -1458,7 +1698,8 @@ static const char *gPage[] = {
 0 };
 
 
-static void http_serve( int sock ) {
+/* Single-threaded per request, so all the I/O passes a NULL SSL lock. */
+static void http_serve( int sock, void *ssl ) {
     char portLine[64];
     char header[256];
     size_t total = 0;
@@ -1483,8 +1724,8 @@ static void http_serve( int sock ) {
              "Connection: close\r\n\r\n",
              (unsigned long)total );
 
-    if( send_all( sock, (const unsigned char *)header,
-                  strlen( header ) ) != 0 ) {
+    if( io_send_all( sock, ssl, NULL, (const unsigned char *)header,
+                     strlen( header ) ) != 0 ) {
         return;
         }
 
@@ -1493,8 +1734,8 @@ static void http_serve( int sock ) {
         if( strcmp( line, "@@PORT@@" ) == 0 ) {
             line = portLine;
             }
-        if( send_all( sock, (const unsigned char *)line,
-                      strlen( line ) ) != 0 ) {
+        if( io_send_all( sock, ssl, NULL, (const unsigned char *)line,
+                         strlen( line ) ) != 0 ) {
             return;
             }
         }
@@ -1505,12 +1746,30 @@ static void *http_conn_thread( void *arg ) {
     int sock = *(int *)arg;
     char req[2048];
     int total = 0;
+    void *ssl = NULL;
 
     free( arg );
 
+#ifdef USE_TLS
+    if( gCtx != NULL ) {
+        ssl = tls_accept( sock );
+        if( ssl == NULL ) {
+            close( sock );
+            return NULL;
+            }
+        }
+#endif
+
     for( ;; ) {
-        int n = (int)recv( sock, req + total, sizeof( req ) - 1 - total, 0 );
+        int n = io_recv_some( sock, ssl, NULL,
+                              (unsigned char *)( req + total ),
+                              sizeof( req ) - 1 - total );
         if( n <= 0 ) {
+#ifdef USE_TLS
+            if( ssl != NULL ) {
+                SSL_free( (SSL *)ssl );
+                }
+#endif
             close( sock );
             return NULL;
             }
@@ -1539,18 +1798,30 @@ static void *http_conn_thread( void *arg ) {
                  "Cache-Control: no-store\r\n"
                  "Connection: close\r\n\r\n",
                  (unsigned long)strlen( body ) );
-        send_all( sock, (const unsigned char *)head, strlen( head ) );
-        send_all( sock, (const unsigned char *)body, strlen( body ) );
+        io_send_all( sock, ssl, NULL,
+                     (const unsigned char *)head, strlen( head ) );
+        io_send_all( sock, ssl, NULL,
+                     (const unsigned char *)body, strlen( body ) );
         }
     else if( strncmp( req, "GET /favicon.ico", 16 ) == 0 ) {
         static const char *notFound =
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n"
             "Connection: close\r\n\r\n";
-        send_all( sock, (const unsigned char *)notFound, strlen( notFound ) );
+        io_send_all( sock, ssl, NULL,
+                     (const unsigned char *)notFound, strlen( notFound ) );
         }
     else {
-        http_serve( sock );
+        http_serve( sock, ssl );
         }
+
+#ifdef USE_TLS
+    if( ssl != NULL ) {
+        SSL_shutdown( (SSL *)ssl );
+        SSL_free( (SSL *)ssl );
+        close( sock );
+        return NULL;
+        }
+#endif
     shutdown( sock, SHUT_WR );
     close( sock );
     return NULL;
@@ -1648,6 +1919,7 @@ static void relay_accept_loop( int listener ) {
         c->lastSeen = time( NULL );
         pthread_mutex_init( &c->lock, NULL );
         pthread_cond_init( &c->wake, NULL );
+        pthread_mutex_init( &c->sslLock, NULL );
         pthread_mutex_unlock( &gLock );
 
         if( pthread_create( &t, NULL, reader_thread, c ) != 0 ) {
@@ -1662,14 +1934,56 @@ static void relay_accept_loop( int listener ) {
     }
 
 
+#ifdef USE_TLS
+/* Build the shared server SSL context once, from the operator's
+   certificate chain and private key.  Returns 0 on success. */
+static int tls_init( const char *certPath, const char *keyPath ) {
+    gCtx = SSL_CTX_new( TLS_server_method() );
+    if( gCtx == NULL ) {
+        return -1;
+        }
+    SSL_CTX_set_min_proto_version( gCtx, TLS1_2_VERSION );
+    /* No renegotiation, and tolerate the write buffer moving between a
+       WANT_WRITE and its retry -- both keep the duplex relay simple. */
+    SSL_CTX_set_options( gCtx, SSL_OP_NO_RENEGOTIATION );
+    SSL_CTX_set_mode( gCtx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER );
+
+    if( SSL_CTX_use_certificate_chain_file( gCtx, certPath ) != 1 ) {
+        fprintf( stderr, "cannot read certificate chain from %s\n", certPath );
+        return -1;
+        }
+    if( SSL_CTX_use_PrivateKey_file( gCtx, keyPath, SSL_FILETYPE_PEM ) != 1 ) {
+        fprintf( stderr, "cannot read private key from %s\n", keyPath );
+        return -1;
+        }
+    if( SSL_CTX_check_private_key( gCtx ) != 1 ) {
+        fprintf( stderr, "private key does not match certificate\n" );
+        return -1;
+        }
+    return 0;
+    }
+#endif
+
+
 int main( int argc, char **argv ) {
     int httpListener;
     int relayListener;
     pthread_t t;
+    const char *security = NULL;
+    const char *certPath = NULL;
+    const char *keyPath = NULL;
+    const char *scheme = "http";
 
-    if( argc != 3 && argc != 4 ) {
+    /* Positional and unambiguous by count, because the security string is
+       exactly one argument and a cert/key is exactly two:
+         3 args -> ports only
+         4 args -> ports + SECURITY
+         5 args -> ports + CERT KEY
+         6 args -> ports + SECURITY + CERT KEY                            */
+    if( argc < 3 || argc > 6 ) {
         fprintf( stderr,
-                 "usage: %s HTTP_PORT RELAY_PORT [SECURITY_STRING]\n",
+                 "usage: %s HTTP_PORT RELAY_PORT [SECURITY_STRING] "
+                 "[FULLCHAIN_PEM PRIVKEY_PEM]\n",
                  argv[0] );
         return 1;
         }
@@ -1677,13 +1991,52 @@ int main( int argc, char **argv ) {
     gHttpPort = atoi( argv[1] );
     gRelayPort = atoi( argv[2] );
 
-    if( argc == 4 && argv[3][0] != '\0' ) {
-        derive_code( argv[3], gCode );
+    switch( argc ) {
+        case 4:
+            security = argv[3];
+            break;
+        case 5:
+            certPath = argv[3];
+            keyPath = argv[4];
+            break;
+        case 6:
+            security = argv[3];
+            certPath = argv[4];
+            keyPath = argv[5];
+            break;
+        default:
+            break;
+        }
+
+#ifndef USE_TLS
+    /* keyPath is only consumed by the TLS build; keep the plain build's
+       zero-warning bar without an #ifdef around the parsing above. */
+    (void)keyPath;
+#endif
+
+    if( security != NULL && security[0] != '\0' ) {
+        derive_code( security, gCode );
         }
 
     if( gHttpPort <= 0 || gRelayPort <= 0 || gHttpPort == gRelayPort ) {
         fprintf( stderr, "bad ports\n" );
         return 1;
+        }
+
+    if( certPath != NULL ) {
+#ifdef USE_TLS
+        if( tls_init( certPath, keyPath ) != 0 ) {
+            return 1;
+            }
+        gTLS = 1;
+        scheme = "https";
+#else
+        fprintf( stderr,
+                 "a certificate was given but this binary has no TLS.\n"
+                 "rebuild with:  gcc -DUSE_TLS -o cscreen -lpthread "
+                 "-lssl -lcrypto cscreen.c\n" );
+        return 1;
+#endif
         }
 
     signal( SIGPIPE, SIG_IGN );
@@ -1717,14 +2070,23 @@ int main( int argc, char **argv ) {
     if( gCode[0] != '\0' ) {
         /* Extra spaces around the URL so it is easy to double-click and  */
         /* copy out of a terminal.                                        */
-        printf( "  open   http://localhost:%d/%s   in a browser\n",
-                gHttpPort, gCode );
+        printf( "  open   %s://localhost:%d/%s   in a browser\n",
+                scheme, gHttpPort, gCode );
         printf( "  (clients without that code are refused)\n" );
         }
     else {
-        printf( "  open   http://localhost:%d   in a browser\n", gHttpPort );
+        printf( "  open   %s://localhost:%d   in a browser\n",
+                scheme, gHttpPort );
         printf( "  (no security string given: anyone who can reach this "
                 "port can watch)\n" );
+        }
+    if( gTLS ) {
+        printf( "  TLS on -- reach it by the hostname the certificate was "
+                "issued for, not localhost\n" );
+        }
+    else {
+        printf( "  no TLS: browsers only allow screen capture over http on "
+                "localhost, not a remote host\n" );
         }
     printf( "  relay listening on port %d\n", gRelayPort );
     fflush( stdout );

@@ -1,7 +1,7 @@
 # cscreen
 
-A tiny, dependency-free screen sharing relay.  One C file, one HTML page,
-no libraries, no certificates, no accounts, no NAT punch-through.
+A tiny, near-dependency-free screen sharing relay.  One C file, one HTML
+page, no accounts, no NAT punch-through.
 
 Everyone connects *outward* to a relay you control, so it works fine when
 both ends sit behind NAT firewalls.
@@ -12,30 +12,84 @@ both ends sit behind NAT firewalls.
 gcc -o cscreen -lpthread cscreen.c
 ```
 
-That is the whole build.  The only dependency beyond the C standard
-library is pthreads.  The code is C89 and compiles clean under
+That is the whole build for local use.  The only dependency beyond the C
+standard library is pthreads.  The code is C89 and compiles clean under
 `-std=c89 -pedantic -Wall -Wextra`.
+
+**For a public relay you also need HTTPS** (see *HTTPS* below), which adds
+OpenSSL and one compile flag:
+
+```
+gcc -DUSE_TLS -o cscreen -lpthread -lssl -lcrypto cscreen.c
+```
+
+The TLS code is compiled in only with `-DUSE_TLS`; the plain build above
+stays exactly as it was, no OpenSSL required.
 
 ## Run
 
 ```
-cscreen 5050 5051 [security string]
+cscreen HTTP_PORT RELAY_PORT [security string] [fullchain.pem privkey.pem]
 ```
 
-* `5050` -- HTTP port.  Serves the browser client.  Plain HTTP, no TLS.
+* `5050` -- HTTP(S) port.  Serves the browser client.
 * `5051` -- relay port.  The browser connects back here over WebSocket to
   carry the video.
-* the third argument is optional; see *Keeping strangers out* below.
+* the optional security string hides the relay behind a secret URL; see
+  *Keeping strangers out*.
+* the optional cert/key pair turns on HTTPS; see *HTTPS*.
 
-Then open `http://<server>:5050` in Firefox or Chrome.  On a remote box,
-open the two ports in the firewall and use the server's hostname.
+The extra arguments are positional and unambiguous by count, because the
+security string is exactly one argument and a cert/key is exactly two:
 
-Testing locally:
+```
+cscreen 5050 5051                                  no gate, no TLS
+cscreen 5050 5051 secretword                       access code
+cscreen 5050 5051 fullchain.pem privkey.pem        HTTPS
+cscreen 5050 5051 secretword fullchain.pem privkey.pem
+```
+
+Then open `http(s)://<server>:5050` in Firefox or Chrome.  On a remote
+box, open the two ports in the firewall and use the server's hostname.
+
+Testing locally over plain HTTP works because browsers make an exception
+for `localhost`:
 
 ```
 ./cscreen 5050 5051
 firefox http://localhost:5050
 ```
+
+## HTTPS
+
+Browsers only allow screen capture (`getDisplayMedia`) in a *secure
+context*: an `https://` page, or plain `http://` **to localhost only**.
+So the moment the relay lives on a real machine instead of your own,
+plain HTTP loads the page fine but *Share My Screen* fails with "This
+browser cannot capture the screen."  The fix is to serve over HTTPS.
+
+Build with `-DUSE_TLS` and pass a certificate chain and private key, in
+PEM form -- exactly the files `certbot` writes:
+
+```
+cscreen 5050 5051 \
+  /etc/letsencrypt/live/YOURHOST/fullchain.pem \
+  /etc/letsencrypt/live/YOURHOST/privkey.pem
+```
+
+Both ports get TLS: the page is served over HTTPS, and the WebSocket is
+`wss://`.  (An HTTPS page is forbidden from opening a plain `ws://`
+socket, so both have to be secure.)  The client picks `wss` vs `ws`
+automatically from the page's own scheme, so there is nothing to
+configure on the browser side.
+
+Reach the relay by the hostname the certificate was issued for, not by an
+IP or `localhost`, or the browser will reject the certificate.  A
+self-signed certificate works for testing if you accept it in the browser
+(or pass `--ignore-certificate-errors` to Chromium).
+
+TLS is the *only* thing OpenSSL is used for; everything else, including
+the SHA-1 and base64 for the WebSocket handshake, is still from scratch.
 
 ## Using it
 
@@ -79,9 +133,11 @@ The code is a pure function of the passphrase, so it is the same every
 time.  A cron job can keep the relay alive with the same passphrase and
 your collaborators' bookmark keeps working across restarts.
 
-This is obscurity, not encryption: it is plain HTTP, so anyone sitting on
-the wire can read the URL and the video.  It keeps out passers-by, not a
-determined eavesdropper.
+On plain HTTP this is obscurity, not encryption: anyone sitting on the
+wire can read the URL and the video, so it keeps out passers-by, not a
+determined eavesdropper.  Run it over HTTPS (above) and the URL and the
+stream are both encrypted in transit, and the secret code stays secret on
+the wire.  The two combine well: HTTPS to encrypt, the code to gate.
 
 ## How it works
 
@@ -135,7 +191,12 @@ The whole point of this program is that the picture does not stop.
 ## Limits
 
 * 64 simultaneous connections (`MAX_CONNS`).
-* Plain HTTP and unencrypted WebSocket.  Without a security string, anyone
-  who can reach the relay port can watch; with one, anyone who learns the
-  URL can.  Put it behind a VPN or a firewall rule if that matters, or run
-  it on a host only you and your collaborators can reach.
+* Without `-DUSE_TLS` and a certificate it is plain HTTP and unencrypted
+  WebSocket, which the browser only allows to capture the screen on
+  `localhost`.  For any remote use, build with TLS.
+* cscreen does not obtain or renew certificates; point it at the PEM files
+  `certbot` (or your CA) already manages, and restart it when they renew.
+* Without a security string anyone who can reach the relay port can watch;
+  with one, anyone who learns the URL can.  Combine HTTPS with a security
+  string, put it behind a VPN or firewall rule, or run it on a host only
+  you and your collaborators can reach.

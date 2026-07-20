@@ -22,12 +22,22 @@ pick their screen again.
 ## Hard constraints (do not violate)
 
 - `cscreen.c` is **pure C89**, compiles with **zero warnings** under
-  `gcc -std=c89 -pedantic -Wall -Wextra`. Declarations at the top of a
-  block; `/* */` comments only; no `//`, no C99 mid-block decls, no VLAs.
-- **The only linked dependency is `-lpthread`.** It must build with exactly
-  `gcc -o cscreen -lpthread cscreen.c`. No libraries, ever. That means no
-  OpenSSL (hence no HTTPS), so the SHA-1 and base64 needed for the
-  WebSocket handshake are implemented from scratch in this file.
+  `gcc -std=c89 -pedantic -Wall -Wextra` **and** under that plus
+  `-DUSE_TLS ... -lssl -lcrypto`. Declarations at the top of a block;
+  `/* */` comments only; no `//`, no C99 mid-block decls, no VLAs.
+- **The plain build links only `-lpthread`** and must keep building with
+  exactly `gcc -o cscreen -lpthread cscreen.c`. The SHA-1 and base64 for
+  the WebSocket handshake are ours, from scratch, and stay that way.
+- **OpenSSL is the one permitted optional dependency, and only for TLS,**
+  compiled in solely behind `#ifdef USE_TLS`:
+  `gcc -DUSE_TLS -o cscreen -lpthread -lssl -lcrypto cscreen.c`. It exists
+  because browsers refuse `getDisplayMedia` over plain http to any host but
+  localhost, so a public relay must speak https. Do not reach for OpenSSL
+  for anything else (not SHA-1, not base64, not random). A clean-room TLS
+  stack is explicitly out of scope — that is the whole reason for the
+  exception. Every `#include <openssl/...>`, every `SSL_*` call, and the
+  `SSL *`/`sslLock` fields on `Conn` live under `#ifdef USE_TLS`; the
+  three `io_*` wrappers and `tls_accept` are the only I/O that touches it.
 - **TCP only.** No UDP, no WebRTC in the relay.
 - The browser client is plain HTML/JS embedded in `cscreen.c` as the
   `gPage[]` array of lines, and must work in **both Firefox and Chrome**.
@@ -43,21 +53,62 @@ Everything is in `cscreen.c`:
 | SHA-1 / base64 | the WebSocket handshake, and the access code |
 | access code | `derive_code`, `request_path`, `path_authorized` |
 | `Conn` + globals | connection table, guarded by `gLock` |
+| low level I/O | `io_send_all` / `io_recv_all` / `io_recv_some`, `tls_accept` |
 | `conn_queue` / `ws_queue_frame` | per-connection outbound queue |
 | relay logic | `request_restart`, `relay_media`, `handle_text` |
 | `writer_thread` / `reader_thread` | two threads per connection |
 | `heartbeat_thread` | ping, reap dead conns, expire stuck restarts |
 | `gPage[]` | the entire browser client |
 | listeners | HTTP accept loop, relay accept loop |
+| `tls_init` / `main` | load cert, parse args, start listeners |
 
 `@@PORT@@` in `gPage[]` is substituted at serve time with the real relay
-port, so the client always dials the right port.
+port, so the client always dials the right port. The `ws://` vs `wss://`
+choice is *not* substituted; the client derives it from `location.protocol`
+so it can never disagree with how the page was served.
+
+## TLS (the `#ifdef USE_TLS` build)
+
+- **All socket I/O goes through three wrappers**: `io_send_all`,
+  `io_recv_all`, `io_recv_some`. Each takes `(sock, ssl, lock, ...)`. When
+  `ssl` is NULL they are the old plain blocking `send`/`recv`; when it is
+  non-NULL the fd is non-blocking and each SSL call is retried around
+  `poll()`. This is the only place TLS branches on the data path — do not
+  sprinkle `SSL_*` calls elsewhere.
+- **One `SSL` object is shared by a connection's reader and writer
+  threads.** OpenSSL forbids two threads in one `SSL` at once, so every SSL
+  call is wrapped in `conn->sslLock` — but the lock is held *only across a
+  single SSL call, never across the poll wait*. That is the crux: because
+  the fd is non-blocking, a reader with no bytes returns `WANT_READ`
+  immediately, drops the lock, and waits in `poll()` unlocked, so the
+  writer is free to send. Hold the lock across a blocking read and the
+  relay deadlocks. `sslLock` is a leaf lock — it never nests inside `gLock`
+  or `conn->lock`, and the io wrappers are always called with no other lock
+  held (the writer releases `conn->lock` first; the reader reads outside
+  `gLock`).
+- **`tls_accept` does the handshake** with the same non-blocking + poll
+  loop, then leaves the fd non-blocking for life. It gives up after ~15s of
+  no progress so a plain-http probe or port scanner on the TLS port cannot
+  park a thread forever.
+- **Renegotiation is disabled** (`SSL_OP_NO_RENEGOTIATION`) and the minimum
+  is TLS 1.2, which keeps the "one reader, one writer, no third
+  direction-flip" assumption honest.
+- `gTLS` (always defined) says whether TLS is on, for startup printing;
+  `gCtx` (only under `USE_TLS`) is the shared server context.
+
+## Command line
+
+`cscreen HTTP_PORT RELAY_PORT [SECURITY] [CERT_PEM KEY_PEM]`. The optional
+tail is **positional and disambiguated purely by argc**, because a security
+string is one argument and a cert/key is two: argc 3 = ports only, 4 = +
+security, 5 = + cert/key, 6 = + both. Do not add a fourth optional group
+without rethinking this — the count is the only signal.
 
 ## Access code
 
-An optional third command line argument is a passphrase. It is SHA-1'd and
-the first five bytes become a ten hex digit code (`gCode`), which must then
-be the URL path on **both** ports. The passphrase never leaves the server.
+The optional SECURITY argument is a passphrase. It is SHA-1'd and the first
+five bytes become a ten hex digit code (`gCode`), which must then be the
+URL path on **both** ports. The passphrase never leaves the server.
 
 - **Gate both ports.** Gating only HTTP would leave the video stream itself
   open to anyone who guessed the relay port, which defeats the purpose.

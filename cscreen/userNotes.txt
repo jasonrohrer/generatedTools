@@ -1,26 +1,23 @@
 
-
-New problem:
-
-For some reason, it works fine when I'm running the relay server on localhost, but it stops working if I install it remotely.
-
-I see the client load in my browser, but then when I go to share, I see the following error message in my browser:
-
-This browser cannot capture the screen.
-
-This is EXACTLY the same browser that's working fine when the relay is on Localhost.   I think this is because the ScreenSharing API only works over https or over http to localhost.
+(No open issues.)
 
 
-Screego handles it this way, by using the cert and private key PEM files that might possibly be installed on the system by certbot...
+Previously reported and now fixed:
 
-SCREEGO_TLS_CERT_FILE=/etc/letsencrypt/live/screenshare.onehouronelife.com/full\
-chain.pem
-                             
-SCREEGO_TLS_KEY_FILE=/etc/letsencrypt/live/screenshare.onehouronelife.com/privk\
-ey.pem
+- Screen sharing worked on localhost but failed remotely with "This
+  browser cannot capture the screen."  Cause: browsers only allow
+  getDisplayMedia over https, or over http to localhost.  Fix: optional
+  HTTPS support via OpenSSL.
 
-So these should be optional additional arguments (paths to the the fullchain and privkey PEM files), and if they are present, https should be used (and printed out for the sample URL).
+  Build with TLS:
+      gcc -DUSE_TLS -o cscreen -lpthread -lssl -lcrypto cscreen.c
 
+  Run with your certbot PEM files (both ports become TLS, WebSocket
+  becomes wss):
+      cscreen 5050 5051 \
+        /etc/letsencrypt/live/YOURHOST/fullchain.pem \
+        /etc/letsencrypt/live/YOURHOST/privkey.pem
 
-I'm pretty sure a clean-room TLS implementation is out of scope, so please link against -lssl (open SSL dev library).
-
+  Reach it by the certificate's hostname, not by IP or localhost.  The
+  plain (no-TLS) build still works unchanged for localhost testing.  See
+  README.md, section "HTTPS", for details.

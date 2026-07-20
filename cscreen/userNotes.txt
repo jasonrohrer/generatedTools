@@ -1,4 +1,14 @@
-Notes:
+Great work so far!   This is already working really well to share screens.
 
-(Leave notes here about any issues or problems you hit while testing
-cscreen, and they will be addressed on the next pass.)
+
+--To avoid peeping toms, we should have a 3rd (optional) argument, after the two ports, which is a security string.  The user might type a passoword-like thing there.  Anyway, the relay should hash this internally, and turn it into a little 10-letter hex code.  Suppose the hex code is this:  589AF9BCD9.  It should then prompt the user with this:
+
+open   http://localhost:5050/589AF9BCD9   in a browser
+
+Note the extra spaces there, to make it easier to select with the mouse and copy-paste.
+
+Anyway, the relay should then reject any clients that don't have that code in their URL (display a simple security code incorrect rejection page).
+
+Note that since this code is generated from the user's provided security string, it can (potentially) be invariant across runs of the relay, if the user provides the same string every time.  Thus, a cronjob could keep the relay running, and provide the same security string every time when it starts the relay, which would allow clients to always connect to the same (secret) URL, and keep others who don't have the URL out.  Bots sniffing port 5050 wouldn't be able to find the right URL endpoint.
+
+Also, this could be sniffed by man in the middle attacks, but don't worry about this.  We're not concerned about that threat model here.

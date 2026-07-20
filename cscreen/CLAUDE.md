@@ -40,7 +40,8 @@ Everything is in `cscreen.c`:
 
 | Section | What |
 | --- | --- |
-| SHA-1 / base64 | only for the WebSocket handshake |
+| SHA-1 / base64 | the WebSocket handshake, and the access code |
+| access code | `derive_code`, `request_path`, `path_authorized` |
 | `Conn` + globals | connection table, guarded by `gLock` |
 | `conn_queue` / `ws_queue_frame` | per-connection outbound queue |
 | relay logic | `request_restart`, `relay_media`, `handle_text` |
@@ -51,6 +52,24 @@ Everything is in `cscreen.c`:
 
 `@@PORT@@` in `gPage[]` is substituted at serve time with the real relay
 port, so the client always dials the right port.
+
+## Access code
+
+An optional third command line argument is a passphrase. It is SHA-1'd and
+the first five bytes become a ten hex digit code (`gCode`), which must then
+be the URL path on **both** ports. The passphrase never leaves the server.
+
+- **Gate both ports.** Gating only HTTP would leave the video stream itself
+  open to anyone who guessed the relay port, which defeats the purpose.
+- The client carries `location.pathname` straight over into the WebSocket
+  URL, so there is nothing to substitute into `gPage[]` and no way for the
+  two to disagree.
+- Matching is case insensitive and tolerates a trailing slash or query
+  string, because a human retypes this off a phone call.
+- The code must be **deterministic** across runs -- a cron job restarting
+  the relay must not invalidate everyone's bookmark. Never salt it with
+  time, pid, or randomness.
+- No third argument means no gate at all, which is the old behavior.
 
 ## Protocol
 
@@ -142,6 +161,14 @@ over the DevTools Protocol and read real numbers back (`vid.videoWidth`,
 judging by screenshot alone. If the sharer captures the whole screen while
 a viewer is on the same display you get an infinite hall-of-mirrors, which
 is a nice quick confirmation that live video is really flowing.
+
+**Two browser windows on one Xvfb display stack on top of each other, and
+Chromium reports a fully occluded window as `document.hidden`.** A hidden
+tab never opens its `MediaSource` -- `ms.readyState` stays `closed` and the
+`<video>` sits at `readyState 0` -- while blocks pile up in `queue`. That
+looks exactly like a broken viewer and is not one; `Page.bringToFront` on
+the viewer makes it open and drain within a second. Check `document.hidden`
+before chasing a playback bug in a headless test.
 
 **Shell gotcha:** `pkill -f "cscreen 5050 5051"` matches the command line of
 your own shell and kills it (you will see exit code 144). Use `pkill -x

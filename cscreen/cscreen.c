@@ -39,6 +39,7 @@
 #define PING_SECONDS     5
 #define DEAD_SECONDS     30
 #define MIME_MAX         128
+#define CODE_LEN         10                    /* hex digits in access code   */
 
 
 /* ------------------------------------------------------------------ */
@@ -209,6 +210,99 @@ static time_t gAwaitSince = 0;     /* when that request went out        */
 static char gMime[ MIME_MAX ];
 static int gHttpPort = 0;
 static int gRelayPort = 0;
+
+/* Access code derived from the optional security string on the command   */
+/* line.  Empty means "no gate, serve anybody".  When set, both the HTTP  */
+/* page and the relay WebSocket demand it as the URL path.                */
+static char gCode[ CODE_LEN + 1 ] = "";
+
+
+/* ------------------------------------------------------------------ */
+/* Access code                                                         */
+/* ------------------------------------------------------------------ */
+
+/* Fold the user's secret down to CODE_LEN uppercase hex digits.  This is */
+/* deterministic across runs on purpose: a cron job that restarts the     */
+/* relay with the same secret keeps handing out the same secret URL, so   */
+/* the humans never have to be told a new one.                            */
+static void derive_code( const char *secret, char *out ) {
+    static const char *hex = "0123456789ABCDEF";
+    unsigned char digest[20];
+    SHA1 ctx;
+    int i;
+
+    sha1_init( &ctx );
+    sha1_update( &ctx, (const unsigned char *)secret,
+                 (unsigned int)strlen( secret ) );
+    sha1_final( &ctx, digest );
+
+    for( i = 0; i < CODE_LEN; i++ ) {
+        /* One hex digit per nibble, walking the front of the digest. */
+        unsigned char b = digest[ i / 2 ];
+        out[i] = hex[ ( i % 2 ) == 0 ? ( b >> 4 ) : ( b & 0x0F ) ];
+        }
+    out[ CODE_LEN ] = '\0';
+    }
+
+
+/* Pull the path out of a request line ("GET /foo?x HTTP/1.1") into buf, */
+/* stripping the query string and any trailing slashes.  Returns 0 if    */
+/* the request does not look like a request line at all.                 */
+static int request_path( const char *req, char *buf, size_t bufSize ) {
+    const char *p = strchr( req, ' ' );
+    const char *end;
+    size_t len;
+
+    if( p == NULL ) {
+        return 0;
+        }
+    p++;
+    end = p;
+    while( *end != '\0' && *end != ' ' && *end != '?' &&
+           *end != '\r' && *end != '\n' ) {
+        end++;
+        }
+    len = (size_t)( end - p );
+    if( len >= bufSize ) {
+        return 0;
+        }
+    memcpy( buf, p, len );
+    buf[len] = '\0';
+
+    while( len > 1 && buf[ len - 1 ] == '/' ) {
+        buf[ --len ] = '\0';
+        }
+    return 1;
+    }
+
+
+/* Does this request carry the access code as its path?  Always true when */
+/* no security string was given.  Comparison is case insensitive, because */
+/* a human is going to be retyping this over the phone.                   */
+static int path_authorized( const char *req ) {
+    char path[256];
+    int i;
+
+    if( gCode[0] == '\0' ) {
+        return 1;
+        }
+    if( !request_path( req, path, sizeof( path ) ) ) {
+        return 0;
+        }
+    if( path[0] != '/' ) {
+        return 0;
+        }
+    for( i = 0; i < CODE_LEN; i++ ) {
+        char a = path[ i + 1 ];
+        if( a >= 'a' && a <= 'z' ) {
+            a = (char)( a - 'a' + 'A' );
+            }
+        if( a != gCode[i] ) {
+            return 0;
+            }
+        }
+    return path[ CODE_LEN + 1 ] == '\0';
+    }
 
 
 /* ------------------------------------------------------------------ */
@@ -626,6 +720,16 @@ static int ws_handshake( int sock ) {
             }
         }
 
+    /* The relay port is gated too, otherwise the secret URL only hides   */
+    /* the page and anybody could still tap the video stream directly.    */
+    if( !path_authorized( req ) ) {
+        static const char *deny =
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n"
+            "Connection: close\r\n\r\n";
+        send_all( sock, (const unsigned char *)deny, strlen( deny ) );
+        return -1;
+        }
+
     keyStart = strstr( req, "Sec-WebSocket-Key:" );
     if( keyStart == NULL ) {
         keyStart = strstr( req, "sec-websocket-key:" );
@@ -1026,7 +1130,9 @@ static const char *gPage[] = {
 "/* ---------------- relay socket ---------------- */\n",
 "\n",
 "function connect(){\n",
-" var url='ws://'+location.hostname+':'+WSPORT+'/';\n",
+"/* The relay port demands the same access code the page was served\n",
+"   under, so just carry our own path over to the socket URL. */\n",
+" var url='ws://'+location.hostname+':'+WSPORT+location.pathname;\n",
 " try{ws=new WebSocket(url);}catch(e){setTimeout(connect,500);return;}\n",
 " ws.binaryType='arraybuffer';\n",
 " ws.onopen=function(){\n",
@@ -1418,7 +1524,25 @@ static void *http_conn_thread( void *arg ) {
             }
         }
 
-    if( strncmp( req, "GET /favicon.ico", 16 ) == 0 ) {
+    if( !path_authorized( req ) ) {
+        /* Deliberately says nothing about what a correct URL looks like. */
+        static const char *body =
+            "<html><head><title>cscreen</title></head>\n"
+            "<body style=\"font-family:sans-serif\">\n"
+            "<h2>Security code incorrect.</h2>\n"
+            "</body></html>\n";
+        char head[256];
+        sprintf( head,
+                 "HTTP/1.1 403 Forbidden\r\n"
+                 "Content-Type: text/html; charset=utf-8\r\n"
+                 "Content-Length: %lu\r\n"
+                 "Cache-Control: no-store\r\n"
+                 "Connection: close\r\n\r\n",
+                 (unsigned long)strlen( body ) );
+        send_all( sock, (const unsigned char *)head, strlen( head ) );
+        send_all( sock, (const unsigned char *)body, strlen( body ) );
+        }
+    else if( strncmp( req, "GET /favicon.ico", 16 ) == 0 ) {
         static const char *notFound =
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n"
             "Connection: close\r\n\r\n";
@@ -1543,13 +1667,19 @@ int main( int argc, char **argv ) {
     int relayListener;
     pthread_t t;
 
-    if( argc != 3 ) {
-        fprintf( stderr, "usage: %s HTTP_PORT RELAY_PORT\n", argv[0] );
+    if( argc != 3 && argc != 4 ) {
+        fprintf( stderr,
+                 "usage: %s HTTP_PORT RELAY_PORT [SECURITY_STRING]\n",
+                 argv[0] );
         return 1;
         }
 
     gHttpPort = atoi( argv[1] );
     gRelayPort = atoi( argv[2] );
+
+    if( argc == 4 && argv[3][0] != '\0' ) {
+        derive_code( argv[3], gCode );
+        }
 
     if( gHttpPort <= 0 || gRelayPort <= 0 || gHttpPort == gRelayPort ) {
         fprintf( stderr, "bad ports\n" );
@@ -1584,7 +1714,18 @@ int main( int argc, char **argv ) {
     pthread_detach( t );
 
     printf( "cscreen ready\n" );
-    printf( "  open http://localhost:%d in a browser\n", gHttpPort );
+    if( gCode[0] != '\0' ) {
+        /* Extra spaces around the URL so it is easy to double-click and  */
+        /* copy out of a terminal.                                        */
+        printf( "  open   http://localhost:%d/%s   in a browser\n",
+                gHttpPort, gCode );
+        printf( "  (clients without that code are refused)\n" );
+        }
+    else {
+        printf( "  open   http://localhost:%d   in a browser\n", gHttpPort );
+        printf( "  (no security string given: anyone who can reach this "
+                "port can watch)\n" );
+        }
     printf( "  relay listening on port %d\n", gRelayPort );
     fflush( stdout );
 

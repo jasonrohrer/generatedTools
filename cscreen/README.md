@@ -19,12 +19,13 @@ library is pthreads.  The code is C89 and compiles clean under
 ## Run
 
 ```
-cscreen 5050 5051
+cscreen 5050 5051 [security string]
 ```
 
 * `5050` -- HTTP port.  Serves the browser client.  Plain HTTP, no TLS.
 * `5051` -- relay port.  The browser connects back here over WebSocket to
   carry the video.
+* the third argument is optional; see *Keeping strangers out* below.
 
 Then open `http://<server>:5050` in Firefox or Chrome.  On a remote box,
 open the two ports in the firewall and use the server's hostname.
@@ -52,6 +53,35 @@ come and go mid-stream and will pick the picture up within a couple of
 seconds.
 
 Video only, no audio.
+
+## Keeping strangers out
+
+Give a third argument and the relay hides behind a secret URL:
+
+```
+cscreen 5050 5051 "some passphrase"
+```
+
+```
+cscreen ready
+  open   http://localhost:5050/589AF9BCD9   in a browser
+  (clients without that code are refused)
+```
+
+The passphrase itself is never sent anywhere and never appears in a URL.
+It is hashed down to a ten hex digit access code, and that code must be
+the URL path on *both* ports -- the page and the video stream.  Anything
+else gets a bare "Security code incorrect." page, so a bot scanning port
+5050 finds nothing to look at.  The code is matched case insensitively,
+and a trailing slash or query string is fine.
+
+The code is a pure function of the passphrase, so it is the same every
+time.  A cron job can keep the relay alive with the same passphrase and
+your collaborators' bookmark keeps working across restarts.
+
+This is obscurity, not encryption: it is plain HTTP, so anyone sitting on
+the wire can read the URL and the video.  It keeps out passers-by, not a
+determined eavesdropper.
 
 ## How it works
 
@@ -105,6 +135,7 @@ The whole point of this program is that the picture does not stop.
 ## Limits
 
 * 64 simultaneous connections (`MAX_CONNS`).
-* Plain HTTP and unencrypted WebSocket.  Anyone who can reach the relay
-  port can watch.  Put it behind a VPN or a firewall rule if that matters,
-  or run it on a host only you and your collaborators can reach.
+* Plain HTTP and unencrypted WebSocket.  Without a security string, anyone
+  who can reach the relay port can watch; with one, anyone who learns the
+  URL can.  Put it behind a VPN or a firewall rule if that matters, or run
+  it on a host only you and your collaborators can reach.

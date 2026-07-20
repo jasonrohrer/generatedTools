@@ -1,14 +1,26 @@
-Great work so far!   This is already working really well to share screens.
 
 
---To avoid peeping toms, we should have a 3rd (optional) argument, after the two ports, which is a security string.  The user might type a passoword-like thing there.  Anyway, the relay should hash this internally, and turn it into a little 10-letter hex code.  Suppose the hex code is this:  589AF9BCD9.  It should then prompt the user with this:
+New problem:
 
-open   http://localhost:5050/589AF9BCD9   in a browser
+For some reason, it works fine when I'm running the relay server on localhost, but it stops working if I install it remotely.
 
-Note the extra spaces there, to make it easier to select with the mouse and copy-paste.
+I see the client load in my browser, but then when I go to share, I see the following error message in my browser:
 
-Anyway, the relay should then reject any clients that don't have that code in their URL (display a simple security code incorrect rejection page).
+This browser cannot capture the screen.
 
-Note that since this code is generated from the user's provided security string, it can (potentially) be invariant across runs of the relay, if the user provides the same string every time.  Thus, a cronjob could keep the relay running, and provide the same security string every time when it starts the relay, which would allow clients to always connect to the same (secret) URL, and keep others who don't have the URL out.  Bots sniffing port 5050 wouldn't be able to find the right URL endpoint.
+This is EXACTLY the same browser that's working find when the relay is on Localhost.   I think this is because the ScreenSharing API only works over https or over http to localhost.
 
-Also, this could be sniffed by man in the middle attacks, but don't worry about this.  We're not concerned about that threat model here.
+
+Screego handles it this way, by using the cert and private key PEM files that might possibly be installed on the system by certbot...
+
+SCREEGO_TLS_CERT_FILE=/etc/letsencrypt/live/screenshare.onehouronelife.com/full\
+chain.pem
+                             
+SCREEGO_TLS_KEY_FILE=/etc/letsencrypt/live/screenshare.onehouronelife.com/privk\
+ey.pem
+
+So these should be optional additional arguments (paths to the the fullchain and privkey PEM files), and if they are present, https should be used (and printed out for the sample URL).
+
+
+I'm pretty sure a clean-room TLS implementation is out of scope, so please link against -lssl (open SSL dev library).
+

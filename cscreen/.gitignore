@@ -1,0 +1,10 @@
+# build artifacts
+*.o
+cscreen
+
+# editor backups
+*~
+
+# local test artifacts (not part of the source)
+*.png
+*.log

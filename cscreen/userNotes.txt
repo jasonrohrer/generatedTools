@@ -8,7 +8,7 @@ I see the client load in my browser, but then when I go to share, I see the foll
 
 This browser cannot capture the screen.
 
-This is EXACTLY the same browser that's working find when the relay is on Localhost.   I think this is because the ScreenSharing API only works over https or over http to localhost.
+This is EXACTLY the same browser that's working fine when the relay is on Localhost.   I think this is because the ScreenSharing API only works over https or over http to localhost.
 
 
 Screego handles it this way, by using the cert and private key PEM files that might possibly be installed on the system by certbot...

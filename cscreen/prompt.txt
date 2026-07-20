@@ -1,0 +1,63 @@
+In this folder, you are going to make a brand new, clean-room screen sharing tool.  Call it "cscreen"
+
+You may find this folder empty, in which case, you're just getting started.  On the other hand, you may find that someone before you has already made some progress.  If that's the case, pick up where they left off, analyze the current situation, and try to make some improvements.
+
+Also, as users test your screen sharing tool, they will leave notes about any issues or problems in userNotes.txt  Please study that file and fix any reported issues.
+
+
+My friend Tom and I are collaborating remotely.  He has a Mac, and I work on Debian Linux.  We're often talking on the phone while needing to see each other's screens (while tweaking artwork, etc.).   We used to use Zoom for this, but it is so slow to start up and configure.  We then moved to Screego, which is an open source web-based solution (we run a relay server on a remotely-hosted Linode).   This works GREAT, but for some reason, his view of my screen keeps dropping, and I have to keep re-sharing my screen to him every few minutes.  When he shares his Mac screen to me through Screego, it works great and is rock solid, however.   Then we moved to RustDesk, and we're running a relay server for that too.  It works great when I'm sharing (rock solid), but then when he tries sharing his Mac screen, the image never comes through.
+
+So it seems like a browser based solution is the way to go here, for the sake of platform independence.  However, we're both behind NAT firewalls, and we don't even want to worrry about punch-through, so we're going to need a remote relay server.
+
+The browser-side component should use only HTML/Javascript, and use whatever browser features are needed to grab the user's screen (including selecting from a list of windows, or the whole screen).  It should work in both Firefox and Chrome.
+
+The relay server itself should be written in pure C89 as a single c file. It should use pthreads and unix sockets/networking (TCP only) as its only dependencies (beyond c std lib stuff).  No libraries should be linked besides -lpthread.  Everything should be written from scratch.  It should be compileable like this:
+
+gcc -o cscreen -lpthread cscreen.c
+
+
+cscreen should be run from the command line with two arguments, which are its ports:
+
+cscreen  5050  5051
+
+The first argument is the HTTP port.   No HTTPS should be needed, since that involves certificates, etc.
+
+Assuming that it's running on localhost to test, the end-user would open a browser and connect like this:
+
+http://localhost:5050
+
+When a browser connects on the HTTP port, the HTML/Javascript for the browser client should be served.
+
+The second port is the relay port for the video stream.  The browser client will connect back on that port to send/receive video.
+
+
+Thus, the HTML/Javascript should be embedded in the cwave.c file as text to be served (or generated dynamically by the cwave.c file, as needed).
+
+
+The browser client should have a very simple UI.
+
+--Share My Screen (with a drop-down to pick a frame rate, with common ones like 60, 30, 15, 10, etc.)
+
+--Stop Sharing
+
+--A display of how many people are connected (could be more than 2)
+
+
+For now, only the visual component of the screen needs to be shared, no audio.
+
+
+When one person is sharing, and another person starts sharing, the first should auto-stop to make room for the second (only one person sharing at a time).
+
+During a stream, other people should be able to connect (and leave) and just join right in to see what's being streamed.
+
+
+
+And most importantly:  the stream should keep going come hell or high water.  If it drops for any reason, it should try to reconnect and resume.  If a receiver drops, it should reconnect to the relay and jump right back into receiving.  And everything should keep retrying forever, with short timeouts, as long as the outage continues.
+
+
+This relay server should be fast and stable.  It should launch almost instantly, etc.
+
+
+You can launch a firefox or chromium browser and grab screen shots of it with scrot to see if it looks correct.  I think there's some way you can do this in some kind of x headless display without making a window appear on my screen and interfering with other work that I'm doing on this computer.
+
+After you work on this program, please commit your changes to the local git repo with a detailed commit message describing what you did.

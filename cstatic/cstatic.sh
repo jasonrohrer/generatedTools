@@ -87,9 +87,14 @@ Options:
 A ".cstaticignore" file in the analyzed directory adds one exclude glob per
 line (blank lines and #comments ignored).
 
+Every run is also copied to a log file, whose path is printed at the top and
+bottom of the report, so the findings survive the compilation buffer being
+reused.  It goes to the project's .claude directory if it already has one,
+otherwise ~/.claude/cstatic/.
+
 Environment overrides: CSTATIC_CLAUDE CSTATIC_MODEL CSTATIC_EFFORT
 CSTATIC_JOBS CSTATIC_CHUNK_LINES CSTATIC_CHUNK_OVERLAP CSTATIC_MAX_FINDINGS
-CSTATIC_TIMEOUT
+CSTATIC_TIMEOUT CSTATIC_LOG_DIR
 EOF
 }
 
@@ -313,6 +318,30 @@ mkdir -p "$WORK/prompts" "$WORK/raw" "$WORK/logs" "$WORK/verified"
 note() { [ "$QUIET" -eq 1 ] || echo "$*"; }
 
 START_TS=$(date +%s)
+
+# ------------------------------------------------------------------- log file
+
+# Emacs loses the compilation buffer the moment you run make in it, and these
+# findings take a while to read.  Keep a copy of everything, and say where.
+# Only writes into a project's .claude if it already has one, so this never
+# leaves a stray directory in someone's source tree.
+if [ -n "${CSTATIC_LOG_DIR:-}" ]; then
+    LOG_DIR="$CSTATIC_LOG_DIR"
+elif [ -d "$ROOT/.claude" ]; then
+    LOG_DIR="$ROOT/.claude/cstatic"
+else
+    LOG_DIR="$HOME/.claude/cstatic"
+fi
+LOG=""
+if mkdir -p "$LOG_DIR" 2>/dev/null && [ -w "$LOG_DIR" ]; then
+    LOG="$LOG_DIR/cstatic-$(basename "$ROOT")-$(date +%Y%m%d-%H%M%S).log"
+else
+    # last resort, but somewhere that outlives this run
+    LOG="${TMPDIR:-/tmp}/cstatic-$(basename "$ROOT")-$(date +%Y%m%d-%H%M%S).log"
+fi
+exec > >(tee -a "$LOG") 2>&1
+
+note "cstatic: logging this report to $LOG"
 
 # ------------------------------------------------------------ shared prompt
 
@@ -734,12 +763,13 @@ POOL_TOTAL=0
 run_pool() {
     # runs prompts listed in $1 (id per line), with progress prefix $2
     local listfile="$1" phase="$2"
-    local -a queued=()
-    local total_n running=0 i=0
+    local -a queued=() pids=()
+    local total_n running=0 i=0 p
     total_n=$(wc -l < "$listfile" | tr -d ' ')
     while IFS=$'\t' read -r id label; do
         i=$((i + 1))
         run_claude "$WORK/prompts/$id.txt" "$WORK/raw/$id.out" "$WORK/logs/$id.log" &
+        pids+=("$!")
         queued+=("$id:$i:$label")
         running=$((running + 1))
         if [ "$running" -ge "$JOBS" ]; then
@@ -747,7 +777,11 @@ run_pool() {
             running=$((running - 1))
         fi
     done < "$listfile"
-    wait
+    # wait on the analysis jobs BY PID.  A bare "wait" would also wait on the
+    # tee that mirrors our output to the log file, and tee never exits.
+    for p in ${pids[@]+"${pids[@]}"}; do
+        wait "$p" 2>/dev/null
+    done
 
     # report results in submission order
     local rec rest jid jlabel jidx n
@@ -790,6 +824,7 @@ if [ "$READ_FAILED" -ge "$TOTAL_JOBS" ]; then
     if [ "$KEEP_TMP" -eq 0 ]; then
         echo "cstatic: re-run with -k to keep the logs in the work directory."
     fi
+    echo "cstatic: this report is saved at $LOG"
     exit 1
 fi
 
@@ -902,6 +937,7 @@ if [ "$NCAND" -eq 0 ]; then
     fi
     ELAPSED=$(( $(date +%s) - START_TS ))
     note "cstatic: done in ${ELAPSED}s."
+    echo "cstatic: this report is saved at $LOG"
     exit 0
 fi
 
@@ -1300,5 +1336,6 @@ if [ "$READ_FAILED" -gt 0 ]; then
 fi
 note "cstatic: analyzed ${#FILES[@]} file(s) in ${ELAPSED}s."
 note "cstatic: these are suggestions from a language model -- verify each one."
+echo "cstatic: this report is saved at $LOG"
 
 exit 0

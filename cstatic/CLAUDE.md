@@ -38,6 +38,11 @@ prompts inside it are the product.
 - **Exit status is always 0** on a completed run, so Emacs says "Compilation
   finished" rather than "exited abnormally", whether or not bugs were found.
 - **Never try to compile the code under analysis.** That is the whole premise.
+- **`exec > >(tee -a "$LOG")` mirrors the whole report to a log file**, because
+  running `make` in the compilation buffer destroys the findings. That process
+  substitution is a background job that never exits, so a bare `wait` hangs
+  forever. `run_pool` must wait on its analysis jobs **by recorded PID**. This
+  already cost one hung run; do not "simplify" it back to `wait`.
 
 ## Pipeline
 

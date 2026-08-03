@@ -1,3 +1,4 @@
+cstatic: logging this report to /home/jasonrohrer/.claude/cstatic/cstatic-buggy-20260803-093702.log
 cstatic v1.0 -- 1 source file(s) in /home/jasonrohrer/checkout/generatedTools/cstatic/tests/buggy
 cstatic: -f world.c -- isolation mode: each file is judged on its own, with no idea who calls it
 cstatic: only that file and the headers it includes are read; the rest of the folder is not looked at
@@ -16,52 +17,54 @@ cstatic: no duplicates to merge
 
 cstatic: ---------------------------------------------------------------
 
-world.c:41:9: error: loadTitle clamps len to MAX_NAME_LEN, so title[16] = '\0' writes one byte past the array
-    loadTitle(w, "0123456789abcdef") sets len 16 and world.c@46 stores
-    title[16]
-    title is char[MAX_NAME_LEN], MAX_NAME_LEN is 16 (world.h@20, world.h@4)
-    clamp to MAX_NAME_LEN - 1
+world.c:41:9: error: loadTitle clamps len to MAX_NAME_LEN, so the terminator at line 46 writes one past title
+    title is char[16] (world.h@20, MAX_NAME_LEN 16), so title[16] at
+    world.c@46 is out of bounds
+    any inTitle of 16 or more chars triggers it; strncpy also fills all 16
+    bytes unterminated ...
 
-world.c:54:18: error: growItems doubles capacity, so a world created with capacity 0 never grows
-    newWorld(0) then addItem: 0 >= 0 grows to 0*2 == 0 and world.c@70 writes
-    items[0]
-    newWorld accepts any int and stores it verbatim at world.c@17
-    use a minimum of 1, e.g. newCap = capacity ? capacity * 2 : 1
+world.c:54:18: error: growItems doubles capacity, so a world made with newWorld( 0 ) never gains any room
+    newCap = 0 * 2 == 0; addItem then writes items[0] into a zero-sized block
+    newWorld takes inCapacity as a plain int and rejects nothing, so 0 is
+    permitted
+    fix: `newCap = inWorld->capacity * 2; if( newCap < 1 ) newCap = 1;`
 
-world.c:56:22: warning: realloc return stored directly over inWorld->items, losing the old block on failure
-    requires the realloc to fail; items becomes NULL, the old array leaks, and
-    capacity is still raised at world.c@58 so addItem derefs NULL at
-    world.c@70
-    assign to a temp and test it before overwriting items
+world.c:56:22: error: realloc result is assigned over inWorld->items, losing the old block when realloc fails
+    on failure items becomes NULL, capacity is still raised at world.c@58, and
+    addItem
+    writes through NULL at world.c@70; the old array is leaked as well
+    fix: realloc into a temporary and commit both fields only on success
 
-world.c:72:5: error: strcpy into slot->name is unbounded and overruns for any inName of 16 chars or more
-    addItem(w, "a_very_long_item_name", 1, 1) writes past name into value and
-    count
-    Item.name is char[MAX_NAME_LEN] == char[16] (world.h@10, world.h@4)
-    copy at most MAX_NAME_LEN - 1 chars and terminate explicitly
+world.c:72:5: error: strcpy into slot->name overruns the 16-byte name field for any longer inName
+    Item.name is char[MAX_NAME_LEN] == char[16] (world.h@10); a 20-char inName
+    smashes slot->value and slot->count and beyond
+    fix: copy at most MAX_NAME_LEN - 1 bytes and terminate explicitly
 
-world.c:86:19: error: findItem loops i <= numItems, so it reads and strcmps one Item past the last stored one
-    with numItems == capacity, items[numItems] lies outside the block from
-    world.c@15
-    an accidental match there returns a pointer to unwritten memory
-    the test must be i < inWorld->numItems
+world.c:86:20: error: findItem loop bound `i <= inWorld->numItems` reads one Item past the last stored one
+    with numItems == n, strcmp touches items[n], which is uninitialized or
+    past the block
+    a stale or garbage name there can make findItem return a bogus Item*
+    fix: use `i < inWorld->numItems`
 
-world.c:102:17: warning: value * count is computed in int and only widened afterwards, so long total buys nothing
-    needs a product beyond INT_MAX, e.g. one item with value 100000 and count
-    100000
-    the int v wraps before line 103 ever adds it to total
-    write total += (long)items[i].value * items[i].count
+world.c:102:17: warning: value * count is computed in int and only then widened, so the product can overflow
+    value 100000 and count 30000 overflow int before the assignment to long
+    total
+    requires an item whose value * count exceeds INT_MAX; the overflow is
+    undefined ...
 
-world.c:114:46: error: printf uses %d for inWorld->totalValue, which is long
-    totalValue is long (world.h@19); %d with a long argument is undefined
-    behaviour
-    on LP64 it prints garbage and misaligns nothing else only by luck; use %ld
+world.c:115:50: error: printf uses %d for inWorld->totalValue, which is declared long
+    totalValue is long (world.h@19); %d fetches an int from the varargs,
+    undefined
+    behaviour, printing garbage on targets where long is wider than int
+    fix: use %ld in the format string at world.c@114
 
-world.h:7:21: error: SQUARE macro parameter and body are unparenthesized, so it misexpands under any operator
-    SQUARE( a + b ) expands to a + b * a + b; 4 / SQUARE( 2 ) becomes 4 / 2 *
-    2 == 4
+world.h:7:21: error: macro SQUARE lacks parentheses around its parameter and its body
+    SQUARE( a + b ) expands to a + b * a + b, giving a + (b*a) + b
+    also 1 / SQUARE( n ) expands to 1 / n * n, and SQUARE( i++ ) increments
+    twice
     fix: #define SQUARE( x ) ( ( x ) * ( x ) )
 
-cstatic: 8 finding(s): 6 error(s), 2 warning(s).
-cstatic: analyzed 1 file(s) in 88s.
+cstatic: 8 finding(s): 7 error(s), 1 warning(s).
+cstatic: analyzed 1 file(s) in 93s.
 cstatic: these are suggestions from a language model -- verify each one.
+cstatic: this report is saved at /home/jasonrohrer/.claude/cstatic/cstatic-buggy-20260803-093702.log

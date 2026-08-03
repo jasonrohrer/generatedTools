@@ -47,6 +47,20 @@ the `*compilation*` buffer and use the ordinary keys:
 nothing currently drives the program into it.  Set `compilation-skip-threshold`
 to 2 if you want `C-x \`` to visit only the errors.
 
+Every run also writes a copy of exactly what you see in the compilation buffer
+to `~/.claude/cstatic/cstatic-<project>-<timestamp>.log`, and prints that path
+at both the top and the bottom of the report.  Running `make` in the same
+buffer throws the findings away; the log is how you get them back.  If the
+project already has a `.claude` directory the log goes there instead, and
+`CSTATIC_LOG_DIR` overrides both.
+
+The log is a byte-for-byte copy, so it is still a compilation buffer.  To get
+the clickable list back after you have lost it:
+
+    M-x compile RET cat ~/.claude/cstatic/cstatic-mygame-20260803-093139.log RET
+
+or just open the file and `M-x compilation-mode`.
+
 Findings are printed as a GCC diagnostic line plus up to four indented
 explanation lines, so a finding fits in a half-height compilation window and
 the explanation lines are not mistaken for separate errors.
@@ -176,7 +190,7 @@ Everything Claude does here is read-only: the jobs run with only the `Read`,
 Every default can also be set from the environment: `CSTATIC_MODEL`,
 `CSTATIC_JOBS`, `CSTATIC_EFFORT`, `CSTATIC_CHUNK_LINES`,
 `CSTATIC_CHUNK_OVERLAP`, `CSTATIC_MAX_FINDINGS`, `CSTATIC_TIMEOUT`,
-`CSTATIC_CLAUDE`.
+`CSTATIC_CLAUDE`, `CSTATIC_LOG_DIR`.
 
 ## Cost and time
 

@@ -44,7 +44,13 @@ prompts inside it are the product.
 Five stages, in `cstatic.sh`:
 
 1. **Collect** — every `.c`/`.h` in the folder, top level only unless `-r`,
-   minus `-x` globs and `.cstaticignore`.
+   minus `-x` globs and `.cstaticignore`. `-f` then narrows that to the files
+   the user actually wants searched. Two lists come out: `FILES` (what gets a
+   read job) and `ALL_FILES` (everything, pre-`-f`). **The cross-file pass must
+   use `ALL_FILES`** — a seam-finder shown only the focused file cannot see a
+   seam. `-f` turns that pass off by default anyway, since its whole job is
+   scanning the project; `--global` puts it back and scopes its attention to
+   where the `-f` files meet the rest.
 2. **Read** — one Claude job per file, chunked at 600 lines with 80 lines of
    overlap for longer files. Prompt = `BUG_CATALOG` + `NOT_A_FINDING` +
    `OUTPUT_CONTRACT`. Plus one **global** job that looks only at cross-file

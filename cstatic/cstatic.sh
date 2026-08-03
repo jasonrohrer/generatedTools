@@ -43,10 +43,12 @@ JOB_TIMEOUT="${CSTATIC_TIMEOUT:-1200}"
 DO_VERIFY=1
 DO_GLOBAL=1
 DO_MERGE=1
+FORCE_GLOBAL=0
 RECURSE=0
 KEEP_TMP=0
 QUIET=0
 declare -a EXCLUDES=()
+declare -a INCLUDES=()
 declare -a ARGFILES=()
 
 usage() {
@@ -62,6 +64,13 @@ Options:
   -m MODEL        model: opus | sonnet | haiku | id  (default opus)
   -e LEVEL        effort: low|medium|high|xhigh|max  (default high)
   -r              recurse into subdirectories        (default: top level only)
+  -f GLOB         analyze ONLY the files matching GLOB, instead of everything
+                  in the folder.  Repeatable.  Quote the glob so your shell
+                  does not expand it first:  -f '*.h'
+                  Claude still reads the rest of the project for context, so
+                  it can look up the real array sizes and callee contracts --
+                  it just does not go hunting for bugs anywhere else.
+                  Implies --no-global; use --global to override.
   -x GLOB         exclude files matching GLOB (repeatable, matched on basename
                   and on the path relative to the analyzed directory)
   -c N            lines per analysis chunk           (default 600, 0 = no chunking)
@@ -69,6 +78,7 @@ Options:
   -t SECS         per-Claude-call timeout            (default 1200)
   --no-verify     skip the skeptical second pass (faster, noisier)
   --no-global     skip the whole-project cross-file pass
+  --global        keep the cross-file pass even when -f is used
   --no-merge      skip the final pass that collapses duplicate root causes
   -k              keep the work directory (raw Claude output) for debugging
   -q              suppress progress lines; print findings only
@@ -92,12 +102,14 @@ while [ $# -gt 0 ]; do
         -n) MAX_FINDINGS="$2"; shift 2 ;;
         -t) JOB_TIMEOUT="$2"; shift 2 ;;
         -x) EXCLUDES+=("$2"); shift 2 ;;
+        -f) INCLUDES+=("$2"); shift 2 ;;
         -r) RECURSE=1; shift ;;
         -k) KEEP_TMP=1; shift ;;
         -q) QUIET=1; shift ;;
         --no-verify) DO_VERIFY=0; shift ;;
         --no-global) DO_GLOBAL=0; shift ;;
         --no-merge) DO_MERGE=0; shift ;;
+        --global) FORCE_GLOBAL=1; shift ;;
         -h|--help) usage; exit 0 ;;
         --) shift; while [ $# -gt 0 ]; do ARGFILES+=("$1"); shift; done ;;
         -*) echo "cstatic: unknown option $1" >&2; usage >&2; exit 2 ;;
@@ -124,6 +136,9 @@ command -v timeout >/dev/null 2>&1 && TIMEOUT_CMD="timeout ${JOB_TIMEOUT}s"
 
 ROOT=""
 declare -a FILES=()
+# every source file in the folder, before -f narrows things down.  The
+# cross-file pass needs the whole picture even when -f focuses the rest.
+declare -a ALL_FILES=()
 
 if [ ${#ARGFILES[@]} -eq 0 ]; then
     ROOT="$PWD"
@@ -148,12 +163,13 @@ if [ -f "$ROOT/.cstaticignore" ]; then
     done < "$ROOT/.cstaticignore"
 fi
 
-is_excluded() {
-    # $1 = path relative to ROOT
-    local rel="$1" base
+glob_matches() {
+    # $1 = path relative to ROOT, rest = shell globs.  A pattern matches on the
+    # bare file name, on the whole relative path, or as a leading directory.
+    local rel="$1" base pat
+    shift
     base="$(basename "$rel")"
-    local pat
-    for pat in ${EXCLUDES[@]+"${EXCLUDES[@]}"}; do
+    for pat in "$@"; do
         # shellcheck disable=SC2053
         [[ "$base" == $pat ]] && return 0
         # shellcheck disable=SC2053
@@ -161,6 +177,16 @@ is_excluded() {
         [[ "$rel" == $pat/* ]] && return 0
     done
     return 1
+}
+
+is_excluded() {
+    glob_matches "$1" ${EXCLUDES[@]+"${EXCLUDES[@]}"}
+}
+
+# With no -f the answer is always yes; with -f only the named files are read.
+is_included() {
+    [ ${#INCLUDES[@]} -eq 0 ] && return 0
+    glob_matches "$1" ${INCLUDES[@]+"${INCLUDES[@]}"}
 }
 
 if [ ${#FILES[@]} -eq 0 ]; then
@@ -172,14 +198,38 @@ if [ ${#FILES[@]} -eq 0 ]; then
     while IFS= read -r f; do
         rel="${f#"$ROOT"/}"
         is_excluded "$rel" && continue
+        ALL_FILES+=("$f")
+        is_included "$rel" || continue
         FILES+=("$f")
     done < <(find "$ROOT" "${FINDARGS[@]}" \( -name '*.c' -o -name '*.h' \) \
                   -not -path '*/.git/*' | LC_ALL=C sort)
+else
+    # explicit file arguments still honour -f, so the two can be combined
+    ALL_FILES=("${FILES[@]}")
+    declare -a KEPT=()
+    for f in "${FILES[@]}"; do
+        is_included "${f#"$ROOT"/}" || continue
+        KEPT+=("$f")
+    done
+    FILES=(${KEPT[@]+"${KEPT[@]}"})
 fi
 
 if [ ${#FILES[@]} -eq 0 ]; then
+    if [ ${#INCLUDES[@]} -gt 0 ]; then
+        # a mistyped glob must not look like a clean result
+        echo "cstatic: no .c or .h file matched -f: ${INCLUDES[*]}"
+        echo "cstatic: (remember to quote a glob, so the shell does not eat it:"
+        echo "cstatic:  cstatic.sh -f '*.h')"
+        exit 1
+    fi
     echo "cstatic: no .c or .h files found in $ROOT"
     exit 0
+fi
+
+# -f says "just look at this file", so the whole-project pass is off by
+# default; --global puts it back.
+if [ ${#INCLUDES[@]} -gt 0 ] && [ "$FORCE_GLOBAL" -eq 0 ]; then
+    DO_GLOBAL=0
 fi
 
 # ------------------------------------------------------------ work directory
@@ -467,7 +517,7 @@ done
 
 # ------------------------------------------------- whole-project (global) job
 
-if [ "$DO_GLOBAL" -eq 1 ] && [ ${#FILES[@]} -gt 1 ]; then
+if [ "$DO_GLOBAL" -eq 1 ] && [ ${#ALL_FILES[@]} -gt 1 ]; then
     job_n=$((job_n + 1))
     gid=$(printf "a%03d" "$job_n")
     {
@@ -480,7 +530,15 @@ program disagree with each other.
 PROJECT ROOT: $ROOT
 FILES IN THIS ANALYSIS:
 EOF
-        for abs in "${FILES[@]}"; do echo "  ${abs#"$ROOT"/}"; done
+        for abs in "${ALL_FILES[@]}"; do echo "  ${abs#"$ROOT"/}"; done
+        if [ ${#INCLUDES[@]} -gt 0 ]; then
+            echo ""
+            echo "The programmer has just been working on these files in particular:"
+            for abs in "${FILES[@]}"; do echo "  ${abs#"$ROOT"/}"; done
+            echo "Concentrate on the seams where THOSE meet the rest of the list"
+            echo "above.  A disagreement between two files the programmer has not"
+            echo "touched is much less likely to be what they are looking for."
+        fi
         cat <<EOF
 
 Look specifically for:
@@ -529,6 +587,10 @@ TOTAL_JOBS=${#JOB_ID[@]}
 # ------------------------------------------------------------- run the jobs
 
 note "cstatic v$VERSION -- ${#FILES[@]} source file(s) in $ROOT"
+if [ ${#INCLUDES[@]} -gt 0 ]; then
+    note "cstatic: -f ${INCLUDES[*]} -- only these files are searched for bugs," \
+         "the rest of the project is context"
+fi
 note "cstatic: model=$MODEL effort=$EFFORT jobs=$JOBS  ($TOTAL_JOBS analysis pass(es))"
 note ""
 

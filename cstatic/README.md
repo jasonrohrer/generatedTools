@@ -62,12 +62,35 @@ To make it the default for a project, put this in a `.dir-locals.el`:
     ./cstatic.sh                  # analyze the current directory
     ./cstatic.sh ~/src/mygame     # analyze another directory
     ./cstatic.sh game.c world.h   # analyze just these files
+    ./cstatic.sh -f world.h       # just the one file you were working on
+    ./cstatic.sh -f 'net*.c'      # ...or the few that match a glob
     ./cstatic.sh -r               # recurse into subdirectories
     ./cstatic.sh -x 'stb_*.c' -x imgui   # skip vendored code
     ./cstatic.sh -m sonnet -j 8   # cheaper and wider
     ./cstatic.sh --no-verify      # skip the skeptical pass: faster, noisier
 
 `./cstatic.sh -h` lists every option.
+
+### Looking at just one file
+
+`-f` is the opposite of `-x`: instead of naming what to skip, it names the
+only thing to search.  Wrote a new header and want a second pair of eyes on
+just that, without paying to re-audit the whole folder?
+
+    ./cstatic.sh -f world.h
+
+Claude still **reads** the rest of the project — that is how it knows the real
+size of an array or what a callee actually does, and the accuracy of the whole
+tool depends on it.  It just does not go hunting for bugs anywhere else.
+
+Quote the glob (`-f '*.h'`) so your shell does not expand it first.  `-f` is
+repeatable, and it matches on the bare file name or on the path relative to
+the analyzed folder.  A glob that matches nothing is an error rather than an
+empty report, because a typo should not look like a clean bill of health.
+
+Because `-f` means "do not scan the whole folder", it turns off the cross-file
+pass.  Add `--global` to keep it — the pass then sees the entire project but
+is told to concentrate on the seams where your `-f` files meet the rest.
 
 ## How it works
 
@@ -125,12 +148,14 @@ Everything Claude does here is read-only: the jobs run with only the `Read`,
 | `-m MODEL` | `opus` | `opus`, `sonnet`, `haiku`, or a full model id |
 | `-e LEVEL` | `high` | reasoning effort: `low` `medium` `high` `xhigh` `max` |
 | `-r` | off | recurse into subdirectories |
+| `-f GLOB` | -- | search only these files for bugs (repeatable); implies `--no-global` |
 | `-x GLOB` | -- | exclude files (repeatable) |
 | `-c N` | 600 | lines per chunk; `0` disables chunking |
 | `-n N` | 10 | maximum findings reported per chunk |
 | `-t SECS` | 1200 | per-Claude-call timeout |
 | `--no-verify` | off | skip the refutation pass |
 | `--no-global` | off | skip the cross-file pass |
+| `--global` | off | keep the cross-file pass even under `-f` |
 | `--no-merge` | off | skip the duplicate-collapsing pass |
 | `-k` | off | keep the work directory (raw Claude output, prompts, logs) |
 | `-q` | off | print findings only, no progress lines |

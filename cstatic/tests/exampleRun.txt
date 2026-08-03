@@ -1,0 +1,114 @@
+cstatic v1.0 -- 5 source file(s) in /home/jasonrohrer/checkout/generatedTools/cstatic/tests/buggy
+cstatic: model=opus effort=high jobs=4  (6 analysis pass(es))
+
+cstatic: [1/6] read grid.c -- 7 candidate(s)
+cstatic: [2/6] read grid.h -- 1 candidate(s)
+cstatic: [3/6] read main.c -- 4 candidate(s)
+cstatic: [4/6] read world.c -- 6 candidate(s)
+cstatic: [5/6] read world.h -- 4 candidate(s)
+cstatic: [6/6] read <whole project: cross-file consistency> -- 9 candidate(s)
+
+cstatic: 20 candidate finding(s) after dedupe
+cstatic: verifying (each candidate gets a fresh, skeptical reader)
+
+cstatic: [1/5] verify grid.c -- 6 candidate(s)
+cstatic: [2/5] verify grid.h -- 1 candidate(s)
+cstatic: [3/5] verify main.c -- 4 candidate(s)
+cstatic: [4/5] verify world.c -- 6 candidate(s)
+cstatic: [5/5] verify world.h -- 1 candidate(s)
+
+cstatic: collapsing findings that share one root cause
+cstatic: merged 3 duplicate finding(s)
+
+cstatic: ---------------------------------------------------------------
+
+grid.c:39:12: error: getCell indexes sGrid with no bounds check, unlike its counterpart setCell
+    run with args "5000 5000": main.c@87 passes atoi results straight in
+    sGrid is int[10][12] (grid.c@9); setCell clamps at grid.c@27, getCell does
+    not
+    add the same inX/inY range tests before the subscript
+
+grid.c:65:33: error: stray semicolon after if in countRow makes count++ unconditional
+    main.c@92 prints "row 0 count 12" though row 0 is all zero after seedGrid
+    the ";" ends the if, so countRow always returns GRID_W, which is 12
+    delete the semicolon and brace the increment
+
+grid.c:76:31: error: sizeof( outBuffer ) is the size of an int pointer, not the size of the grid
+    main.c@91 calls copyGrid( buffer ) and only 4 or 8 bytes of 480 are copied
+    outBuffer is int*, grid.c@75; sGrid is int[10][12], grid.c@9
+    use sizeof( sGrid ), or GRID_W * GRID_H * sizeof( int )
+
+grid.c:89:13: error: missing break after case 1 in describeCell, so value 1 is described as "floor"
+    seedGrid sets cell (1,1) to 1 (main.c@36), and main.c@89 reports it as
+    floor
+    case 1 falls through to case 2, whose sprintf overwrites the static buffer
+    add break after the sprintf
+
+grid.c:152:17: warning: realloc result overwrites out, the only pointer to the old block in gridReport
+    needs realloc to fail: out becomes NULL, strcat at grid.c@155 then crashes
+    the old buffer is also leaked, and main.c@96 frees the NULL
+    assign to a temporary and overwrite out only when it is non-NULL
+
+grid.h:9:7: error: describeCell returns its single static buffer, so two results in one expression alias
+    main.c@58 passes describeCell(inA) and describeCell(inB) to one printf;
+    both %s alias.
+    the returned storage is "static char buffer[32]" at grid.c@82, one address
+    per call.
+
+main.c:45:5: error: readCoord returns uninitialized `value` when inText is NULL, no else branch sets it
+    running with no arguments makes main.c@84 and @85 pass NULL to readCoord
+    x and y are then indeterminate indices at main.c@87; getCell grid.c@39 has
+    no clamp
+    initialize value to 0 at its declaration
+
+main.c:100:38: error: use after free: w->totalValue is read one line after freeWorld( w ) released the struct
+    freeWorld calls free( inWorld ) on the World itself, world.c@32, not just
+    its items
+    main.c@98 frees w on every run, then line 100 dereferences it
+    save totalValue in a local before line 98, or print before freeing
+
+world.c:41:9: error: clamp lets len reach MAX_NAME_LEN, so title[ len ] at world.c@46 writes one past the array
+    main.c@70 passes a 17-char title, so len becomes 16 and title[16] = '\0'
+    is written.
+    title is char[MAX_NAME_LEN], 16 bytes, and the last field of World,
+    world.h@20.
+
+world.c:56:5: warning: realloc result stored over inWorld->items, losing the old block when realloc fails
+    needs a failing realloc; growItems is unreached today (capacity 8, only 5
+    items added).
+    on NULL, capacity is still doubled at world.c@58 and addItem then derefs
+    items.
+
+world.c:72:5: error: strcpy into slot->name is unbounded and overflows the 16-byte name field
+    main.c@24 passes "potion of extreme healing", 26 bytes, 10 past name into
+    items[3].
+    name is char[MAX_NAME_LEN], 16 bytes, world.h@10 and world.h@4.
+    fix: copy at most MAX_NAME_LEN - 1 bytes and terminate.
+
+world.c:86:19: warning: findItem loop test i <= inWorld->numItems reads items[numItems], one past the filled range
+    the only call, findItem( w, "rope" ) at main.c@78, matches at i=3 and
+    returns first.
+    a lookup for a name not present would strcmp the uninitialized slot
+    items[numItems].
+
+world.c:102:17: warning: value * count is multiplied in int and only widened afterwards, so the product can overflow
+    current seeded values are at most 40 * 5, so nothing overflows until
+    larger values arrive.
+    value and count are both int, world.h@11 and world.h@12, while total is
+    long.
+
+world.c:114:51: error: %d used to print inWorld->totalValue, which is long, in the printWorld format string
+    printWorld is called at main.c@76, so the mismatched varargs read happens
+    every run.
+    totalValue is declared long at world.h@19.
+    fix: use %ld for the third conversion.
+
+world.h:7:21: error: SQUARE macro body lacks parentheses, so SQUARE(x) misbinds any argument that is an expression
+    grid.c@166 SQUARE( GRID_W - 2 ) expands to 12 - 2 * 12 - 2 = -14, not 100.
+    GRID_W is 12, grid.h@4; gridArea() is printed unconditionally at
+    main.c@92.
+    Fix: #define SQUARE( x ) ( ( x ) * ( x ) ).
+
+cstatic: 15 finding(s): 11 error(s), 4 warning(s).
+cstatic: analyzed 5 file(s) in 254s.
+cstatic: these are suggestions from a language model -- verify each one.

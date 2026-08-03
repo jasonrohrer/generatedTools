@@ -305,12 +305,25 @@ closure_block() {
 # ------------------------------------------------------------ work directory
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cstatic.XXXXXX")"
+
+# The log mirror (set up below) runs as a background tee.  Nothing may exit
+# before that tee has drained, or the report is truncated.  See the comment at
+# the log file section.
+TEE_PID=""
+flush_log() {
+    [ -z "${TEE_PID:-}" ] && return
+    exec 1>&- 2>&-
+    wait "$TEE_PID" 2>/dev/null
+    TEE_PID=""
+}
+
 cleanup() {
     if [ "$KEEP_TMP" -eq 1 ]; then
         echo "cstatic: work directory kept at $WORK"
     else
         rm -rf "$WORK"
     fi
+    flush_log
 }
 trap cleanup EXIT
 mkdir -p "$WORK/prompts" "$WORK/raw" "$WORK/logs" "$WORK/verified"
@@ -339,9 +352,32 @@ else
     # last resort, but somewhere that outlives this run
     LOG="${TMPDIR:-/tmp}/cstatic-$(basename "$ROOT")-$(date +%Y%m%d-%H%M%S).log"
 fi
-exec > >(tee -a "$LOG") 2>&1
 
-note "cstatic: logging this report to $LOG"
+# Mirror everything to the log through a tee whose PID we keep, so we can wait
+# for it.  The obvious "exec > >(tee ...)" does NOT work here: the shell never
+# waits for a process substitution, so when this script exits emacs closes the
+# pipe, tee takes a SIGPIPE in the middle of a write, and both the compilation
+# buffer and the log end up truncated at a 4096-byte boundary -- in a different
+# place every run.  From an interactive shell it usually survives, which makes
+# the bug look intermittent.
+if : > "$LOG" 2>/dev/null && mkfifo "$WORK/logpipe" 2>/dev/null; then
+    tee -a "$LOG" < "$WORK/logpipe" &
+    TEE_PID=$!
+    exec > "$WORK/logpipe" 2>&1
+else
+    LOG=""
+fi
+
+log_location_note() {
+    [ -n "$LOG" ] && echo "cstatic: this report is saved at $LOG"
+    return 0
+}
+
+if [ -n "$LOG" ]; then
+    note "cstatic: logging this report to $LOG"
+else
+    note "cstatic: could not open a log file, so this report is not being saved"
+fi
 
 # ------------------------------------------------------------ shared prompt
 
@@ -824,7 +860,7 @@ if [ "$READ_FAILED" -ge "$TOTAL_JOBS" ]; then
     if [ "$KEEP_TMP" -eq 0 ]; then
         echo "cstatic: re-run with -k to keep the logs in the work directory."
     fi
-    echo "cstatic: this report is saved at $LOG"
+    log_location_note
     exit 1
 fi
 
@@ -924,9 +960,16 @@ END { for (i = 1; i <= n; i++) print best[keys[i]] }
 
 NCAND=$(wc -l < "$WORK/candidates.tsv" | tr -d ' ')
 [ -z "$NCAND" ] && NCAND=0
+NRAW=$(wc -l < "$WORK/candidates.raw.tsv" | tr -d ' ')
+[ -z "$NRAW" ] && NRAW=0
 
 note ""
-note "cstatic: $NCAND candidate finding(s) after dedupe"
+note "cstatic: $NRAW raw report(s) -> $NCAND candidate finding(s) after dedupe"
+if [ "$NRAW" -gt "$NCAND" ]; then
+    note "cstatic: (a header gets re-read by every file that includes it, so its" \
+         "bugs get reported many times over; same file and line means the same" \
+         "defect)"
+fi
 
 if [ "$NCAND" -eq 0 ]; then
     note ""
@@ -937,7 +980,7 @@ if [ "$NCAND" -eq 0 ]; then
     fi
     ELAPSED=$(( $(date +%s) - START_TS ))
     note "cstatic: done in ${ELAPSED}s."
-    echo "cstatic: this report is saved at $LOG"
+    log_location_note
     exit 0
 fi
 
@@ -1336,6 +1379,6 @@ if [ "$READ_FAILED" -gt 0 ]; then
 fi
 note "cstatic: analyzed ${#FILES[@]} file(s) in ${ELAPSED}s."
 note "cstatic: these are suggestions from a language model -- verify each one."
-echo "cstatic: this report is saved at $LOG"
+log_location_note
 
 exit 0

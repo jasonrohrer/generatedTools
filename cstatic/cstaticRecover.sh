@@ -93,7 +93,15 @@ fi
 [ -z "$ROOT" ] && ROOT="$PWD"
 
 MY="$(mktemp -d "${TMPDIR:-/tmp}/cstaticRecover.XXXXXX")"
-trap 'rm -rf "$MY"' EXIT
+
+TEE_PID=""
+flush_log() {
+    [ -z "${TEE_PID:-}" ] && return
+    exec 1>&- 2>&-
+    wait "$TEE_PID" 2>/dev/null
+    TEE_PID=""
+}
+trap 'rm -rf "$MY"; flush_log' EXIT
 
 # ------------------------------------------------------------------- log
 
@@ -105,11 +113,36 @@ else
     LOG_DIR="$HOME/.claude/cstatic"
 fi
 if mkdir -p "$LOG_DIR" 2>/dev/null && [ -w "$LOG_DIR" ]; then
-    LOG="$LOG_DIR/cstatic-$(basename "$ROOT")-recovered-$(date +%Y%m%d-%H%M%S).log"
+    LOGBASE="$LOG_DIR/cstatic-$(basename "$ROOT")-recovered-$(date +%Y%m%d-%H%M%S)"
 else
-    LOG="${TMPDIR:-/tmp}/cstatic-$(basename "$ROOT")-recovered-$(date +%Y%m%d-%H%M%S).log"
+    LOGBASE="${TMPDIR:-/tmp}/cstatic-$(basename "$ROOT")-recovered-$(date +%Y%m%d-%H%M%S)"
 fi
-exec > >(tee -a "$LOG") 2>&1
+# recovery gets re-run in quick succession; a one-second timestamp is not
+# unique enough to stop those runs from overwriting each other
+LOG="$LOGBASE.log"
+logn=2
+while [ -e "$LOG" ]; do
+    LOG="$LOGBASE-$logn.log"
+    logn=$((logn + 1))
+done
+
+# Mirror to the log through a tee whose PID we keep, so we can wait for it.
+# "exec > >(tee ...)" is never waited for: emacs closes the pipe as soon as
+# this script exits, tee takes a SIGPIPE mid-write, and the report is cut off
+# at a 4096-byte boundary in a different place every run.  An interactive
+# shell usually lets it finish, which is what makes the bug look intermittent.
+if : > "$LOG" 2>/dev/null && mkfifo "$MY/logpipe" 2>/dev/null; then
+    tee -a "$LOG" < "$MY/logpipe" &
+    TEE_PID=$!
+    exec > "$MY/logpipe" 2>&1
+else
+    LOG=""
+fi
+
+log_location_note() {
+    [ -n "$LOG" ] && echo "cstaticRecover: this report is saved at $LOG"
+    return 0
+}
 
 # --------------------------------------------------------------- the parser
 
@@ -207,7 +240,11 @@ NV_DONE=$(find "$WORKDIR/raw" -maxdepth 1 -name 'v*.out' -size +0 2>/dev/null | 
 
 note "cstaticRecover: rebuilding from $WORKDIR"
 note "cstaticRecover: project root $ROOT"
-note "cstaticRecover: logging this report to $LOG"
+if [ -n "$LOG" ]; then
+    note "cstaticRecover: logging this report to $LOG"
+else
+    note "cstaticRecover: could not open a log file, so this report is not saved"
+fi
 if [ "$NA_TOTAL" -gt 0 ]; then
     note "cstaticRecover: $NA_DONE of $NA_TOTAL analysis job(s) had finished"
 else
@@ -223,14 +260,25 @@ note ""
 if [ "$NA_DONE" -eq 0 ]; then
     echo "cstaticRecover: nothing to recover -- no analysis job had produced"
     echo "cstaticRecover: any output yet in $WORKDIR/raw"
-    echo "cstaticRecover: this report is saved at $LOG"
+    log_location_note
     exit 0
 fi
 
 # raw first-pass candidates
 cat "$WORKDIR"/raw/a*.out 2>/dev/null \
     | awk -v ROOTQ="$ROOT" -v KNOWNFILE="$MY/knownpaths.txt" "$PARSER" \
-    | sort -t$'\t' -k1,1 -k2,2n | awk -F'\t' "$DEDUPE" > "$MY/candidates.tsv"
+    > "$MY/candidates.raw.tsv"
+sort -t$'\t' -k1,1 -k2,2n "$MY/candidates.raw.tsv" \
+    | awk -F'\t' "$DEDUPE" > "$MY/candidates.tsv"
+
+NRAW=$(wc -l < "$MY/candidates.raw.tsv" | tr -d ' ')
+NDISTINCT=$(wc -l < "$MY/candidates.tsv" | tr -d ' ')
+note "cstaticRecover: $NRAW raw report(s) -> $NDISTINCT distinct file+line finding(s)"
+if [ "$NRAW" -gt "$NDISTINCT" ]; then
+    note "cstaticRecover: (a big header gets re-read by every file that includes" \
+         "it, so its bugs get reported many times over; same file and line means" \
+         "the same defect)"
+fi
 
 # verified findings, if the verify pass got anywhere
 : > "$MY/verified.tsv"
@@ -345,6 +393,6 @@ if [ "$NA_TOTAL" -gt "$NA_DONE" ]; then
 fi
 echo "cstaticRecover: duplicate root causes are not collapsed here; the same bug" \
      "may appear at both its definition and a call site."
-echo "cstaticRecover: this report is saved at $LOG"
+log_location_note
 
 exit 0

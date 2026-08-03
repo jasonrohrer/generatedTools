@@ -196,6 +196,23 @@ finished (so which parts of the code were never read), and that duplicate root
 causes are not collapsed, since that pass needs a Claude call.  Its output is
 logged like any other run, with `-recovered-` in the file name.
 
+### Why the finding count is lower than the number of raw blocks
+
+Both the live run and recovery print a line like
+
+    178 raw report(s) -> 100 distinct file+line finding(s)
+
+That is not lost data.  A big header is read by every file that includes it, so
+its prominent bugs get reported over and over by different jobs, each time in
+slightly different words:
+
+    maxigin_drawSprite indexes mx_sprites[] with inSpriteHandle before checking for -1
+    maxigin_drawSprite reads mx_sprites[-1] when passed the -1 failed-load handle
+    maxigin_drawSprite indexes mx_sprites with -1 when a sprite failed to load
+
+Same file, same line, one defect.  Findings are collapsed by file and line, so
+you page through each defect once.
+
 ## Options
 
 | option | default | meaning |

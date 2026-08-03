@@ -168,6 +168,34 @@ exactly what isolation is refusing to do.
 Everything Claude does here is read-only: the jobs run with only the `Read`,
 `Grep`, and `Glob` tools, so the analyzer cannot touch your source.
 
+## Recovering a run you killed
+
+A big project takes a long time, and sometimes you would rather stop it than
+wait.  If you started it with `-k`, everything Claude has already said is
+sitting in the work directory.  `cstaticRecover.sh` turns whatever is there
+into the same report:
+
+    ./cstaticRecover.sh /tmp/cstatic.XkMsiC
+    ./cstaticRecover.sh                      # the most recent work directory
+
+It only **reads** the work directory, so it is also safe to run against a job
+that is still going — you get a snapshot of the findings so far without
+disturbing it.
+
+Findings the skeptical pass never reached are marked `[unverified]`:
+
+    button.h:181:9: error: [unverified] pointerInButton passes b->baseSprite ...
+
+Those are raw first-pass output.  Expect a noticeably higher false-alarm rate
+than a completed run — the verification pass is where most of the noise
+normally dies.  A finding a verifier *did* look at and reject stays rejected;
+recovery does not resurrect it.
+
+The report ends with what it could not do: how many analysis jobs had not
+finished (so which parts of the code were never read), and that duplicate root
+causes are not collapsed, since that pass needs a Claude call.  Its output is
+logged like any other run, with `-recovered-` in the file name.
+
 ## Options
 
 | option | default | meaning |

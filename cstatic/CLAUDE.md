@@ -74,6 +74,30 @@ optional polish — the first isolation run emitted
 follow a path like that. The prompts now also state the root and the short
 name to use, but `fixpath()` is the backstop that makes it not matter.
 
+## cstaticRecover.sh
+
+Rebuilds a report from a `-k` work directory after a run is killed. It is
+**read-only** on the work directory — it must stay that way, since it is meant
+to be safe to point at a job that is still running.
+
+It recovers the project root from `prompts/*.txt` (`PROJECT ROOT:`, or
+`FULL PATH:` minus `FILE UNDER REVIEW:` in isolation mode), and decides
+verified-vs-not from `vjoblist.txt`: a target whose `vNNN.out` exists is
+*settled*, and its findings come only from the verified output — a verifier
+that rejected everything means that file has no findings, not that the raw
+guesses should come back. Everything else is tagged `[unverified]`.
+
+**It carries its own copy of `PARSER` and the print-stage awk.** They were
+duplicated rather than shared because `cstatic.sh` was mid-run on a large
+project and editing a running bash script corrupts it. If you change either
+program, change it in both files. Factoring them into one sourced file is the
+obvious cleanup.
+
+Watch for the awk two-file trap here: `NR == FNR` to load a lookup file stays
+true for the *whole second file* when the first one is empty, which silently
+ate every candidate on the first attempt. The settled-file lookup is loaded
+with `getline` in `BEGIN` instead.
+
 ## Two modes, and why `-f` is not just a filter
 
 Without `-f`, the tool audits a **project**: jobs get `Read,Grep,Glob`, are

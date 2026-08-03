@@ -1,0 +1,39 @@
+In this folder, you will develop scripts for claude-based static analysis of C89 code, with emacs compatible output.
+
+The point of this analysis is to look at C89 .c and .h files, without compiling them, and identify serious errors for the human coder to investigate.
+
+The human coder will only invoke your analysis script if the C89 files already compile without error and generally run correctly, as far as the human can tell.  However, there might still be some more subtle and insideous errors left.  So your scripts should NOT be trying to compile the code.
+
+Normally, static analisis of code for correctness is impossible (see Turing)... but by leveraging claude, we might still be able to gain some insights.   For example, I've been able to ask an AI, "What's wrong with this algorithm?"  Or, "Why is this unexpected behavior happening?", and the AI has been able to idetify the problem.
+
+So, the expectation is that your scripts will call Claude, under the hood.  This is mostly a prompt-crafting project.
+
+Your scripts can invoke claude from here:
+
+~/.local/bin/claude
+
+And they can use  --dangerously-skip-permissions, along with passing in a prompt text file (please make sure you use absolute paths, which can be based on ~).  Or maybe it's easier to just pipe a prompt string in, and have the string itself be a string literal in the script file, so the path to the prompt file doesn't matter.
+
+
+The most important thing is the UI for the output:
+
+I will be invoking this static analysis from inside emacs, using the "M-x compile" functionality, which parses gcc's outputted errors and warnings and lets me quickly page through them (and jump to source locations) inside emacs.
+
+I'm not sure how you can make yourself compatible with this.... mimicing gcc output format is probably the easiest way.   Actually, the only important part seems to be lines starting like this:
+
+game.c:199:8:
+
+
+And then whatever error explanation can follow.   Might as well have this explanation in plain english, or maybe with some syntax as-needed to explain things, or provide a suggested fix.   But try to keep it shorter than 5 lines total, so it can fit in the emacs compilation half-frame.
+
+
+Anyway, when this script is invoked, it should look through the folder for all .h and .c files, and have claude perform analysis on them, and then claude should output gcc-style output (as described above) that emacs will be able to parse.
+
+The general idea is that the user will invoke this script, using M-x compile, and then walk away while the job completes, and then return to emacs to see a nice list of possible errors to investigate.
+
+
+When you're done building this, please commit your work to the local repository.
+
+
+
+

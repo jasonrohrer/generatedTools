@@ -43,7 +43,6 @@ JOB_TIMEOUT="${CSTATIC_TIMEOUT:-1200}"
 DO_VERIFY=1
 DO_GLOBAL=1
 DO_MERGE=1
-FORCE_GLOBAL=0
 RECURSE=0
 KEEP_TMP=0
 QUIET=0
@@ -64,21 +63,22 @@ Options:
   -m MODEL        model: opus | sonnet | haiku | id  (default opus)
   -e LEVEL        effort: low|medium|high|xhigh|max  (default high)
   -r              recurse into subdirectories        (default: top level only)
-  -f GLOB         analyze ONLY the files matching GLOB, instead of everything
-                  in the folder.  Repeatable.  Quote the glob so your shell
-                  does not expand it first:  -f '*.h'
-                  Claude still reads the rest of the project for context, so
-                  it can look up the real array sizes and callee contracts --
-                  it just does not go hunting for bugs anywhere else.
-                  Implies --no-global; use --global to override.
+  -f GLOB         ISOLATION MODE.  Judge only the files matching GLOB, each on
+                  its own, the way a reviewer would judge a file pasted into a
+                  chat window: with no idea who calls it.  Nothing else in the
+                  folder is read, apart from the headers the file itself
+                  #includes.  A function is wrong if any argument its own
+                  interface allows makes it misbehave -- "no caller does that
+                  today" is not an excuse, because the callers are not looked
+                  at.  Repeatable.  Quote the glob so your shell does not
+                  expand it first:  -f '*.h'
   -x GLOB         exclude files matching GLOB (repeatable, matched on basename
                   and on the path relative to the analyzed directory)
   -c N            lines per analysis chunk           (default 600, 0 = no chunking)
   -n N            max findings reported per chunk    (default 10)
   -t SECS         per-Claude-call timeout            (default 1200)
   --no-verify     skip the skeptical second pass (faster, noisier)
-  --no-global     skip the whole-project cross-file pass
-  --global        keep the cross-file pass even when -f is used
+  --no-global     skip the whole-project cross-file pass (-f implies this)
   --no-merge      skip the final pass that collapses duplicate root causes
   -k              keep the work directory (raw Claude output) for debugging
   -q              suppress progress lines; print findings only
@@ -109,7 +109,6 @@ while [ $# -gt 0 ]; do
         --no-verify) DO_VERIFY=0; shift ;;
         --no-global) DO_GLOBAL=0; shift ;;
         --no-merge) DO_MERGE=0; shift ;;
-        --global) FORCE_GLOBAL=1; shift ;;
         -h|--help) usage; exit 0 ;;
         --) shift; while [ $# -gt 0 ]; do ARGFILES+=("$1"); shift; done ;;
         -*) echo "cstatic: unknown option $1" >&2; usage >&2; exit 2 ;;
@@ -136,9 +135,6 @@ command -v timeout >/dev/null 2>&1 && TIMEOUT_CMD="timeout ${JOB_TIMEOUT}s"
 
 ROOT=""
 declare -a FILES=()
-# every source file in the folder, before -f narrows things down.  The
-# cross-file pass needs the whole picture even when -f focuses the rest.
-declare -a ALL_FILES=()
 
 if [ ${#ARGFILES[@]} -eq 0 ]; then
     ROOT="$PWD"
@@ -198,14 +194,12 @@ if [ ${#FILES[@]} -eq 0 ]; then
     while IFS= read -r f; do
         rel="${f#"$ROOT"/}"
         is_excluded "$rel" && continue
-        ALL_FILES+=("$f")
         is_included "$rel" || continue
         FILES+=("$f")
     done < <(find "$ROOT" "${FINDARGS[@]}" \( -name '*.c' -o -name '*.h' \) \
                   -not -path '*/.git/*' | LC_ALL=C sort)
 else
     # explicit file arguments still honour -f, so the two can be combined
-    ALL_FILES=("${FILES[@]}")
     declare -a KEPT=()
     for f in "${FILES[@]}"; do
         is_included "${f#"$ROOT"/}" || continue
@@ -226,11 +220,82 @@ if [ ${#FILES[@]} -eq 0 ]; then
     exit 0
 fi
 
-# -f says "just look at this file", so the whole-project pass is off by
-# default; --global puts it back.
-if [ ${#INCLUDES[@]} -gt 0 ] && [ "$FORCE_GLOBAL" -eq 0 ]; then
+# -f means "look at this file the way I would if I pasted it into a chat
+# window": on its own terms, with no idea who calls it.  The cross-file pass is
+# the exact opposite of that, so it goes away.
+ISOLATE=0
+if [ ${#INCLUDES[@]} -gt 0 ]; then
+    ISOLATE=1
     DO_GLOBAL=0
 fi
+
+# In isolation the analyzer gets Read and nothing else, so it cannot go
+# rummaging through the folder even if it wants to.  The headers the file
+# actually includes are resolved here and named in the prompt instead.
+if [ "$ISOLATE" -eq 1 ]; then
+    CLAUDE_TOOLS="Read"
+else
+    CLAUDE_TOOLS="Read,Grep,Glob"
+fi
+
+MAX_CLOSURE=40
+
+include_closure() {
+    # $1 = absolute path of a source file.  Prints, one per line, the absolute
+    # paths of the project headers it includes with "quotes", transitively.
+    # Angle-bracket includes are system headers and are deliberately skipped.
+    local start="$1" cur dir inc target n=0
+    local -a stack=("$start")
+    local -A seen=()
+    local -a out=()
+    seen["$start"]=1
+    while [ ${#stack[@]} -gt 0 ]; do
+        cur="${stack[0]}"
+        stack=(${stack[@]:1})
+        dir="$(dirname "$cur")"
+        while IFS= read -r inc; do
+            [ -z "$inc" ] && continue
+            target=""
+            if [ -f "$dir/$inc" ]; then
+                target="$(cd "$(dirname "$dir/$inc")" 2>/dev/null && pwd)/$(basename "$inc")"
+            elif [ -f "$ROOT/$inc" ]; then
+                target="$ROOT/$inc"
+            fi
+            [ -z "$target" ] || [ ! -f "$target" ] && continue
+            [ -n "${seen[$target]:-}" ] && continue
+            seen["$target"]=1
+            out+=("$target")
+            stack+=("$target")
+            n=$((n + 1))
+            [ "$n" -ge "$MAX_CLOSURE" ] && break 2
+        done < <(grep -oE '^[[:space:]]*#[[:space:]]*include[[:space:]]*"[^"]+"' \
+                      "$cur" 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/')
+    done
+    printf '%s\n' ${out[@]+"${out[@]}"}
+}
+
+# text block naming the only other files an isolation job may open
+closure_block() {
+    # $1 = path of the file under review, absolute or relative to ROOT
+    local abs="$1" h
+    [ -f "$abs" ] || abs="$ROOT/$1"
+    local -a closure=()
+    if [ -f "$abs" ]; then
+        while IFS= read -r h; do
+            [ -n "$h" ] && closure+=("$h")
+        done < <(include_closure "$abs")
+    fi
+
+    if [ ${#closure[@]} -eq 0 ]; then
+        echo "This file includes no project headers of its own, so it is"
+        echo "genuinely all you have.  Judge it from its own contents."
+    else
+        echo "You may also open these, and ONLY these -- the headers this file"
+        echo "includes, and what they include in turn.  Open one only when you"
+        echo "need a type, a struct layout, a macro body, or a constant from it:"
+        for h in "${closure[@]}"; do echo "  ${h#"$ROOT"/}"; done
+    fi
+}
 
 # ------------------------------------------------------------ work directory
 
@@ -414,7 +479,7 @@ run_claude() {
     # shellcheck disable=SC2086
     ( cd "$ROOT" && $TIMEOUT_CMD "$CLAUDE" -p \
         --dangerously-skip-permissions \
-        --tools "Read,Grep,Glob" \
+        --tools "$CLAUDE_TOOLS" \
         --model "$MODEL" \
         --effort "$EFFORT" \
         --disable-slash-commands \
@@ -441,6 +506,79 @@ add_analysis_job() {
     else
         region="lines $lo through $hi of this $total-line file"
         label="$rel lines $lo-$hi"
+    fi
+
+    if [ "$ISOLATE" -eq 1 ]; then
+        {
+            cat <<EOF
+You are a senior C programmer.  A colleague has handed you ONE file and asked
+"is there anything wrong with this?"  You have that file, and essentially
+nothing else.  You cannot compile or run it; you read it.
+
+FILE UNDER REVIEW: $rel
+FOCUS REGION:      $region
+FULL PATH:         $abs
+
+When you name a file in your output, name it the short way, relative to
+$ROOT -- so "$rel", never the full path.
+
+EOF
+            closure_block "$abs"
+            cat <<EOF
+
+Read it the way you would read code pasted into a chat window: judge it on its
+own terms.  The rules of this review:
+
+  - You have NOT been shown the callers, and you must not invent them.  Do not
+    excuse a defect by assuming some caller checks the argument first, and do
+    not assume a parameter only ever holds convenient values.  If a function
+    misbehaves for an argument its own declared interface permits, that is a
+    defect in this file, whether or not anyone passes that argument today.
+  - Equally, do not invent an absurd caller in order to manufacture a bug.  If
+    a comment, an assert, a name, or an earlier check in this file states a
+    precondition, respect it -- and say which one you relied on.
+  - Read the WHOLE file before judging any part of it.  In a single-file review
+    the richest bugs are disagreements between two places in the same file: a
+    buffer declared in one function and filled in another, a loop bound that
+    does not match the array it walks, an invariant set up at the top and
+    broken at the bottom, a field initialized on one path and not another, two
+    functions that disagree about who owns a pointer.
+  - You have no way to search the rest of the project, and you should not try.
+    If something you need is genuinely not in this file or the headers listed
+    above, do not guess: either drop the candidate, or report it and say in a
+    DETAIL line exactly which fact you could not check.
+  - The code is C89 on purpose.  Do not suggest C99 or C11 features.
+  - It already compiles cleanly and appears to run correctly, so anything that
+    looks like an "obvious" blunder is probably you misreading it.  The bug you
+    are looking for is a subtle one.
+
+For every candidate, spend real effort trying to prove yourself WRONG.  Write
+out, concretely: these argument values, or this sequence of calls to the
+functions in this file, produce this specific wrong behaviour.  If you cannot
+construct that, or if something earlier in the file already prevents it,
+DISCARD the candidate.  A false alarm costs the human more than a missed bug.
+
+Report the survivors, most serious first, at most $MAX_FINDINGS of them.
+Reporting three real bugs beats reporting three real bugs and seven guesses.
+
+WHAT COUNTS AS A FINDING
+$BUG_CATALOG
+
+WHAT IS NOT A FINDING
+$NOT_A_FINDING
+  - a complaint that this file does not validate what a caller passes, when
+    the file's own comments make the precondition clear
+  - a missing declaration or definition that simply lives in a file you were
+    not given
+
+OUTPUT FORMAT
+$OUTPUT_CONTRACT
+EOF
+        } > "$WORK/prompts/$id.txt"
+
+        JOB_ID+=("$id")
+        JOB_LABEL+=("$label")
+        return
     fi
 
     cat > "$WORK/prompts/$id.txt" <<EOF
@@ -517,7 +655,7 @@ done
 
 # ------------------------------------------------- whole-project (global) job
 
-if [ "$DO_GLOBAL" -eq 1 ] && [ ${#ALL_FILES[@]} -gt 1 ]; then
+if [ "$DO_GLOBAL" -eq 1 ] && [ ${#FILES[@]} -gt 1 ]; then
     job_n=$((job_n + 1))
     gid=$(printf "a%03d" "$job_n")
     {
@@ -530,15 +668,7 @@ program disagree with each other.
 PROJECT ROOT: $ROOT
 FILES IN THIS ANALYSIS:
 EOF
-        for abs in "${ALL_FILES[@]}"; do echo "  ${abs#"$ROOT"/}"; done
-        if [ ${#INCLUDES[@]} -gt 0 ]; then
-            echo ""
-            echo "The programmer has just been working on these files in particular:"
-            for abs in "${FILES[@]}"; do echo "  ${abs#"$ROOT"/}"; done
-            echo "Concentrate on the seams where THOSE meet the rest of the list"
-            echo "above.  A disagreement between two files the programmer has not"
-            echo "touched is much less likely to be what they are looking for."
-        fi
+        for abs in "${FILES[@]}"; do echo "  ${abs#"$ROOT"/}"; done
         cat <<EOF
 
 Look specifically for:
@@ -587,9 +717,11 @@ TOTAL_JOBS=${#JOB_ID[@]}
 # ------------------------------------------------------------- run the jobs
 
 note "cstatic v$VERSION -- ${#FILES[@]} source file(s) in $ROOT"
-if [ ${#INCLUDES[@]} -gt 0 ]; then
-    note "cstatic: -f ${INCLUDES[*]} -- only these files are searched for bugs," \
-         "the rest of the project is context"
+if [ "$ISOLATE" -eq 1 ]; then
+    note "cstatic: -f ${INCLUDES[*]} -- isolation mode: each file is judged on" \
+         "its own, with no idea who calls it"
+    note "cstatic: only that file and the headers it includes are read;" \
+         "the rest of the folder is not looked at"
 fi
 note "cstatic: model=$MODEL effort=$EFFORT jobs=$JOBS  ($TOTAL_JOBS analysis pass(es))"
 note ""
@@ -666,19 +798,55 @@ fi
 # Turns <<<FINDING>>> blocks into tab separated records:
 #   file <TAB> line <TAB> col <TAB> sev <TAB> msg <TAB> detail (\x01 separated)
 PARSER='
+# A model that was never told the project root will happily name a file
+# "proj/sub/world.c" or "/abs/where/world.c" when the report needs plain
+# "world.c".  Emacs cannot follow either.  Repair the path against the list of
+# files that really exist under the root: exact match, then longest-suffix
+# match, then an unambiguous bare file name.
+function fixpath(p,   i, r, b, best) {
+  if (substr(p, 1, length(ROOTQ) + 1) == ROOTQ "/") p = substr(p, length(ROOTQ) + 2)
+  sub(/^\.\//, "", p)
+  if (p in known) return p
+  # longest suffix wins, so "other/tree/sub/world.c" picks "sub/world.c"
+  # over a top-level "world.c" that also happens to exist
+  best = ""
+  for (i = 1; i <= nk; i++) {
+    r = knownlist[i]
+    if (length(p) > length(r) && substr(p, length(p) - length(r)) == "/" r) {
+      if (length(r) > length(best)) best = r
+    }
+  }
+  if (best != "") return best
+  b = p
+  sub(/^.*\//, "", b)
+  if ((b in basemap) && !(b in basedup)) return basemap[b]
+  return p
+}
 function flush(   key) {
   if (!inblock) return
   inblock = 0
   if (file == "" || line !~ /^[0-9]+$/) return
   if (msg == "") return
-  # normalize the path
-  sub("^" ROOTQ "/", "", file)
-  sub("^\\./", "", file)
+  file = fixpath(file)
   if (col !~ /^[0-9]+$/ || col+0 < 1) col = 1
   if (sev != "error" && sev != "warning") sev = "warning"
   printf "%s\t%s\t%s\t%s\t%s\t%s\n", file, line+0, col+0, sev, msg, detail
 }
-BEGIN { inblock = 0 }
+BEGIN {
+  inblock = 0
+  nk = 0
+  if (KNOWNFILE != "") {
+    while ((getline kline < KNOWNFILE) > 0) {
+      if (kline == "") continue
+      known[kline] = 1
+      knownlist[++nk] = kline
+      kb = kline
+      sub(/^.*\//, "", kb)
+      if (kb in basemap) basedup[kb] = 1; else basemap[kb] = kline
+    }
+    close(KNOWNFILE)
+  }
+}
 /^[ \t]*<<<FINDING>>>[ \t]*$/ {
   flush(); inblock = 1; file=""; line=""; col=""; sev=""; msg=""; detail=""; next
 }
@@ -697,8 +865,16 @@ inblock {
 END { flush() }
 '
 
+# every source file that really exists under the root, for repairing paths
+while IFS= read -r f; do
+    printf '%s\n' "${f#"$ROOT"/}"
+done < <(find "$ROOT" -type f \( -name '*.c' -o -name '*.h' \) \
+              -not -path '*/.git/*' 2>/dev/null | LC_ALL=C sort) \
+    > "$WORK/knownpaths.txt"
+
 cat "$WORK"/raw/*.out 2>/dev/null \
-    | awk -v ROOTQ="$ROOT" "$PARSER" > "$WORK/candidates.raw.tsv"
+    | awk -v ROOTQ="$ROOT" -v KNOWNFILE="$WORK/knownpaths.txt" "$PARSER" \
+    > "$WORK/candidates.raw.tsv"
 
 # Dedupe on file+line, keeping the record with the longest explanation
 # (chunk overlap and the global pass both produce near-duplicates).
@@ -749,7 +925,84 @@ else
             > "$WORK/raw/$vid.cands.tsv"
 
         {
-            cat <<EOF
+            if [ "$ISOLATE" -eq 1 ]; then
+                cat <<EOF
+Another analyst was handed this one file on its own and asked what was wrong
+with it.  Their proposed bugs are listed below.  Your job is the opposite of
+theirs: you are the skeptic, and you must try to REFUTE each claim.
+
+FILE UNDER REVIEW: $tgt
+FULL PATH:         $ROOT/$tgt
+
+When you name a file in your output, name it the short way, relative to
+$ROOT -- so "$tgt", never the full path.
+
+EOF
+                closure_block "$ROOT/$tgt"
+                cat <<EOF
+
+You are reviewing this file in isolation, exactly as they did.  You have not
+been shown the callers and you cannot go looking for them.  That shapes what
+counts as a refutation:
+
+  - NEVER reject a claim on the grounds that no current caller triggers it.
+    You cannot see the callers.  The programmer is asking about this file on
+    its own terms, so "nobody calls it that way today" is not an answer.
+  - Do reject a claim that a check, clamp, early return, or invariant INSIDE
+    THIS FILE (or in the headers listed above) already prevents.
+  - Do reject a claim that only holds if a caller behaves absurdly, when a
+    comment, an assert, or an earlier check in this file states the
+    precondition the claim violates.
+
+The file already compiles cleanly and appears to run, so the prior probability
+that any given claim is wrong is still high.  The usual failure modes of the
+analyst you are checking:
+  - it guessed at an array size, a struct field type, or a macro expansion
+    instead of opening the header and reading it
+  - it missed a check, clamp, or early return earlier in the same function
+  - it misread C89 operator precedence, integer promotion, or pointer arithmetic
+  - its line number is off, or points at a symptom rather than the defect
+  - it reported the same root cause more than once
+  - it complained about something defined in a file it was never given
+
+For EACH candidate below:
+  1. Read the cited line and the whole function containing it, then enough of
+     the rest of the file to know what that function is part of.
+  2. Open a listed header if the claim depends on a type, a struct layout, a
+     macro body, or a constant that lives there.
+  3. Give it one of three verdicts.
+
+     SOUND -- the defect is real: some argument values or some sequence of
+       calls to the functions in this file, permitted by the interfaces this
+       file itself declares, produce a specific wrong behaviour.  Emit the
+       block with SEV: error.
+
+     CONDITIONAL -- the defect is real, but only under a condition outside the
+       file's ordinary operation: an allocation that fails, an arithmetic
+       extreme, or a precondition the file hints at but does not enforce.
+       Still worth reporting.  Emit the block with SEV: warning, and say in a
+       DETAIL line what has to be true to trigger it.
+
+     WRONG -- emit nothing at all.  Use this only when the claim is not a
+       defect: something in this file prevents it, the analyst misread the C,
+       the analyst guessed at a size or macro and guessed wrong, or the
+       construct is simply correct.
+
+     "I cannot tell whether this is a bug" is WRONG -- when you genuinely
+     cannot decide, drop it.
+
+  4. Drop any candidate that duplicates the root cause of another candidate you
+     are keeping; keep only the one at the line where the fix belongs.
+  5. If the claim is real but the line number is wrong, keep it with the
+     corrected line number.
+  6. If the claim is real but the wording is vague, keep it and rewrite MSG and
+     DETAIL so they name the variable and the triggering condition.
+
+CANDIDATES:
+
+EOF
+            else
+                cat <<EOF
 Another analyst has proposed the bugs listed below in a C89 code base.  The
 analyst was working quickly and had incomplete context.  Your job is the
 opposite of theirs: you are the skeptic, and you must try to REFUTE each claim.
@@ -809,6 +1062,7 @@ For EACH candidate below:
 CANDIDATES:
 
 EOF
+            fi
             awk -F'\t' '{
                 printf "[%s]\n", NR
                 printf "  FILE: %s\n  LINE: %s\n  COL: %s\n  SEV: %s\n  MSG: %s\n", $1, $2, $3, $4, $5
@@ -817,11 +1071,19 @@ EOF
                 printf "\n"
             }' "$WORK/raw/$vid.cands.tsv"
 
+            if [ "$ISOLATE" -eq 1 ]; then
+                KEEP_WORDS="SOUND or CONDITIONAL"
+                SEV_RULE='SEV is "error" for SOUND and "warning" for CONDITIONAL.'
+            else
+                KEEP_WORDS="REACHABLE or LATENT"
+                SEV_RULE='SEV is "error" for REACHABLE and "warning" for LATENT.'
+            fi
+
             cat <<EOF
 
 OUTPUT FORMAT
 
-Emit one block for each candidate you judged REACHABLE or LATENT, and nothing
+Emit one block for each candidate you judged $KEEP_WORDS, and nothing
 at all for the ones you judged WRONG.  Emit nothing else -- no preamble, no
 markdown, no summary, no explanation of your rejections:
 
@@ -836,7 +1098,7 @@ DETAIL: the fact you verified, e.g. "buf is char[32], world.h@44" (optional)
 DETAIL: the fix, if it fits (optional)
 <<<END>>>
 
-SEV is "error" for REACHABLE and "warning" for LATENT.
+$SEV_RULE
 
 The LINE must be re-checked against the Read tool's numbering; it is the line
 the programmer will jump to.  At most 3 DETAIL lines.  Write any location you
@@ -862,7 +1124,8 @@ EOF
     fi
 
     cat "$WORK"/raw/v*.out 2>/dev/null \
-        | awk -v ROOTQ="$ROOT" "$PARSER" > "$WORK/verified.tsv"
+        | awk -v ROOTQ="$ROOT" -v KNOWNFILE="$WORK/knownpaths.txt" "$PARSER" \
+        > "$WORK/verified.tsv"
 
     # keep the unverified candidates of any verifier that died
     while IFS=$'\t' read -r vid tgt; do
@@ -995,21 +1258,29 @@ function sanitize(s,    out, m, num, name) {
   }
   return out
 }
-function emit_wrapped(text,    words, i, n, cur) {
+# wrap into lines[], so the caller can see how many there would have been
+function wrap(text,    words, i, n, cur) {
   n = split(text, words, " ")
   cur = ""
   for (i = 1; i <= n; i++) {
     if (cur == "") { cur = words[i] }
     else if (length(cur) + 1 + length(words[i]) <= 74) { cur = cur " " words[i] }
-    else { if (out < 4) { print "    " cur; out++ }; cur = words[i] }
+    else { lines[++nl] = cur; cur = words[i] }
   }
-  if (cur != "" && out < 4) { print "    " cur; out++ }
+  if (cur != "") lines[++nl] = cur
 }
 {
   printf "%s:%s:%s: %s: %s\n", $1, $2, $3, $4, sanitize($5)
-  out = 0
+  nl = 0
+  delete lines
   n = split($6, d, "\001")
-  for (i = 1; i <= n; i++) if (d[i] != "") emit_wrapped(sanitize(d[i]))
+  for (i = 1; i <= n; i++) if (d[i] != "") wrap(sanitize(d[i]))
+  # a finding stays under five lines so it fits an emacs half-frame; if that
+  # cuts the explanation short, say so rather than trailing off mid-sentence
+  for (i = 1; i <= nl && i <= 4; i++) {
+    if (i == 4 && nl > 4) print "    " lines[i] " ..."
+    else print "    " lines[i]
+  }
   print ""
 }
 '

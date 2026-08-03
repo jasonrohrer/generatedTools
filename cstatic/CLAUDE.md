@@ -44,13 +44,7 @@ prompts inside it are the product.
 Five stages, in `cstatic.sh`:
 
 1. **Collect** — every `.c`/`.h` in the folder, top level only unless `-r`,
-   minus `-x` globs and `.cstaticignore`. `-f` then narrows that to the files
-   the user actually wants searched. Two lists come out: `FILES` (what gets a
-   read job) and `ALL_FILES` (everything, pre-`-f`). **The cross-file pass must
-   use `ALL_FILES`** — a seam-finder shown only the focused file cannot see a
-   seam. `-f` turns that pass off by default anyway, since its whole job is
-   scanning the project; `--global` puts it back and scopes its attention to
-   where the `-f` files meet the rest.
+   minus `-x` globs and `.cstaticignore`, then narrowed by `-f`.
 2. **Read** — one Claude job per file, chunked at 600 lines with 80 lines of
    overlap for longer files. Prompt = `BUG_CATALOG` + `NOT_A_FINDING` +
    `OUTPUT_CONTRACT`. Plus one **global** job that looks only at cross-file
@@ -66,6 +60,41 @@ Five stages, in `cstatic.sh`:
 Claude's output is parsed from `<<<FINDING>>>` blocks by the `PARSER` awk
 program into tab-separated records: `file, line, col, sev, msg, detail`, where
 detail lines are joined with `\001`.
+
+`PARSER`'s `fixpath()` repairs the `FILE:` value against `knownpaths.txt`, the
+list of source files that actually exist under the root: exact match, then
+**longest** suffix match, then an unambiguous bare file name. This is not
+optional polish — the first isolation run emitted
+`cstatic/tests/buggy/world.c` for what had to be `world.c`, and Emacs cannot
+follow a path like that. The prompts now also state the root and the short
+name to use, but `fixpath()` is the backstop that makes it not matter.
+
+## Two modes, and why `-f` is not just a filter
+
+Without `-f`, the tool audits a **project**: jobs get `Read,Grep,Glob`, are
+told to look up ground truth anywhere, and the verifier grounds every claim in
+what the real call sites can actually pass.
+
+With `-f` (`ISOLATE=1`) the tool audits a **file**, reproducing what happens
+when you paste one file into a chat window. This is Jason's explicit
+requirement, and it is the opposite posture:
+
+- Jobs get `--tools "Read"` only. They *cannot* search the folder. This is a
+  mechanical guarantee, not a request in a prompt.
+- `include_closure()` resolves the file's quoted `#include`s transitively and
+  `closure_block()` names them in the prompt as the only other openable files.
+  Angle-bracket includes are skipped; the closure is capped at `MAX_CLOSURE`.
+- Both the analysis and the verify prompt switch to isolation variants. The
+  load-bearing sentence is in the verifier: **never reject a claim because no
+  current caller triggers it** — it cannot see the callers, so that reasoning
+  is unavailable to it.
+- Verdict names change with the posture: reachable/latent become
+  sound/conditional, since "reachable" is meaningless without callers.
+- The cross-file pass is off. It is the exact thing isolation refuses to do.
+
+Consequence worth remembering: `-f` is **stricter** on a given file than a full
+run, not more lenient. A whole-project run demotes an unreachable defect to a
+warning; isolation has nothing to demote it against.
 
 ## The two calibration knobs that actually matter
 
@@ -96,6 +125,16 @@ out even: **one jump target per finding, zero from explanation lines.**
 `tests/exampleRun.txt` is a recorded good run: 14 findings, no false
 positives, every line number landing exactly on the defect, about four minutes
 on `opus` with `-e high`.
+
+Test isolation mode separately, since it takes the other branch of every
+prompt:
+
+    ./cstatic.sh -f world.c tests/buggy
+
+A good isolation run on `world.c` finds **more** in that file than a full run
+does (8 vs 5 in the reference), because it cannot excuse anything by pointing
+at what the callers happen to do. `tests/exampleRunIsolated.txt` is the
+recorded one.
 
 If you edit any prompt, re-run the test and compare against `ANSWERS.md`
 before committing. Watch both directions — findings lost, and noise gained.

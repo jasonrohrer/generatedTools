@@ -62,8 +62,8 @@ To make it the default for a project, put this in a `.dir-locals.el`:
     ./cstatic.sh                  # analyze the current directory
     ./cstatic.sh ~/src/mygame     # analyze another directory
     ./cstatic.sh game.c world.h   # analyze just these files
-    ./cstatic.sh -f world.h       # just the one file you were working on
-    ./cstatic.sh -f 'net*.c'      # ...or the few that match a glob
+    ./cstatic.sh -f world.h       # judge one file in isolation, no folder scan
+    ./cstatic.sh -f 'net*.c'      # ...or each of the few that match a glob
     ./cstatic.sh -r               # recurse into subdirectories
     ./cstatic.sh -x 'stb_*.c' -x imgui   # skip vendored code
     ./cstatic.sh -m sonnet -j 8   # cheaper and wider
@@ -71,26 +71,40 @@ To make it the default for a project, put this in a `.dir-locals.el`:
 
 `./cstatic.sh -h` lists every option.
 
-### Looking at just one file
-
-`-f` is the opposite of `-x`: instead of naming what to skip, it names the
-only thing to search.  Wrote a new header and want a second pair of eyes on
-just that, without paying to re-audit the whole folder?
+### `-f`: one file, in isolation
 
     ./cstatic.sh -f world.h
 
-Claude still **reads** the rest of the project — that is how it knows the real
-size of an array or what a callee actually does, and the accuracy of the whole
-tool depends on it.  It just does not go hunting for bugs anywhere else.
+`-f` is a different **mode**, not just a filter.  It reproduces what happens
+when you paste a single file into a chat window and ask "what's wrong with
+this?"  The file is judged on its own terms, and **nothing else in the folder
+is read** — only the headers the file itself `#include`s, resolved
+transitively and named in the prompt, so there is no rummaging around. The
+analysis jobs are handed the `Read` tool and nothing else, so they *cannot*
+search the project even if they want to.
 
-Quote the glob (`-f '*.h'`) so your shell does not expand it first.  `-f` is
-repeatable, and it matches on the bare file name or on the path relative to
+That changes what counts as a bug, and it is the whole point:
+
+> The callers are not looked at, so "no caller passes that value today" is
+> never an excuse.  If a function misbehaves for an argument its own declared
+> interface permits, that is a defect in this file.
+
+Which is the opposite of the whole-project mode, where a bug no current call
+site can reach is demoted to a `warning:`.  In isolation there is nothing to
+demote it against, so it stands on its own.  Expect `-f` to be **stricter**
+about a given file than a full run is, not more lenient.
+
+The skeptical pass runs in isolation too, and is told explicitly never to
+reject a claim on the grounds that no caller triggers it.  It will still
+reject a claim that a check inside the file already prevents, or one that
+requires a caller to violate a precondition the file's own comments state.
+
+Details: quote the glob (`-f '*.h'`) so your shell does not expand it first.
+`-f` is repeatable and matches on the bare file name or the path relative to
 the analyzed folder.  A glob that matches nothing is an error rather than an
-empty report, because a typo should not look like a clean bill of health.
-
-Because `-f` means "do not scan the whole folder", it turns off the cross-file
-pass.  Add `--global` to keep it — the pass then sees the entire project but
-is told to concentrate on the seams where your `-f` files meet the rest.
+empty report, because a typo should not look like a clean bill of health.  The
+cross-file pass is off in this mode — searching the project for seams is
+exactly what isolation is refusing to do.
 
 ## How it works
 
@@ -148,14 +162,13 @@ Everything Claude does here is read-only: the jobs run with only the `Read`,
 | `-m MODEL` | `opus` | `opus`, `sonnet`, `haiku`, or a full model id |
 | `-e LEVEL` | `high` | reasoning effort: `low` `medium` `high` `xhigh` `max` |
 | `-r` | off | recurse into subdirectories |
-| `-f GLOB` | -- | search only these files for bugs (repeatable); implies `--no-global` |
+| `-f GLOB` | -- | isolation mode: judge only these files, each on its own (repeatable) |
 | `-x GLOB` | -- | exclude files (repeatable) |
 | `-c N` | 600 | lines per chunk; `0` disables chunking |
 | `-n N` | 10 | maximum findings reported per chunk |
 | `-t SECS` | 1200 | per-Claude-call timeout |
 | `--no-verify` | off | skip the refutation pass |
-| `--no-global` | off | skip the cross-file pass |
-| `--global` | off | keep the cross-file pass even under `-f` |
+| `--no-global` | off | skip the cross-file pass (`-f` implies this) |
 | `--no-merge` | off | skip the duplicate-collapsing pass |
 | `-k` | off | keep the work directory (raw Claude output, prompts, logs) |
 | `-q` | off | print findings only, no progress lines |
@@ -193,7 +206,8 @@ from the explanation lines.
 
     tests/runTest.sh
 
-A recorded run of it is in `tests/exampleRun.txt`.
+A recorded run of it is in `tests/exampleRun.txt`, and a recorded isolation run
+(`./cstatic.sh -f world.c tests/buggy`) is in `tests/exampleRunIsolated.txt`.
 
 ### What a good run looks like
 

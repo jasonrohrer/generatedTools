@@ -2,113 +2,112 @@ cstatic v1.0 -- 5 source file(s) in /home/jasonrohrer/checkout/generatedTools/cs
 cstatic: model=opus effort=high jobs=4  (6 analysis pass(es))
 
 cstatic: [1/6] read grid.c -- 7 candidate(s)
-cstatic: [2/6] read grid.h -- 1 candidate(s)
-cstatic: [3/6] read main.c -- 4 candidate(s)
+cstatic: [2/6] read grid.h -- 3 candidate(s)
+cstatic: [3/6] read main.c -- 6 candidate(s)
 cstatic: [4/6] read world.c -- 6 candidate(s)
-cstatic: [5/6] read world.h -- 4 candidate(s)
-cstatic: [6/6] read <whole project: cross-file consistency> -- 9 candidate(s)
+cstatic: [5/6] read world.h -- 3 candidate(s)
+cstatic: [6/6] read <whole project: cross-file consistency> -- 8 candidate(s)
 
-cstatic: 20 candidate finding(s) after dedupe
+cstatic: 19 candidate finding(s) after dedupe
 cstatic: verifying (each candidate gets a fresh, skeptical reader)
 
-cstatic: [1/5] verify grid.c -- 6 candidate(s)
-cstatic: [2/5] verify grid.h -- 1 candidate(s)
-cstatic: [3/5] verify main.c -- 4 candidate(s)
-cstatic: [4/5] verify world.c -- 6 candidate(s)
-cstatic: [5/5] verify world.h -- 1 candidate(s)
+cstatic: [1/4] verify grid.c -- 6 candidate(s)
+cstatic: [2/4] verify main.c -- 5 candidate(s)
+cstatic: [3/4] verify world.c -- 6 candidate(s)
+cstatic: [4/4] verify world.h -- 1 candidate(s)
 
 cstatic: collapsing findings that share one root cause
 cstatic: merged 3 duplicate finding(s)
 
 cstatic: ---------------------------------------------------------------
 
-grid.c:39:12: error: getCell indexes sGrid with no bounds check, unlike its counterpart setCell
-    run with args "5000 5000": main.c@87 passes atoi results straight in
-    sGrid is int[10][12] (grid.c@9); setCell clamps at grid.c@27, getCell does
-    not
-    add the same inX/inY range tests before the subscript
+grid.c:39:12: error: getCell indexes sGrid with no range check, unlike setCell
+    main.c@87 passes atoi of argv, so "prog 99 99" reads far outside sGrid
+    sGrid is int[10][12] (grid.c@9); setCell clips at grid.c@27 but getCell
+    does not
+    add the same two bounds tests setCell has
 
 grid.c:65:33: error: stray semicolon after if in countRow makes count++ unconditional
-    main.c@92 prints "row 0 count 12" though row 0 is all zero after seedGrid
-    the ";" ends the if, so countRow always returns GRID_W, which is 12
-    delete the semicolon and brace the increment
+    countRow always returns GRID_W, so main.c@92 prints "row 0 count 12"
+    row 0 holds one non-zero cell after seedGrid at main.c@30
+    delete the semicolon at end of grid.c@65
 
-grid.c:76:31: error: sizeof( outBuffer ) is the size of an int pointer, not the size of the grid
-    main.c@91 calls copyGrid( buffer ) and only 4 or 8 bytes of 480 are copied
-    outBuffer is int*, grid.c@75; sGrid is int[10][12], grid.c@9
-    use sizeof( sGrid ), or GRID_W * GRID_H * sizeof( int )
+grid.c:76:31: error: copyGrid passes sizeof( outBuffer ), the size of a pointer, to memcpy
+    main.c@91 passes int buffer[120]; only the first 1 or 2 ints are copied
+    outBuffer is int*, so sizeof is 4 or 8, not GRID_W * GRID_H * sizeof( int
+    )
+    use sizeof( sGrid ) instead
 
-grid.c:89:13: error: missing break after case 1 in describeCell, so value 1 is described as "floor"
-    seedGrid sets cell (1,1) to 1 (main.c@36), and main.c@89 reports it as
-    floor
-    case 1 falls through to case 2, whose sprintf overwrites the static buffer
-    add break after the sprintf
+grid.c:89:13: error: missing break in describeCell case 1 falls through and overwrites "wall" with "floor"
+    main.c@89 passes getCell(1,1), which seedGrid set to 1, and gets "floor"
+    case 2 at grid.c@91 sprintf's into the same static buffer[32]
+    add break after grid.c@89
 
-grid.c:152:17: warning: realloc result overwrites out, the only pointer to the old block in gridReport
-    needs realloc to fail: out becomes NULL, strcat at grid.c@155 then crashes
-    the old buffer is also leaked, and main.c@96 frees the NULL
-    assign to a temporary and overwrite out only when it is non-NULL
+grid.c:152:17: warning: realloc result assigned over out, the only pointer to the old report block
+    needs a failing realloc: out becomes NULL, old text leaks, strcat at
+    grid.c@155 faults
+    assign to a temporary and overwrite out only when the temporary is
+    non-NULL
 
-grid.h:9:7: error: describeCell returns its single static buffer, so two results in one expression alias
-    main.c@58 passes describeCell(inA) and describeCell(inB) to one printf;
-    both %s alias.
-    the returned storage is "static char buffer[32]" at grid.c@82, one address
-    per call.
+main.c:45:9: error: value is uninitialized and returned as-is when readCoord is passed inText == NULL
+    with no command line arguments, main.c@84-85 pass NULL, the if at
+    main.c@47 is
+    skipped, and the indeterminate value becomes the grid index used at
+    main.c@87. ...
 
-main.c:45:5: error: readCoord returns uninitialized `value` when inText is NULL, no else branch sets it
-    running with no arguments makes main.c@84 and @85 pass NULL to readCoord
-    x and y are then indeterminate indices at main.c@87; getCell grid.c@39 has
-    no clamp
-    initialize value to 0 at its declaration
+main.c:58:13: error: both describeCell results in one printf alias the same static buffer, so both %s match
+    describeCell returns its static char buffer[32] (grid.c@82,98), so the
+    second call
+    overwrites the first before printf runs; main.c@89 reaches this on every
+    run. ...
 
-main.c:100:38: error: use after free: w->totalValue is read one line after freeWorld( w ) released the struct
-    freeWorld calls free( inWorld ) on the World itself, world.c@32, not just
-    its items
-    main.c@98 frees w on every run, then line 100 dereferences it
-    save totalValue in a local before line 98, or print before freeing
+main.c:100:37: error: w->totalValue is read after freeWorld( w ) has already freed the World block
+    freeWorld at main.c@98 calls free( inWorld ) (world.c@32), so this printf
+    dereferences a dangling pointer on every run.
+    Print before the freeWorld call, or save totalValue in a local first.
 
-world.c:41:9: error: clamp lets len reach MAX_NAME_LEN, so title[ len ] at world.c@46 writes one past the array
-    main.c@70 passes a 17-char title, so len becomes 16 and title[16] = '\0'
-    is written.
-    title is char[MAX_NAME_LEN], 16 bytes, and the last field of World,
-    world.h@20.
+world.c:41:13: error: loadTitle clamps len with > instead of >=, so title[MAX_NAME_LEN] is written one past the end
+    main.c@70 passes "the sunless lands", 17 chars, so len stays 16 and
+    world.c@46
+    stores '\0' at title[16]; title is char[MAX_NAME_LEN] with MAX_NAME_LEN
+    16, world.h@20 ...
 
-world.c:56:5: warning: realloc result stored over inWorld->items, losing the old block when realloc fails
-    needs a failing realloc; growItems is unreached today (capacity 8, only 5
-    items added).
-    on NULL, capacity is still doubled at world.c@58 and addItem then derefs
-    items.
+world.c:56:5: warning: growItems assigns realloc straight back into inWorld->items, losing the block if it fails
+    On failure items becomes NULL while capacity is still doubled at
+    world.c@58, so
+    addItem then writes through NULL at world.c@70; today capacity 8 vs 5
+    items never grows ...
 
-world.c:72:5: error: strcpy into slot->name is unbounded and overflows the 16-byte name field
-    main.c@24 passes "potion of extreme healing", 26 bytes, 10 past name into
-    items[3].
-    name is char[MAX_NAME_LEN], 16 bytes, world.h@10 and world.h@4.
-    fix: copy at most MAX_NAME_LEN - 1 bytes and terminate.
+world.c:72:5: error: strcpy into slot->name overruns Item.name, which is only MAX_NAME_LEN bytes
+    main.c@24 seeds "potion of extreme healing", 26 bytes with NUL, into
+    char[16]
+    Item.name is char[MAX_NAME_LEN] with MAX_NAME_LEN 16, world.h@10 and
+    world.h@4 ...
 
-world.c:86:19: warning: findItem loop test i <= inWorld->numItems reads items[numItems], one past the filled range
-    the only call, findItem( w, "rope" ) at main.c@78, matches at i=3 and
-    returns first.
-    a lookup for a name not present would strcmp the uninitialized slot
-    items[numItems].
+world.c:86:19: warning: findItem loop test uses i <= inWorld->numItems, reading one item past the last stored
+    A name that is absent makes strcmp read uninitialized items[numItems] and
+    can
+    return a bogus Item*; main.c@78 only ever searches "rope", which matches
+    at index 3 ...
 
-world.c:102:17: warning: value * count is multiplied in int and only widened afterwards, so the product can overflow
-    current seeded values are at most 40 * 5, so nothing overflows until
-    larger values arrive.
-    value and count are both int, world.h@11 and world.h@12, while total is
-    long.
+world.c:102:13: warning: value * count is computed in int and only then widened into the long total
+    Item.value and Item.count are both int, world.h@11 and world.h@12; current
+    seed
+    values from main.c@24 are far too small to overflow, but a large stock
+    count would ...
 
-world.c:114:51: error: %d used to print inWorld->totalValue, which is long, in the printWorld format string
-    printWorld is called at main.c@76, so the mismatched varargs read happens
-    every run.
-    totalValue is declared long at world.h@19.
-    fix: use %ld for the third conversion.
+world.c:114:13: error: printf uses %d for inWorld->totalValue, which is long
+    main.c@76 calls printWorld every run, so a long is passed where %d is
+    expected
+    World.totalValue is long, world.h@19; main.c@100 prints the same field
+    with %ld ...
 
-world.h:7:21: error: SQUARE macro body lacks parentheses, so SQUARE(x) misbinds any argument that is an expression
-    grid.c@166 SQUARE( GRID_W - 2 ) expands to 12 - 2 * 12 - 2 = -14, not 100.
-    GRID_W is 12, grid.h@4; gridArea() is printed unconditionally at
+world.h:7:9: error: SQUARE macro lacks parentheses, so SQUARE(a-b) expands as a - b*a - b
+    gridArea() at grid.c@166 returns 12-24-2 = -14, not 100; called by
     main.c@92.
-    Fix: #define SQUARE( x ) ( ( x ) * ( x ) ).
+    GRID_W is 12, grid.h@4; body is "x * x" with no parens on x or result.
+    Fix: #define SQUARE( x ) ( ( x ) * ( x ) ) -- still evaluates x twice.
 
 cstatic: 15 finding(s): 11 error(s), 4 warning(s).
-cstatic: analyzed 5 file(s) in 254s.
+cstatic: analyzed 5 file(s) in 226s.
 cstatic: these are suggestions from a language model -- verify each one.

@@ -1,1 +1,10 @@
 (Add new testing notes below.)
+
+
+Two things, one simple, one more complex:
+
+
+--First, the mouse-wheel-to-zoom is working great!   However, it always zooms into the CENTER of the current view.  It should instead center the zoom around the current mouse location in the view.   I do this all the time in other software... zoom all the way out quickly, then mouse over the part that I want to work on next and zoom into that part.   I almost never need to "pan" around the view in that case.  I just zoom out and back in constantly to "re-focus" on a new area of interest.
+
+
+--Second, there's something messed up with the smoothing algorthm, where the surface normals do weird things, and often turn like... past the 90 degree point and point inward or something, even for flat surfaces where there should be no normal rotation due to smoothing.   See the example file "badNormals.ovox" where there's a 4x4 smoothed area in the center of a flat surface, and the 2x2 area in the middle is getting very weird normals that point 90 away from the original normals and kinda off toward the corners diagonally.  Very weird.

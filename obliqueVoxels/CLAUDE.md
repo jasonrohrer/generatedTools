@@ -272,48 +272,51 @@ MagicaVoxel `.vox`** below).
   (`smoothFaces`) of which of its faces are smooth; only *visible* faces
   actually shade, but all six are remembered so a face exposed later by an edit
   is already set.  A **smooth** face is shaded not with its blocky axis normal
-  but with the *fitted surface normal*, so a voxel sphere shades like a real
-  sphere instead of showing bright-top/dark-front stripes.  The fit is a
-  **least-squares plane through the local surface read as a height field over
-  that face's own plane** (`voxSmoothNormal`): for every in-plane offset within
-  `smooth radius` we walk that column for the nearest solid cell whose face in
-  the same direction is exposed and record its height, then fit
-  `t = a*di + b*dk + c` and take `(-a, -b, 1)` in the face's frame.  Because a
-  plane fit is *exact* for any planar surface however the samples are
-  distributed, a flat face stays perfectly flat, and because the fitted normal
-  keeps a +1 component along the face normal by construction it can never tip
-  past 90° or point back into the solid.  (This replaced an occupancy-gradient
-  fit that measured where the solid *mass* sat rather than where the *surface*
-  ran: on a one-voxel-thick plate the empty space above and below cancelled its
-  vertical term exactly, so an interior smooth face came out aimed at the
-  plate's far corner, 90° from where it belonged — `badNormals.ovox`, covered
-  now by `OV_SELFTEST`.)  Two global render params tune it: **smooth radius**
-  (1–4) sets how broad the fit is, **smooth amount** (0–1) blends between the
-  flat face normal and the fitted normal.  The effect appears in both the
-  oblique render and the "match render" 3D preview.  (Only the
-  *shading* normal changes — the voxel geometry, occlusion and shadow-ray
-  origins are untouched.)
-* **Meeting constraints** are what make corners work automatically, with no
-  separate "corner" state.  A smooth face is "met" to its four in-plane
-  neighbour faces (found by the local surface: a *coplanar* face if the next
-  cell is solid & open, a *perpendicular* face on this voxel at a convex edge,
-  or a perpendicular face on the diagonal cell at a concave edge).  Where a
-  neighbour face is **not** smooth, the fitted normal is constrained so the two
-  faces meet sanely: a non-smooth **coplanar** neighbour locks us fully flat
-  (we abut a flat run); a non-smooth **perpendicular** neighbour zeroes the
-  tangent component along its axis (keeping us at 90° to it while free to rotate
-  about the other in-plane axis).  So a flat washer ring whose rim faces are
-  smooth but whose top/bottom faces are flat rounds only circumferentially (the
-  flat caps pin the vertical tangent), and a cylinder's top rim keeps a crisp
-  flat cap edge with no dark patch.  A **bevel sign-guard** additionally fixes
-  "inner corner" voxels: at a near-symmetric corner the fit has little in-plane
-  signal to work with and a lone far column can tip its in-plane component the
-  *wrong* way (a shading discontinuity).  So the meeting scan also builds a purely
-  geometric bevel direction — the flat face normal plus the outward normal of
-  every *smooth* perpendicular neighbour it rounds toward — and where the fitted
-  normal's tangent points opposite that geometry, that component is flipped to
-  agree.  Coplanar smooth surfaces (spheres) accumulate no bevel, so they are
-  untouched.
+  but with an *averaged surface normal*, so a voxel sphere shades like a real
+  sphere instead of showing bright-top/dark-front stripes.  Two global render
+  params tune it: **smooth radius** (1–8) sets how far the average reaches,
+  **smooth amount** (0–1) blends between the flat face normal and the averaged
+  one.  The effect appears in both the oblique render and the "match render" 3D
+  preview.  (Only the *shading* normal changes — the voxel geometry, occlusion
+  and shadow-ray origins are untouched.)
+* **The estimator walks the surface, not the volume** (`voxSmoothNormal`).  The
+  visible faces form a graph: each face has four in-plane edges, and across each
+  one exactly one face continues the surface — a *coplanar* face if the next
+  cell is solid and open, a *perpendicular* face on this voxel at a convex edge,
+  or a perpendicular face on the diagonal cell at a concave edge
+  (`surfFaceStep`).  From a smooth face we breadth-first walk that graph out to
+  `smooth radius` edge steps and **average the flat axis normals** of every
+  smooth face we reach.  On a flat run the average of "straight up" is "straight
+  up", so smoothing a flat surface correctly does nothing.
+* **Boundary faces stay flat**, and that is what makes corners work with no
+  separate "corner" state.  A smooth face with any in-plane edge *not* shared
+  with another smooth face is a **boundary** face: it borders flat geometry (or
+  the smoothed patch just ends there) and keeps its exact axis normal, so it
+  meets the flat run it abuts cleanly.  Two rules keep the walk honest: a
+  boundary face *joins* a basket but the walk does not continue **past** it
+  (beyond it lies a crease into unrelated geometry, and averaging across that
+  crease is what used to make normals "toe out" at odd angles); and the walk
+  never adds the face pointing directly **opposite** the one being shaded,
+  reachable by wrapping around a thin rib.  That second rule leaves the average
+  with a guaranteed positive component along the flat face normal, so a shading
+  normal can never tip past 90° or point back into the solid.
+  On the 3-wide smoothed patch wrapped over a box edge in `edgeNotSmooth.ovox`,
+  exactly two faces are interior — the top and front face of the middle voxel —
+  and each collects four top and four front faces, so both land on the same 45°
+  normal while the other ten stay flat (`OV_SELFTEST` asserts this).  Note the
+  cost: a rim only one or two voxels tall is *all* boundary and will not round;
+  a smoothed band needs to be at least three faces wide for its middle to tilt.
+* **Two earlier estimators failed here, and the tests remember both.**  An
+  occupancy-gradient fit measured where the solid *mass* sat rather than where
+  the *surface* ran: on a one-voxel-thick plate the empty space above and below
+  cancelled its vertical term exactly, so an interior smooth face came out aimed
+  at the plate's far corner, 90° from where it belonged (`badNormals.ovox`).
+  A least-squares plane through the local surface read as a height field fixed
+  that — a plane fit is exact for any planar surface — but it sampled only one
+  height per in-plane column, so whole bands of sphere faces fitted the same few
+  heights and the shading came out visibly banded; and it left the faces
+  wrapping a box edge entirely un-tilted (`edgeNotSmooth.ovox`).  Both cases are
+  now covered by `OV_SELFTEST`.
 * Set smoothness two ways: the **Smoother** tool (9) paints it face-by-face —
   drag over faces to mark them smooth (Draw) or flat (Erase); or, in the
   Selection panel, **Smooth** / **Unsmooth** set/clear *all six* faces of every
@@ -396,9 +399,13 @@ bytes, wrapped 72 base64 chars per line), then for each layer a `LAYER <index>
 followed
 by that layer's `V x y z color rampStart rampLen [smoothFaceMask]` voxel lines —
 the trailing smooth field is optional so older 6-field voxel lines still load.
-This is **version 3**; older **version 1/2** files have no `LAYER`/`ACTIVE`
-lines and load as a single layer.  In the current
-**version 2** format it is a 6-bit per-face smooth mask (bit = 1<<faceDir6,
+This is **version 4**; older **version 1/2** files have no `LAYER`/`ACTIVE`
+lines and load as a single layer, and any file older than version 4 has its
+stored `smoothRadius` **doubled** on load — that field used to count cells of a
+volumetric fit and now counts steps of a walk across the surface, which needs
+about twice as many to span the same patch, so an older sculpture loads looking
+at least as smooth as it did.  In **version 2 and later** the trailing voxel
+field is a 6-bit per-face smooth mask (bit = 1<<faceDir6,
 order +Y +Z −Z +X −X … i.e. +Y0 −Y1 +Z2 −Z3 +X4 −X5); in the legacy **version
 1** format it was a 0/1/2 whole-voxel smooth flag, which loads by mapping any
 nonzero value to "all six faces smooth" (`0x3F`).  A light

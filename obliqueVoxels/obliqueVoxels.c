@@ -446,141 +446,198 @@ static void layerSwap( int a, int b )
 }
 
 /* ------------------------------------------------------------------ */
-/* smooth shading -- a voxel flagged "smooth" is shaded with a fitted    */
-/* surface normal (the local shape's normal) instead of its blocky per-  */
-/* face axis normal, so a voxel sphere shades like a real sphere.        */
+/* smooth shading -- a voxel face flagged "smooth" is shaded with an     */
+/* averaged surface normal instead of its blocky axis normal, so a voxel */
+/* sphere shades like a real sphere.                                     */
+/*                                                                       */
+/* The estimator works on the SURFACE ITSELF, as a graph of visible faces */
+/* joined edge to edge, rather than on the solid volume:                  */
+/*                                                                       */
+/*   * A smooth face whose four in-plane edges are all shared with other  */
+/*     SMOOTH faces is "interior" and gets a rounded normal.  A smooth    */
+/*     face with any edge that is not (it abuts flat geometry, or the     */
+/*     smoothed patch simply ends there) is a BOUNDARY face and keeps its */
+/*     flat axis normal, so it meets the flat run it borders cleanly.     */
+/*     This is what used to need a separate pile of "meeting constraint"  */
+/*     and bevel-sign special cases -- the boundary rule subsumes them.   */
+/*                                                                       */
+/*   * For an interior face we breadth-first walk the surface graph out   */
+/*     to `smooth radius` edge steps, collecting every smooth face we     */
+/*     reach, and average their flat axis normals.  `smooth amount` then  */
+/*     blends that average against our own flat normal (1 = fully the     */
+/*     average).                                                          */
+/*                                                                       */
+/* Two rules keep the walk honest:                                        */
+/*                                                                       */
+/*   * A boundary face joins the basket but the walk does not continue    */
+/*     PAST it: beyond a boundary face lies a crease into unrelated       */
+/*     geometry, and averaging normals across that crease is exactly what */
+/*     used to make normals "toe out" at odd angles.                      */
+/*   * The walk never adds the face pointing directly OPPOSITE the one we */
+/*     are shading (reachable by wrapping around a thin rib).  It would   */
+/*     cancel our own normal and has nothing to say about how this face   */
+/*     is lit.  Because of this the averaged normal always keeps a        */
+/*     positive component along the flat face normal, so -- as with the   */
+/*     plane fit this replaced -- it can never tip past 90 degrees or     */
+/*     point back into the solid.                                         */
+/*                                                                       */
+/* On a flat run the average of "straight up" is "straight up", so an     */
+/* interior smooth face on a flat surface stays perfectly flat.  On the   */
+/* 3-wide patch wrapped over a box edge in edgeNotSmooth.ovox the two     */
+/* interior faces each collect four top faces and four front faces, so    */
+/* both land on the same 45-degree normal.                                */
+/*                                                                       */
+/* (This replaced a least-squares plane fit through the local surface read */
+/* as a height field.  That was exact on planes -- which fixed the bogus  */
+/* normals in the middle of a flat plate that an even earlier occupancy-  */
+/* gradient estimator produced -- but it sampled one height per in-plane  */
+/* column, so on a sphere whole bands of faces fitted the same few heights */
+/* and the shading came out visibly banded instead of smooth.)            */
 /* ------------------------------------------------------------------ */
 
-static int   g_smoothRadius = 2;    /* neighbourhood radius for fitted normals  */
+static int   g_smoothRadius = 4;    /* surface steps to average over (1..8)    */
 static float g_smoothAmt    = 1.0f; /* 0 = blocky face normal, 1 = fully fitted */
 
-/* Cap on a fitted height-field slope (3 = ~72 degrees along one axis): keeps a
- * near-vertical local surface from shading a face as if it faced fully
- * sideways. */
-#define MAX_FIT_SLOPE 3.0
+/* faceDir6 code -> unit vector and axis.  The opposite direction is code^1. */
+static const int g_dirVec[6][3] = { { 0, 1, 0 }, { 0,-1, 0 },
+                                    { 0, 0, 1 }, { 0, 0,-1 },
+                                    { 1, 0, 0 }, {-1, 0, 0 } };
+static const int g_dirAxis[6]   = { 1, 1, 2, 2, 0, 0 };
 
-static double det3( double a, double b, double c,
-                    double d, double e, double f,
-                    double g, double h, double i )
+typedef struct { int x, y, z, d; } SurfFace;
+
+/* Is the face of the voxel at (x,y,z) facing direction d (a faceDir6 code)
+ * flagged smooth?  Returns 0 if there is no voxel there. */
+static int faceSmoothCode( int x, int y, int z, int d )
 {
-    return a*(e*i - f*h) - b*(d*i - f*g) + c*(d*h - e*g);
+    Voxel *v = voxAt( x, y, z );
+    if( !v ) return 0;
+    return ( v->smoothFaces >> d ) & 1;
 }
 
-/* Estimate the outward surface normal for one FACE of voxel v: the normal of
- * the least-squares plane fitted to the local surface, seen as a height field
- * over that face's own plane.
+/* The face that continues the visible surface across one in-plane edge of the
+ * face (x,y,z,d), stepping in in-plane direction e.  Exactly one of three
+ * cases applies, and each names a face that is itself guaranteed exposed:
  *
- * The face normal (fx,fy,fz) picks the "up" axis: for every in-plane offset
- * (di,dk) within radius R we walk that column for the nearest solid cell whose
- * face in the same direction is exposed, and record its height t along the face
- * normal.  A distance-weighted least-squares plane t = a*di + b*dk + c over
- * those samples gives the local surface slope, and the fitted normal is
- * (-a, -b, 1) in that face's frame.  Returns 0 (leaving *nx,*ny,*nz untouched)
- * when there is not enough surface to fit.
- *
- * This replaced an earlier estimator that took the negated gradient of the
- * solid-occupancy field over a (2R+1)^3 ball.  That measured where the solid
- * MASS sits rather than where the SURFACE runs, which broke badly on flat
- * shapes: on a one-voxel-thick plate the empty space above and below cancels
- * the gradient's vertical component exactly, leaving only the plate's lateral
- * mass -- so an interior smooth face came out with a normal lying flat in the
- * plate, pointing diagonally at the plate's far corner, 90 degrees from where
- * it belonged (see badNormals.ovox).  A least-squares plane fit has no such
- * failure mode: it is exact for any planar surface no matter how the samples
- * are distributed (so a flat face stays perfectly flat however the smoothed
- * patch is shaped), it is as accurate as the gradient on a voxel sphere, and
- * because the fitted normal keeps a +1 component along the face normal by
- * construction, it can never tip past 90 degrees or point back into the solid.
- *
- * A tiny ridge term regularizes the two slope terms, so a surface that offers
- * samples along only one in-plane axis (a one-voxel-wide rib) still fits along
- * that axis and simply reports zero slope across it instead of going singular. */
+ *   convex   -- the next cell is empty, so the surface folds down over this
+ *               voxel's own e-facing face;
+ *   coplanar -- the next cell is solid and open along d, so the surface runs
+ *               straight on across that cell's d-facing face;
+ *   concave  -- the next cell is solid and covered along d, so the surface
+ *               folds up onto the diagonal cell's (-e)-facing face. */
+static void surfFaceStep( int x, int y, int z, int d, int e, SurfFace *out )
+{
+    const int *E = g_dirVec[e];
+    const int *D = g_dirVec[d];
+    int ax = x + E[0], ay = y + E[1], az = z + E[2];
+
+    if( !voxAt( ax, ay, az ) ) {                    /* convex edge */
+        out->x = x; out->y = y; out->z = z; out->d = e;
+    } else if( !voxAt( ax + D[0], ay + D[1], az + D[2] ) ) {   /* coplanar */
+        out->x = ax; out->y = ay; out->z = az; out->d = d;
+    } else {                                        /* concave edge */
+        out->x = ax + D[0]; out->y = ay + D[1]; out->z = az + D[2];
+        out->d = e ^ 1;
+    }
+}
+
+/* Visited set for the surface walk.  Every step moves the cell by at most one
+ * along each axis, so after R <= SF_R_MAX steps the reachable cells all sit in
+ * a (2*SF_R_MAX+1)^3 box around the seed -- small enough to mark with a flat
+ * stamp array (an epoch counter avoids clearing it on every call). */
+#define SF_R_MAX 8
+#define SF_SPAN  ( 2 * SF_R_MAX + 1 )
+#define SF_SLOTS ( SF_SPAN * SF_SPAN * SF_SPAN * 6 )
+
+static unsigned g_sfStamp[ SF_SLOTS ];
+static unsigned g_sfEpoch = 0;
+static SurfFace g_sfQueue[ SF_SLOTS ];
+static int      g_sfDist [ SF_SLOTS ];
+
+/* Averaged surface normal for one exposed FACE of voxel v, per the walk
+ * described above.  Returns 0 (leaving *nx,*ny,*nz untouched) when this face is
+ * a boundary face or the walk finds nothing usable -- the caller then keeps the
+ * flat axis normal. */
 static int voxSmoothNormal( const Voxel *v, double fx, double fy, double fz,
                             double *nx, double *ny, double *nz )
 {
     int R = g_smoothRadius;
-    int fa, sgn, a1, a2, di, dk, cnt = 0;
-    int base[3], c[3], up[3];
-    double Sxx=0.0, Sxy=0.0, Sx=0.0, Syy=0.0, Sy=0.0, Sw=0.0;
-    double Shx=0.0, Shy=0.0, Sh=0.0;
-    double M[3][3], B[3], D, a, b, n[3], len, ridge;
+    int d0, opp, e, k, head = 0, tail = 0, cnt = 0;
+    int bx = v->x, by = v->y, bz = v->z;
+    double sum[3], len;
+    SurfFace nb[4];
 
     if( R < 1 ) R = 1;
-    fa  = ( fy != 0.0 ) ? 1 : ( fz != 0.0 ? 2 : 0 );
-    sgn = ( ( fa == 0 ? fx : ( fa == 1 ? fy : fz ) ) > 0.0 ) ? 1 : -1;
-    a1  = ( fa + 1 ) % 3;
-    a2  = ( fa + 2 ) % 3;
-    base[0] = v->x; base[1] = v->y; base[2] = v->z;
+    if( R > SF_R_MAX ) R = SF_R_MAX;
+    d0  = faceDir6( fx, fy, fz );
+    opp = d0 ^ 1;
 
-    for( di = -R; di <= R; di++ )
-      for( dk = -R; dk <= R; dk++ ) {
-        int t, found = 0, h = 0;
-        if( di*di + dk*dk > R*R ) continue;        /* keep the disc round */
-        /* nearest exposed surface cell in this column, searching outward from
-         * our own height so a nearby ledge wins over a distant one */
-        for( t = 0; t <= R && !found; t++ ) {
-            int s;
-            for( s = 0; s < 2; s++ ) {
-                int tt = ( s == 0 ) ? t : -t;
-                if( s == 1 && t == 0 ) continue;
-                c[0] = base[0]; c[1] = base[1]; c[2] = base[2];
-                c[a1] += di; c[a2] += dk; c[fa] += sgn * tt;
-                if( !voxAt( c[0], c[1], c[2] ) ) continue;
-                up[0] = c[0]; up[1] = c[1]; up[2] = c[2];
-                up[fa] += sgn;
-                if( voxAt( up[0], up[1], up[2] ) ) continue;   /* buried */
-                h = tt; found = 1; break;
-            }
+    /* boundary test: all four in-plane edges must be shared with smooth faces */
+    for( e = 0; e < 6; e++ ) {
+        if( g_dirAxis[e] == g_dirAxis[d0] ) continue;
+        surfFaceStep( bx, by, bz, d0, e, &nb[0] );
+        if( !faceSmoothCode( nb[0].x, nb[0].y, nb[0].z, nb[0].d ) ) return 0;
+    }
+
+    if( ++g_sfEpoch == 0 ) {                 /* wrapped: retire every stamp */
+        for( k = 0; k < SF_SLOTS; k++ ) g_sfStamp[k] = 0;
+        g_sfEpoch = 1;
+    }
+
+    g_sfQueue[0].x = bx; g_sfQueue[0].y = by; g_sfQueue[0].z = bz;
+    g_sfQueue[0].d = d0; g_sfDist[0] = 0; tail = 1;
+    g_sfStamp[ ( ( SF_R_MAX * SF_SPAN + SF_R_MAX ) * SF_SPAN + SF_R_MAX ) * 6
+                + d0 ] = g_sfEpoch;
+
+    sum[0] = sum[1] = sum[2] = 0.0;
+
+    while( head < tail ) {
+        SurfFace f = g_sfQueue[ head ];
+        int dist   = g_sfDist [ head ];
+        int nn = 0, allSmooth = 1;
+        head++;
+
+        sum[0] += g_dirVec[f.d][0];
+        sum[1] += g_dirVec[f.d][1];
+        sum[2] += g_dirVec[f.d][2];
+        cnt++;
+
+        if( dist >= R ) continue;
+
+        /* Gather this face's four edge neighbours.  If any is not smooth this
+         * is a boundary face: it counted toward the average above, but the walk
+         * stops here rather than crossing the crease. */
+        for( e = 0; e < 6 && allSmooth; e++ ) {
+            if( g_dirAxis[e] == g_dirAxis[f.d] ) continue;
+            surfFaceStep( f.x, f.y, f.z, f.d, e, &nb[nn] );
+            if( !faceSmoothCode( nb[nn].x, nb[nn].y, nb[nn].z, nb[nn].d ) )
+                allSmooth = 0;
+            else nn++;
         }
-        if( !found ) continue;
-        {
-            double x = (double)di, y = (double)dk, hh = (double)h;
-            double w = 1.0 / ( 1.0 + x*x + y*y );  /* nearer columns weigh more */
-            Sxx += w*x*x; Sxy += w*x*y; Sx  += w*x;
-            Syy += w*y*y; Sy  += w*y;   Sw  += w;
-            Shx += w*hh*x; Shy += w*hh*y; Sh += w*hh;
-            cnt++;
+        if( !allSmooth ) continue;
+
+        for( k = 0; k < nn; k++ ) {
+            int dx = nb[k].x - bx, dy = nb[k].y - by, dz = nb[k].z - bz, slot;
+            if( nb[k].d == opp ) continue;   /* never wrap to the far side */
+            if( dx < -SF_R_MAX || dx > SF_R_MAX ||
+                dy < -SF_R_MAX || dy > SF_R_MAX ||
+                dz < -SF_R_MAX || dz > SF_R_MAX ) continue;
+            slot = ( ( ( dx + SF_R_MAX ) * SF_SPAN + ( dy + SF_R_MAX ) ) * SF_SPAN
+                     + ( dz + SF_R_MAX ) ) * 6 + nb[k].d;
+            if( g_sfStamp[ slot ] == g_sfEpoch ) continue;
+            g_sfStamp[ slot ] = g_sfEpoch;
+            if( tail >= SF_SLOTS ) break;
+            g_sfQueue[ tail ] = nb[k];
+            g_sfDist [ tail ] = dist + 1;
+            tail++;
         }
-      }
+    }
 
-    if( cnt < 2 || Sw < 1e-9 ) return 0;
-
-    ridge = 1e-3 * Sw;
-    M[0][0] = Sxx + ridge; M[0][1] = Sxy;         M[0][2] = Sx;
-    M[1][0] = Sxy;         M[1][1] = Syy + ridge; M[1][2] = Sy;
-    M[2][0] = Sx;          M[2][1] = Sy;          M[2][2] = Sw;
-    B[0] = Shx; B[1] = Shy; B[2] = Sh;
-    D = det3( M[0][0], M[0][1], M[0][2],
-              M[1][0], M[1][1], M[1][2],
-              M[2][0], M[2][1], M[2][2] );
-    if( D < 1e-12 && D > -1e-12 ) return 0;
-    a = det3( B[0], M[0][1], M[0][2],
-              B[1], M[1][1], M[1][2],
-              B[2], M[2][1], M[2][2] ) / D;
-    b = det3( M[0][0], B[0], M[0][2],
-              M[1][0], B[1], M[1][2],
-              M[2][0], B[2], M[2][2] ) / D;
-    /* a near-vertical local surface would fit an enormous slope; cap it so a
-     * face never shades as if it faced fully sideways */
-    if( a >  MAX_FIT_SLOPE ) a =  MAX_FIT_SLOPE;
-    if( a < -MAX_FIT_SLOPE ) a = -MAX_FIT_SLOPE;
-    if( b >  MAX_FIT_SLOPE ) b =  MAX_FIT_SLOPE;
-    if( b < -MAX_FIT_SLOPE ) b = -MAX_FIT_SLOPE;
-
-    n[a1] = -a; n[a2] = -b; n[fa] = (double)sgn;
-    len = sqrt( n[0]*n[0] + n[1]*n[1] + n[2]*n[2] );
+    if( cnt < 1 ) return 0;
+    len = sqrt( sum[0]*sum[0] + sum[1]*sum[1] + sum[2]*sum[2] );
     if( len < 1e-9 ) return 0;
-    *nx = n[0]/len; *ny = n[1]/len; *nz = n[2]/len;
+    *nx = sum[0]/len; *ny = sum[1]/len; *nz = sum[2]/len;
     return 1;
-}
-
-/* Is the face of the voxel at (x,y,z) whose outward normal is (nx,ny,nz)
- * flagged smooth?  Returns 0 if there is no voxel there. */
-static int faceIsSmoothAt( int x, int y, int z, double nx, double ny, double nz )
-{
-    Voxel *v = voxAt( x, y, z );
-    if( !v ) return 0;
-    return ( v->smoothFaces >> faceDir6( nx, ny, nz ) ) & 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3576,97 +3633,20 @@ static void blendSmoothN( int have, double wnx, double wny, double wnz,
  * is (fx,fy,fz).  Both the oblique renderer and the 3D match preview call this
  * so they agree.
  *
- * Smoothing is now a per-FACE property (v->smoothFaces bitmask):
- *
- *   - A non-smooth face keeps its blocky axis normal (returned unchanged).
- *
- *   - A smooth face starts from the fitted surface normal (the least-squares
- *     plane through the local surface -- what makes a voxel sphere shade
- *     round; see voxSmoothNormal), then is
- *     "met" to its neighbouring visible faces: for each of the four in-plane
- *     neighbour directions we find the visible face that continues the surface
- *     (coplanar if the next cell is solid & open above; a perpendicular face on
- *     THIS voxel if the next cell is empty (convex edge); a perpendicular face
- *     on the diagonal cell if the surface steps up (concave edge)).  Where that
- *     neighbour face is *not* smooth we constrain our normal so the two faces
- *     meet sanely:
- *       * a non-smooth COPLANAR neighbour locks us fully flat (we abut a flat
- *         run and must stay flat with it);
- *       * a non-smooth PERPENDICULAR neighbour locks the tangent component along
- *         its axis to zero, keeping us at 90 degrees to it while still free to
- *         rotate about the other in-plane axis.
- *     So a ring whose rim faces are smooth but whose flat top/bottom faces are
- *     not rounds only circumferentially (the vertical tangent is pinned by the
- *     flat caps), and a cylinder's top rim keeps a crisp flat cap edge. */
+ * Smoothing is a per-FACE property (v->smoothFaces bitmask): a non-smooth face
+ * keeps its blocky axis normal, and a smooth one takes the averaged surface
+ * normal voxSmoothNormal walks out (which itself declines, leaving the face
+ * flat, when the face sits on the boundary of the smoothed patch), blended by
+ * "smooth amount". */
 static void shadingNormalForFace( const Voxel *v,
                                   double fx, double fy, double fz,
                                   double *ox, double *oy, double *oz )
 {
-    double n[3], bev[3];
-    int faceAxis, s, k, lock[3];
-    double len;
+    double n[3];
 
     *ox = fx; *oy = fy; *oz = fz;
     if( !( ( v->smoothFaces >> faceDir6( fx, fy, fz ) ) & 1 ) ) return;
-
-    /* fit the local surface as a height field over THIS face's own plane */
     if( !voxSmoothNormal( v, fx, fy, fz, &n[0], &n[1], &n[2] ) ) return;
-
-    faceAxis = ( fy != 0.0 ) ? 1 : ( fz != 0.0 ? 2 : 0 );
-    lock[0] = lock[1] = lock[2] = 0;
-    /* bev = the purely geometric "bevel" direction this face should lean:
-     * the flat face normal plus the outward normal of every SMOOTH
-     * perpendicular neighbour it rounds toward.  Used only to sanity-check the
-     * fitted normal's in-plane sign below -- at a near-symmetric corner the fit
-     * has little in-plane signal to work with and a lone far column can tip it
-     * the wrong way, while this geometry knows which way is correct. */
-    bev[0]=fx; bev[1]=fy; bev[2]=fz;
-
-    /* examine the four axis-aligned in-plane neighbour faces */
-    for( k = 0; k < 3; k++ ) {
-        if( k == faceAxis ) continue;              /* only the two tangents */
-        for( s = -1; s <= 1; s += 2 ) {
-            int e[3], A[3], nsm, dr[3];
-            e[0]=e[1]=e[2]=0; e[k] = s;            /* the in-plane step */
-            A[0]=v->x+e[0]; A[1]=v->y+e[1]; A[2]=v->z+e[2];
-            dr[0]=(faceAxis==0)?(int)(fx>0?1:-1):0;
-            dr[1]=(faceAxis==1)?(int)(fy>0?1:-1):0;
-            dr[2]=(faceAxis==2)?(int)(fz>0?1:-1):0;
-            if( !voxAt( A[0], A[1], A[2] ) ) {
-                /* convex edge: the neighbour face is on THIS voxel, normal e */
-                nsm = faceIsSmoothAt( v->x, v->y, v->z,
-                                      (double)e[0],(double)e[1],(double)e[2] );
-                if( !nsm ) lock[k] = 1;            /* perpendicular -> lock tangent */
-                else       bev[k] += e[k];         /* round toward it */
-            } else if( !voxAt( A[0]+dr[0], A[1]+dr[1], A[2]+dr[2] ) ) {
-                /* coplanar continuation: neighbour face (A, faceNormal) */
-                nsm = faceIsSmoothAt( A[0], A[1], A[2], fx, fy, fz );
-                if( !nsm ) { *ox=fx; *oy=fy; *oz=fz; return; }  /* full lock */
-            } else {
-                /* concave edge: neighbour face on cell A+dr, normal -e */
-                nsm = faceIsSmoothAt( A[0]+dr[0], A[1]+dr[1], A[2]+dr[2],
-                                      (double)-e[0],(double)-e[1],(double)-e[2] );
-                if( !nsm ) lock[k] = 1;            /* perpendicular -> lock tangent */
-                else       bev[k] -= e[k];         /* round toward it */
-            }
-        }
-    }
-
-    for( k = 0; k < 3; k++ ) if( lock[k] ) n[k] = 0.0;
-
-    /* Sign guard: where geometry says this face rounds toward a tangent
-     * direction (bev[k] != 0) but the fitted normal's tangent points the
-     * opposite way, the fit is unreliable (near-symmetric corner) -- flip that
-     * tangent component to agree with the geometry.  Coplanar smooth surfaces
-     * (spheres) leave bev[k] == 0, so they are untouched. */
-    for( k = 0; k < 3; k++ )
-        if( k != faceAxis && bev[k] != 0.0 && n[k]*bev[k] < 0.0 )
-            n[k] = -n[k];
-
-    len = sqrt( n[0]*n[0] + n[1]*n[1] + n[2]*n[2] );
-    if( len < 1e-6 ) return;                       /* nothing left -> flat */
-    n[0] /= len; n[1] /= len; n[2] /= len;
-
     blendSmoothN( 1, n[0], n[1], n[2], fx, fy, fz, ox, oy, oz );
 }
 
@@ -4249,7 +4229,7 @@ static void saveSculpture( const char *path )
     FILE *f = fopen( path, "w" );
     int i;
     if( !f ) { setStatus( "Save failed" ); return; }
-    fprintf( f, "OBLIQUEVOXELS 3\n" );
+    fprintf( f, "OBLIQUEVOXELS 4\n" );
     fprintf( f, "PALETTE %s %d\n", g_palName, g_palCount );
     for( i = 0; i < g_palCount; i++ )
         fprintf( f, "C %d %d %d\n", g_pal[i*3+0], g_pal[i*3+1], g_pal[i*3+2] );
@@ -4403,7 +4383,12 @@ static int loadSculpture( const char *path )
                     &g_shadingMode, &g_voxPx,
                     &g_frontScrunch, &g_topScrunch, &g_orient, &sr, &sa,
                     &sh, &sp, &sb );
-            g_smoothRadius = clampi( sr, 1, 4 );
+            /* "smooth radius" used to count cells of a volumetric fit; it now
+             * counts steps of a walk across the surface itself, which needs
+             * about twice as many to span the same patch.  Double an older
+             * file's value so it loads looking at least as smooth as it did. */
+            if( ver < 4 ) sr *= 2;
+            g_smoothRadius = clampi( sr, 1, 8 );
             g_smoothAmt = clampf( sa, 0.0f, 1.0f );
             g_shininess = clampf( sh, 0.0f, 1.0f );
             g_specPower = clampf( sp, 1.0f, 128.0f );
@@ -5020,7 +5005,7 @@ static void buildRightPanel( float top, float h, float winW )
     if( gui_slider_int( "front scrunch", &g_frontScrunch, 1, 3 ) ) g_renderDirty = 1;
     if( gui_slider_int( "top scrunch", &g_topScrunch, 1, 3 ) )     g_renderDirty = 1;
     if( gui_combo( "view dir", &g_orient, orientItems, 4 ) )  g_renderDirty = 1;
-    if( gui_slider_int( "smooth radius", &g_smoothRadius, 1, 4 ) ) g_renderDirty = 1;
+    if( gui_slider_int( "smooth radius", &g_smoothRadius, 1, 8 ) ) g_renderDirty = 1;
     if( gui_slider_float( "smooth amount", &g_smoothAmt, 0.0f, 1.0f, "%.2f" ) )
         g_renderDirty = 1;
     { int zi = (int)( g_prevZoom + 0.5f ); if( zi < 1 ) zi = 1;
@@ -5852,6 +5837,98 @@ int main( int argc, char **argv )
                         worstDot); }
 
             g_smoothRadius = svRad; g_smoothAmt = svAmt;
+            voxClear(); layersReset(); histClear();
+        }
+        /* A smoothed patch wrapped over a box edge (edgeNotSmooth.ovox, from
+         * userNotes).  A 6x2x6 box with a 3-wide patch of smooth faces running
+         * over its front-top edge: the top faces of (1..3,1,0..1) and the front
+         * faces of (1..3,0..1,0).  Exactly two of those twelve faces have all
+         * four in-plane edges shared with smooth faces -- the top and the front
+         * face of the middle voxel (2,1,0) -- so only those two round, and each
+         * must land on the SAME 45-degree normal (four top faces and four front
+         * faces in its basket).  Every other face of the patch borders flat
+         * geometry and must stay exactly flat so it meets that flat run. */
+        {
+            int x, r, bad = 0;
+            double nx, ny, nz, s = sqrt( 0.5 );
+            int svRad = g_smoothRadius; float svAmt = g_smoothAmt;
+            layersReset(); histClear(); voxClear();
+            g_symOn[0]=g_symOn[1]=g_symOn[2]=0;
+            g_smoothAmt = 1.0f;
+            for( x = 0; x < 6; x++ ) {
+                int y, z;
+                for( y = 0; y < 2; y++ ) for( z = 0; z < 6; z++ )
+                    voxSet( x, y, z, 15, 15, 1 );
+            }
+            for( x = 1; x <= 3; x++ ) {
+                Voxel *v;
+                v = voxAt( x, 1, 0 );
+                if( v ) v->smoothFaces = ( 1 << faceDir6(0,1,0) )
+                                       | ( 1 << faceDir6(0,0,-1) );
+                v = voxAt( x, 0, 0 );
+                if( v ) v->smoothFaces = 1 << faceDir6(0,0,-1);
+                v = voxAt( x, 1, 1 );
+                if( v ) v->smoothFaces = 1 << faceDir6(0,1,0);
+            }
+            /* radius-independent once the walk can reach the whole patch */
+            for( r = 2; r <= 4; r++ ) {
+                g_smoothRadius = r;
+                shadingNormalForFace( voxAt(2,1,0), 0, 1, 0, &nx, &ny, &nz );
+                if( fabs(nx) > 1e-9 || fabs(ny-s) > 1e-9 || fabs(nz+s) > 1e-9 )
+                    { bad = 1; fprintf(stderr,
+                      "FAIL smooth-edge-top r%d (%.3f %.3f %.3f)\n",r,nx,ny,nz); }
+                shadingNormalForFace( voxAt(2,1,0), 0, 0, -1, &nx, &ny, &nz );
+                if( fabs(nx) > 1e-9 || fabs(ny-s) > 1e-9 || fabs(nz+s) > 1e-9 )
+                    { bad = 1; fprintf(stderr,
+                      "FAIL smooth-edge-front r%d (%.3f %.3f %.3f)\n",r,nx,ny,nz); }
+                /* the ten boundary faces of the patch stay flat */
+                for( x = 1; x <= 3; x++ ) {
+                    shadingNormalForFace( voxAt(x,1,1), 0, 1, 0, &nx, &ny, &nz );
+                    if( ny < 1.0 - 1e-9 ) bad = 1;
+                    shadingNormalForFace( voxAt(x,0,0), 0, 0, -1, &nx, &ny, &nz );
+                    if( nz > -1.0 + 1e-9 ) bad = 1;
+                    if( x == 2 ) continue;              /* (2,1,0) is interior */
+                    shadingNormalForFace( voxAt(x,1,0), 0, 1, 0, &nx, &ny, &nz );
+                    if( ny < 1.0 - 1e-9 ) bad = 1;
+                    shadingNormalForFace( voxAt(x,1,0), 0, 0, -1, &nx, &ny, &nz );
+                    if( nz > -1.0 + 1e-9 ) bad = 1;
+                }
+            }
+            if( bad ) { ok = 0; fprintf(stderr,"FAIL smooth-edge-patch\n"); }
+            g_smoothRadius = svRad; g_smoothAmt = svAmt;
+            voxClear(); layersReset(); histClear();
+        }
+        /* Save/load round trip of "smooth radius", plus the version-4 migration.
+         * The field changed meaning (volumetric cells -> surface steps), so a
+         * pre-version-4 file loads with it doubled, while a file this build
+         * wrote must come back with exactly the radius it was saved with. */
+        {
+            const char *p3 = "/tmp/ov_selftest_v3.ovox";
+            const char *p4 = "/tmp/ov_selftest_v4.ovox";
+            int svRad = g_smoothRadius;
+            FILE *vf;
+            layersReset(); histClear(); voxClear();
+            vf = fopen( p3, "w" );
+            if( vf ) {
+                fprintf( vf, "OBLIQUEVOXELS 3\nPALETTE test 1\nC 200 200 200\n"
+                             "AMBIENT 0.2500\nRENDER 0 6 1 1 0 3 1.0000\n"
+                             "ACTIVE 0\nLAYER 0 1 L\nV 0 0 0 0 0 1 0\n" );
+                fclose( vf );
+                g_smoothRadius = 1;
+                if( !loadSculpture( p3 ) || g_smoothRadius != 6 ) { ok = 0;
+                    fprintf(stderr,"FAIL ovox-v3-radius-migrate (%d, want 6)\n",
+                            g_smoothRadius); }
+                remove( p3 );
+            }
+            g_smoothRadius = 7;
+            saveSculpture( p4 );
+            g_smoothRadius = 1;
+            if( !loadSculpture( p4 ) || g_smoothRadius != 7 ) { ok = 0;
+                fprintf(stderr,"FAIL ovox-v4-radius-roundtrip (%d, want 7)\n",
+                        g_smoothRadius); }
+            remove( p4 );
+            g_smoothRadius = svRad;
+            paletteDefault();   /* the test files carried their own palette */
             voxClear(); layersReset(); histClear();
         }
         /* Wheel zoom is anchored to the cursor, not to the view centre: the

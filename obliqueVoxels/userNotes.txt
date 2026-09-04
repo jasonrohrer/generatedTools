@@ -1,20 +1,9 @@
 (Add new testing notes below.)
 
 
---Hmm.... your recent fix to surface normal calculation for smoothed voxel surfaces DOES seem to work to fix the bugs with weird normals in the center of flat surfaces.  However, it dramatically degrades how "smooth" and natural lighting looks on an actual sphere of voxels.  Before, there was very smooth shading, and now there's a lot more banding visible, even at the highest smoothing levels.  So I feel like something was lost here.  You should probably roll back to the previous commit and try again.  It seems like....   for each face, we need to walk outwards to find other smoothed faces that we can reach through edge adjacency.  Our normal should essentially be the average of the normals of reachable in-radius faces, mixed with our face's normal.  The smoothness factor should dictate how much of our own face normal should be mixed in.  At full smoothness, I guess we should ignore our own normal and just take on the average normal of our neighboring faces.
-
-But this should work just fine in the center of a flat surface... the smoothing should do nothing, b/c the average of "straight up" is "straight up".
-
-Take a look at a new sample... edgeNotSmooth.ovox.   It's a 2x6x6 box, with a 3x4 area of faces smoothed, wrapped around one edge of the box.  YES, the faces on the edges of the smoothed area should not be smoothed (so they can "meet" the flat areas that they join with).  However, the "middle" smoothed faces that cross the edge of the box... those should be rotated to be 45 degree angles, I think, which is roughly the average of the smoothed faces around them.  In the new code, their normals aren't rotated at all!   In the old code, they were rotated, and were close to 45 degrees.... but also at slightly weird angles along other axes... kinda toeing out for unknown reasons.
-
-So I think the alg is pretty simple...  for a given smoothed face, see if it shares edges with other smoothed faces.  If so, add those to our basket.  Keep going until we've walked the desired radius in all directions.  If a smoothed face has an edge that is NOT shared at all with another smoothed face, then that smoothed face is a "boundary" face and should not have its normal adjusted.  Otherwise, the adjusted normal of our smoothed face should be the average of the base, unadjusted normals of all smoothed faces in the basket (including our face), with a weighted average with the base normal of our current face (weighted by the smoothing factor).
-
-So in the case of the middle faces of edgeNotSmooth, there are 6 horizontal faces, and 6 vertical faces, in the basket.  Average those, and get an adjusted normal that is at a 45 degree angle (both middle faces should have the same angle when smoothness is turned up to 1.0).  All other faces should be left alone, becuase they are "boundary" faces.
+Okay!  The smoothing is generally working MUCH better now.  The normals make sense, when inspected visually.
 
 
-If the old code is close to this, the only thing that remains is figuring out where the weird toeing-out thing is coming from (both on this edge in question, and also in the middle of flat surfaces).
+However, I previously suggested that "boundary" smoothed faces should not be smoothed at all.  As you pointed out in your notes, this means that the rims of thin rings cannot be smoothed.  This is actually incorrect behavior.  The boundary faces should still be smoothed!   But they should only consider other smoothed, connected faces in their basket for averaging, and ignore neighboring faces that are not smoothed.
 
-If the old code isn't doing this, then new code should be written to do this.
-
-
-(Add new testing notes below.)
+There's an example called "rimNotSmoothed.ovox" that has a thin rectangular shape with just the rim smoothed.   Several versions ago, those edge faces would get their normals rotated, but now that doesn't happen.

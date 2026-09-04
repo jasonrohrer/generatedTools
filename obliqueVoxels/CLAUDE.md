@@ -288,24 +288,34 @@ MagicaVoxel `.vox`** below).
   `smooth radius` edge steps and **average the flat axis normals** of every
   smooth face we reach.  On a flat run the average of "straight up" is "straight
   up", so smoothing a flat surface correctly does nothing.
-* **Boundary faces stay flat**, and that is what makes corners work with no
-  separate "corner" state.  A smooth face with any in-plane edge *not* shared
-  with another smooth face is a **boundary** face: it borders flat geometry (or
-  the smoothed patch just ends there) and keeps its exact axis normal, so it
-  meets the flat run it abuts cleanly.  Two rules keep the walk honest: a
-  boundary face *joins* a basket but the walk does not continue **past** it
-  (beyond it lies a crease into unrelated geometry, and averaging across that
-  crease is what used to make normals "toe out" at odd angles); and the walk
-  never adds the face pointing directly **opposite** the one being shaded,
-  reachable by wrapping around a thin rib.  That second rule leaves the average
-  with a guaranteed positive component along the flat face normal, so a shading
-  normal can never tip past 90° or point back into the solid.
-  On the 3-wide smoothed patch wrapped over a box edge in `edgeNotSmooth.ovox`,
-  exactly two faces are interior — the top and front face of the middle voxel —
-  and each collects four top and four front faces, so both land on the same 45°
-  normal while the other ten stay flat (`OV_SELFTEST` asserts this).  Note the
-  cost: a rim only one or two voxels tall is *all* boundary and will not round;
-  a smoothed band needs to be at least three faces wide for its middle to tilt.
+* **Unsmoothed neighbours are ignored, not averaged and not a wall.**  The walk
+  crosses an in-plane edge only when the face on the far side is *itself*
+  smooth; a non-smooth neighbour neither joins the basket nor stops the walk
+  through this face's other edges.  So a face's basket is exactly "the smooth
+  faces connected to me across smooth surface", and a smoothed patch never
+  averages in the flat geometry it abuts — which is why a smooth patch on a
+  *flat* run stays perfectly flat right out to its own edge.  The one further
+  rule: the walk never adds the face pointing directly **opposite** the one
+  being shaded (reachable by wrapping around a thin rib), which leaves the
+  average with a guaranteed positive component along the flat face normal, so a
+  shading normal can never tip past 90° or point back into the solid.
+* **Every smooth face rounds, including the ones at the patch's edge.**  An
+  earlier rule pinned any face with a non-smooth neighbour flat ("boundary faces
+  stay flat") so it would meet the flat run it borders cleanly.  That was wrong
+  for the case `rimNotSmooth.ovox` raises: the rim of a thin plate is one face
+  tall, so *every* rim face touches the plate's unsmoothed top and bottom and
+  the whole rim stayed blocky — no rim thinner than three faces could ever
+  round.  Ignoring the unsmoothed neighbours instead, the rim rolls smoothly
+  around its corners (a `OV_SELFTEST` case checks the exact normals on a 12×12
+  plate: dead flat mid-rim, `(0.8, 0, 0.6)` at the corner, monotone between).
+* **Keep the smooth radius below the half-width of the smoothed patch.**  The
+  basket is a box filter over the surface, so once the radius exceeds the
+  patch's own size every face reaches every other one, shares one basket, and
+  the whole patch lands on a single averaged facet — a chamfer, not a round.
+  On the 3-wide patch wrapped over a box edge in `edgeNotSmooth.ovox` (a strip
+  four faces across the wrap) radius 2 gives a monotone roll from near-vertical
+  to near-horizontal across those four rows, while radius 5 flattens all twelve
+  onto the same 45° normal; `OV_SELFTEST` asserts both.
 * **Two earlier estimators failed here, and the tests remember both.**  An
   occupancy-gradient fit measured where the solid *mass* sat rather than where
   the *surface* ran: on a one-voxel-thick plate the empty space above and below

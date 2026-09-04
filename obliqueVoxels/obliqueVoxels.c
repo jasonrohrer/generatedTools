@@ -453,26 +453,20 @@ static void layerSwap( int a, int b )
 /* The estimator works on the SURFACE ITSELF, as a graph of visible faces */
 /* joined edge to edge, rather than on the solid volume:                  */
 /*                                                                       */
-/*   * A smooth face whose four in-plane edges are all shared with other  */
-/*     SMOOTH faces is "interior" and gets a rounded normal.  A smooth    */
-/*     face with any edge that is not (it abuts flat geometry, or the     */
-/*     smoothed patch simply ends there) is a BOUNDARY face and keeps its */
-/*     flat axis normal, so it meets the flat run it borders cleanly.     */
-/*     This is what used to need a separate pile of "meeting constraint"  */
-/*     and bevel-sign special cases -- the boundary rule subsumes them.   */
+/*   * From ANY smooth face we breadth-first walk the surface graph out   */
+/*     to `smooth radius` edge steps, and average the flat axis normals   */
+/*     of every face we reach.  `smooth amount` then blends that average  */
+/*     against our own flat normal (1 = fully the average).               */
 /*                                                                       */
-/*   * For an interior face we breadth-first walk the surface graph out   */
-/*     to `smooth radius` edge steps, collecting every smooth face we     */
-/*     reach, and average their flat axis normals.  `smooth amount` then  */
-/*     blends that average against our own flat normal (1 = fully the     */
-/*     average).                                                          */
+/*   * The walk crosses an in-plane edge only when the face on the far    */
+/*     side is ITSELF smooth.  A non-smooth neighbour is simply ignored:  */
+/*     it neither joins the basket nor stops the walk through this face's */
+/*     other edges.  So the basket is exactly "the smooth faces connected */
+/*     to me across smooth surface", and a smoothed patch never averages  */
+/*     in the flat geometry it abuts.                                     */
 /*                                                                       */
-/* Two rules keep the walk honest:                                        */
+/* One further rule keeps the walk honest:                                */
 /*                                                                       */
-/*   * A boundary face joins the basket but the walk does not continue    */
-/*     PAST it: beyond a boundary face lies a crease into unrelated       */
-/*     geometry, and averaging normals across that crease is exactly what */
-/*     used to make normals "toe out" at odd angles.                      */
 /*   * The walk never adds the face pointing directly OPPOSITE the one we */
 /*     are shading (reachable by wrapping around a thin rib).  It would   */
 /*     cancel our own normal and has nothing to say about how this face   */
@@ -481,11 +475,22 @@ static void layerSwap( int a, int b )
 /*     plane fit this replaced -- it can never tip past 90 degrees or     */
 /*     point back into the solid.                                         */
 /*                                                                       */
-/* On a flat run the average of "straight up" is "straight up", so an     */
-/* interior smooth face on a flat surface stays perfectly flat.  On the   */
-/* 3-wide patch wrapped over a box edge in edgeNotSmooth.ovox the two     */
-/* interior faces each collect four top faces and four front faces, so    */
-/* both land on the same 45-degree normal.                                */
+/* On a flat run the average of "straight up" is "straight up", so a      */
+/* smooth face on a flat surface stays perfectly flat -- including one at */
+/* the very edge of the smoothed patch, since the flat faces beyond the   */
+/* patch are not in its basket at all.  On the 3-wide patch wrapped over  */
+/* a box edge in edgeNotSmooth.ovox every face of the patch reaches the   */
+/* patch's six top and six front faces, so the whole patch lands on the   */
+/* same 45-degree normal.                                                 */
+/*                                                                       */
+/* An EARLIER rule here left any face with a non-smooth neighbour flat    */
+/* ("boundary faces stay flat"), on the theory that it then met the flat  */
+/* run it borders cleanly.  The cost was fatal for the case userNotes     */
+/* raised with rimNotSmooth.ovox: the rim of a thin plate is one face     */
+/* tall, so EVERY rim face touches the (unsmoothed) top and bottom faces  */
+/* and the whole rim stayed blocky, and no rim thinner than three faces   */
+/* could ever round.  Ignoring the unsmoothed neighbours instead lets the */
+/* rim round around its corners exactly as intended.                      */
 /*                                                                       */
 /* (This replaced a least-squares plane fit through the local surface read */
 /* as a height field.  That was exact on planes -- which fixed the bogus  */
@@ -555,9 +560,8 @@ static SurfFace g_sfQueue[ SF_SLOTS ];
 static int      g_sfDist [ SF_SLOTS ];
 
 /* Averaged surface normal for one exposed FACE of voxel v, per the walk
- * described above.  Returns 0 (leaving *nx,*ny,*nz untouched) when this face is
- * a boundary face or the walk finds nothing usable -- the caller then keeps the
- * flat axis normal. */
+ * described above.  Returns 0 (leaving *nx,*ny,*nz untouched) only when the
+ * walk finds nothing usable -- the caller then keeps the flat axis normal. */
 static int voxSmoothNormal( const Voxel *v, double fx, double fy, double fz,
                             double *nx, double *ny, double *nz )
 {
@@ -565,19 +569,11 @@ static int voxSmoothNormal( const Voxel *v, double fx, double fy, double fz,
     int d0, opp, e, k, head = 0, tail = 0, cnt = 0;
     int bx = v->x, by = v->y, bz = v->z;
     double sum[3], len;
-    SurfFace nb[4];
 
     if( R < 1 ) R = 1;
     if( R > SF_R_MAX ) R = SF_R_MAX;
     d0  = faceDir6( fx, fy, fz );
     opp = d0 ^ 1;
-
-    /* boundary test: all four in-plane edges must be shared with smooth faces */
-    for( e = 0; e < 6; e++ ) {
-        if( g_dirAxis[e] == g_dirAxis[d0] ) continue;
-        surfFaceStep( bx, by, bz, d0, e, &nb[0] );
-        if( !faceSmoothCode( nb[0].x, nb[0].y, nb[0].z, nb[0].d ) ) return 0;
-    }
 
     if( ++g_sfEpoch == 0 ) {                 /* wrapped: retire every stamp */
         for( k = 0; k < SF_SLOTS; k++ ) g_sfStamp[k] = 0;
@@ -594,7 +590,6 @@ static int voxSmoothNormal( const Voxel *v, double fx, double fy, double fz,
     while( head < tail ) {
         SurfFace f = g_sfQueue[ head ];
         int dist   = g_sfDist [ head ];
-        int nn = 0, allSmooth = 1;
         head++;
 
         sum[0] += g_dirVec[f.d][0];
@@ -604,30 +599,29 @@ static int voxSmoothNormal( const Voxel *v, double fx, double fy, double fz,
 
         if( dist >= R ) continue;
 
-        /* Gather this face's four edge neighbours.  If any is not smooth this
-         * is a boundary face: it counted toward the average above, but the walk
-         * stops here rather than crossing the crease. */
-        for( e = 0; e < 6 && allSmooth; e++ ) {
+        /* Cross each of this face's four in-plane edges, but only onto a face
+         * that is itself smooth.  A non-smooth neighbour is the edge of the
+         * smoothed patch: we ignore it entirely -- it does not join the basket,
+         * and it does not stop the walk through this face's other edges.  That
+         * is what lets a one-face-tall rim (rimNotSmooth.ovox) round along its
+         * length even though its top and bottom neighbours are never smooth. */
+        for( e = 0; e < 6; e++ ) {
+            SurfFace nb;
+            int dx, dy, dz, slot;
             if( g_dirAxis[e] == g_dirAxis[f.d] ) continue;
-            surfFaceStep( f.x, f.y, f.z, f.d, e, &nb[nn] );
-            if( !faceSmoothCode( nb[nn].x, nb[nn].y, nb[nn].z, nb[nn].d ) )
-                allSmooth = 0;
-            else nn++;
-        }
-        if( !allSmooth ) continue;
-
-        for( k = 0; k < nn; k++ ) {
-            int dx = nb[k].x - bx, dy = nb[k].y - by, dz = nb[k].z - bz, slot;
-            if( nb[k].d == opp ) continue;   /* never wrap to the far side */
+            surfFaceStep( f.x, f.y, f.z, f.d, e, &nb );
+            if( !faceSmoothCode( nb.x, nb.y, nb.z, nb.d ) ) continue;
+            if( nb.d == opp ) continue;      /* never wrap to the far side */
+            dx = nb.x - bx; dy = nb.y - by; dz = nb.z - bz;
             if( dx < -SF_R_MAX || dx > SF_R_MAX ||
                 dy < -SF_R_MAX || dy > SF_R_MAX ||
                 dz < -SF_R_MAX || dz > SF_R_MAX ) continue;
             slot = ( ( ( dx + SF_R_MAX ) * SF_SPAN + ( dy + SF_R_MAX ) ) * SF_SPAN
-                     + ( dz + SF_R_MAX ) ) * 6 + nb[k].d;
+                     + ( dz + SF_R_MAX ) ) * 6 + nb.d;
             if( g_sfStamp[ slot ] == g_sfEpoch ) continue;
             g_sfStamp[ slot ] = g_sfEpoch;
             if( tail >= SF_SLOTS ) break;
-            g_sfQueue[ tail ] = nb[k];
+            g_sfQueue[ tail ] = nb;
             g_sfDist [ tail ] = dist + 1;
             tail++;
         }
@@ -3635,9 +3629,8 @@ static void blendSmoothN( int have, double wnx, double wny, double wnz,
  *
  * Smoothing is a per-FACE property (v->smoothFaces bitmask): a non-smooth face
  * keeps its blocky axis normal, and a smooth one takes the averaged surface
- * normal voxSmoothNormal walks out (which itself declines, leaving the face
- * flat, when the face sits on the boundary of the smoothed patch), blended by
- * "smooth amount". */
+ * normal voxSmoothNormal walks out over the connected smooth surface, blended
+ * by "smooth amount". */
 static void shadingNormalForFace( const Voxel *v,
                                   double fx, double fy, double fz,
                                   double *ox, double *oy, double *oz )
@@ -5842,15 +5835,21 @@ int main( int argc, char **argv )
         /* A smoothed patch wrapped over a box edge (edgeNotSmooth.ovox, from
          * userNotes).  A 6x2x6 box with a 3-wide patch of smooth faces running
          * over its front-top edge: the top faces of (1..3,1,0..1) and the front
-         * faces of (1..3,0..1,0).  Exactly two of those twelve faces have all
-         * four in-plane edges shared with smooth faces -- the top and the front
-         * face of the middle voxel (2,1,0) -- so only those two round, and each
-         * must land on the SAME 45-degree normal (four top faces and four front
-         * faces in its basket).  Every other face of the patch borders flat
-         * geometry and must stay exactly flat so it meets that flat run. */
+         * faces of (1..3,0..1,0).  As a surface graph that patch is four rows
+         * of three faces -- top@z=1, top@z=0, front@y=1, front@y=0 -- so:
+         *
+         *   * at radius 2 the walk from each row reaches a different mix of top
+         *     and front faces, giving a monotone roll across the wrap: the
+         *     normal tips steadily from near-vertical down to near-horizontal.
+         *     EVERY row rolls, including the two outer rows that border flat
+         *     geometry -- those used to be pinned flat (see userNotes on
+         *     rimNotSmooth.ovox), and no longer are.
+         *   * at radius 5 every face can reach all twelve, so they share one
+         *     basket (six top + six front) and the patch reads as a single
+         *     45-degree chamfer. */
         {
             int x, r, bad = 0;
-            double nx, ny, nz, s = sqrt( 0.5 );
+            double nx, ny, nz, s = sqrt( 0.5 ), prevY = 2.0, prevZ = 2.0;
             int svRad = g_smoothRadius; float svAmt = g_smoothAmt;
             layersReset(); histClear(); voxClear();
             g_symOn[0]=g_symOn[1]=g_symOn[2]=0;
@@ -5870,31 +5869,93 @@ int main( int argc, char **argv )
                 v = voxAt( x, 1, 1 );
                 if( v ) v->smoothFaces = 1 << faceDir6(0,1,0);
             }
-            /* radius-independent once the walk can reach the whole patch */
-            for( r = 2; r <= 4; r++ ) {
-                g_smoothRadius = r;
-                shadingNormalForFace( voxAt(2,1,0), 0, 1, 0, &nx, &ny, &nz );
-                if( fabs(nx) > 1e-9 || fabs(ny-s) > 1e-9 || fabs(nz+s) > 1e-9 )
-                    { bad = 1; fprintf(stderr,
-                      "FAIL smooth-edge-top r%d (%.3f %.3f %.3f)\n",r,nx,ny,nz); }
-                shadingNormalForFace( voxAt(2,1,0), 0, 0, -1, &nx, &ny, &nz );
-                if( fabs(nx) > 1e-9 || fabs(ny-s) > 1e-9 || fabs(nz+s) > 1e-9 )
-                    { bad = 1; fprintf(stderr,
-                      "FAIL smooth-edge-front r%d (%.3f %.3f %.3f)\n",r,nx,ny,nz); }
-                /* the ten boundary faces of the patch stay flat */
-                for( x = 1; x <= 3; x++ ) {
-                    shadingNormalForFace( voxAt(x,1,1), 0, 1, 0, &nx, &ny, &nz );
-                    if( ny < 1.0 - 1e-9 ) bad = 1;
-                    shadingNormalForFace( voxAt(x,0,0), 0, 0, -1, &nx, &ny, &nz );
-                    if( nz > -1.0 + 1e-9 ) bad = 1;
-                    if( x == 2 ) continue;              /* (2,1,0) is interior */
-                    shadingNormalForFace( voxAt(x,1,0), 0, 1, 0, &nx, &ny, &nz );
-                    if( ny < 1.0 - 1e-9 ) bad = 1;
-                    shadingNormalForFace( voxAt(x,1,0), 0, 0, -1, &nx, &ny, &nz );
-                    if( nz > -1.0 + 1e-9 ) bad = 1;
+            /* radius 2: a monotone roll down the four rows of the middle column */
+            g_smoothRadius = 2;
+            for( r = 0; r < 4; r++ ) {
+                if( r == 0 ) shadingNormalForFace( voxAt(2,1,1), 0, 1, 0,
+                                                   &nx,&ny,&nz );
+                else if( r == 1 ) shadingNormalForFace( voxAt(2,1,0), 0, 1, 0,
+                                                   &nx,&ny,&nz );
+                else if( r == 2 ) shadingNormalForFace( voxAt(2,1,0), 0, 0, -1,
+                                                   &nx,&ny,&nz );
+                else shadingNormalForFace( voxAt(2,0,0), 0, 0, -1, &nx,&ny,&nz );
+                if( fabs(nx) > 1e-9 || ny >= prevY || nz >= prevZ ) {
+                    bad = 1; fprintf(stderr,
+                      "FAIL smooth-edge-roll row%d (%.3f %.3f %.3f)\n",
+                      r, nx, ny, nz ); }
+                prevY = ny; prevZ = nz;
+            }
+            /* radius 5: the whole patch is one basket -> one 45-degree facet */
+            g_smoothRadius = 5;
+            for( x = 1; x <= 3; x++ ) {
+                int i;
+                for( i = 0; i < 4; i++ ) {
+                    if( i == 0 ) shadingNormalForFace( voxAt(x,1,1), 0, 1, 0,
+                                                       &nx,&ny,&nz );
+                    else if( i == 1 ) shadingNormalForFace( voxAt(x,1,0), 0, 1, 0,
+                                                       &nx,&ny,&nz );
+                    else if( i == 2 ) shadingNormalForFace( voxAt(x,1,0), 0, 0,-1,
+                                                       &nx,&ny,&nz );
+                    else shadingNormalForFace( voxAt(x,0,0), 0, 0,-1, &nx,&ny,&nz );
+                    if( fabs(nx) > 1e-9 || fabs(ny-s) > 1e-9 || fabs(nz+s) > 1e-9 )
+                        { bad = 1; fprintf(stderr,
+                          "FAIL smooth-edge-chamfer x%d row%d (%.3f %.3f %.3f)\n",
+                          x, i, nx, ny, nz ); }
                 }
             }
             if( bad ) { ok = 0; fprintf(stderr,"FAIL smooth-edge-patch\n"); }
+            g_smoothRadius = svRad; g_smoothAmt = svAmt;
+            voxClear(); layersReset(); histClear();
+        }
+        /* The rim of a thin plate (rimNotSmooth.ovox, from userNotes).  A
+         * one-voxel-thick 12x12 plate with ONLY its four side faces smoothed:
+         * every rim face touches the plate's unsmoothed top and bottom faces,
+         * so under the old "a face bordering flat geometry stays flat" rule the
+         * whole rim stayed blocky and nothing could ever round it.  Ignoring
+         * those unsmoothed neighbours instead, the rim rounds around its
+         * corners -- and a rim face far from any corner, whose whole basket is
+         * other +X faces, still comes out exactly flat. */
+        {
+            int x, z, bad = 0;
+            double nx, ny, nz;
+            int svRad = g_smoothRadius; float svAmt = g_smoothAmt;
+            layersReset(); histClear(); voxClear();
+            g_symOn[0]=g_symOn[1]=g_symOn[2]=0;
+            g_smoothRadius = 3; g_smoothAmt = 1.0f;
+            for( x = 0; x < 12; x++ ) for( z = 0; z < 12; z++ )
+                voxSet( x, 0, z, 15, 15, 1 );
+            for( x = 0; x < 12; x++ ) for( z = 0; z < 12; z++ ) {
+                Voxel *v = voxAt( x, 0, z );
+                int m = 0;
+                if( x == 11 ) m |= 1 << faceDir6( 1,0,0);
+                if( x ==  0 ) m |= 1 << faceDir6(-1,0,0);
+                if( z == 11 ) m |= 1 << faceDir6( 0,0,1);
+                if( z ==  0 ) m |= 1 << faceDir6(0,0,-1);
+                if( v ) v->smoothFaces = m;
+            }
+            /* mid-rim: five steps from either corner, so the basket is nothing
+             * but +X faces and the normal must stay exactly +X */
+            shadingNormalForFace( voxAt(11,0,5), 1, 0, 0, &nx, &ny, &nz );
+            if( nx < 1.0 - 1e-9 ) { bad = 1; fprintf(stderr,
+                "FAIL smooth-rim-mid (%.3f %.3f %.3f)\n", nx, ny, nz ); }
+            /* corner: four +X faces and three +Z faces -> (0.8, 0, 0.6) */
+            shadingNormalForFace( voxAt(11,0,11), 1, 0, 0, &nx, &ny, &nz );
+            if( fabs(nx-0.8) > 1e-6 || fabs(ny) > 1e-9 || fabs(nz-0.6) > 1e-6 )
+                { bad = 1; fprintf(stderr,
+                  "FAIL smooth-rim-corner (%.3f %.3f %.3f)\n", nx, ny, nz ); }
+            /* and the roll is monotone walking in from the corner */
+            {
+                double prev = 1.0;
+                for( z = 11; z >= 7; z-- ) {
+                    shadingNormalForFace( voxAt(11,0,z), 1, 0, 0, &nx,&ny,&nz );
+                    if( fabs(ny) > 1e-9 || nz < -1e-9 || nz > prev + 1e-9 )
+                        { bad = 1; fprintf(stderr,
+                          "FAIL smooth-rim-roll z%d (%.3f %.3f %.3f)\n",
+                          z, nx, ny, nz ); }
+                    prev = nz;
+                }
+            }
+            if( bad ) { ok = 0; fprintf(stderr,"FAIL smooth-rim-patch\n"); }
             g_smoothRadius = svRad; g_smoothAmt = svAmt;
             voxClear(); layersReset(); histClear();
         }

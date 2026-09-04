@@ -147,7 +147,18 @@ MagicaVoxel `.vox`** below).
 
 ## Controls
 
-* **Right-drag** orbit · **Mid-drag** pan · **Wheel** zoom.
+* **Right-drag** orbit · **Mid-drag** pan · **Wheel** zoom.  The wheel zooms
+  **about the point under the cursor**, not about the view centre: zoom out,
+  put the mouse on the next area of interest, zoom back in, and that area is
+  what fills the view — the usual paint-program way to move around without
+  panning (`zoomViewAt`).  The anchor is a point on the cursor ray — the centre
+  of the voxel it hits, else where it crosses the ground plane, else the plane
+  through the camera target — and both the camera and its target are scaled
+  about that anchor, which keeps the anchor on the very same pixel (exact in
+  both the perspective and the orthographic view; a self-test asserts it).
+  Because the target walks toward whatever you point at, orbiting afterwards
+  turns around that spot; **View ▸ Frame model (F)** recentres and refits the
+  view on the whole sculpture when you have wandered off.
 * **Left-click** (Pencil) place/erase · **Left-drag** (Pencil) scribble: paints a
   translucent ghost block onto every real surface the cursor sweeps (each sticks
   to the closest *real* voxel face or the ground, never ghost-on-ghost),
@@ -176,8 +187,8 @@ MagicaVoxel `.vox`** below).
   sphere (`gestureDimText`, drawn via `gui_overlay_text_left`).
 * Number keys switch the 3D view preset: **1** Front · **2** Back · **3** Left ·
   **4** Right · **5** Top · **6** Bottom · **7** Iso; **0** toggles orthographic
-  projection.  The mouse cursor changes to reflect the active tool/mode over the
-  3D view — a solid box (draw), a hollow box (erase), a hollow-circle eyedropper
+  projection; **F** frames the view on the whole visible sculpture.  The mouse
+  cursor changes to reflect the active tool/mode over the 3D view — a solid box (draw), a hollow box (erase), a hollow-circle eyedropper
   (its centre is the sampled pixel, so there's no ambiguous "tip"), a corner-
   bracket marquee (with a centre dot in Draw, dotless in Erase), a smoother
   disc — and a horizontal-resize cursor over a panel splitter.  Every cursor is
@@ -261,13 +272,25 @@ MagicaVoxel `.vox`** below).
   (`smoothFaces`) of which of its faces are smooth; only *visible* faces
   actually shade, but all six are remembered so a face exposed later by an edit
   is already set.  A **smooth** face is shaded not with its blocky axis normal
-  but with the *fitted surface normal* — the negated gradient of the local
-  solid-occupancy field over a `smooth radius` neighbourhood (a "curve of best
-  fit"), so a voxel sphere shades like a real sphere instead of showing
-  bright-top/dark-front stripes.  Two global render params tune it: **smooth
-  radius** (1–4) sets how broad the fit is, **smooth amount** (0–1) blends
-  between the flat face normal and the fitted normal.  The effect appears in
-  both the oblique render and the "match render" 3D preview.  (Only the
+  but with the *fitted surface normal*, so a voxel sphere shades like a real
+  sphere instead of showing bright-top/dark-front stripes.  The fit is a
+  **least-squares plane through the local surface read as a height field over
+  that face's own plane** (`voxSmoothNormal`): for every in-plane offset within
+  `smooth radius` we walk that column for the nearest solid cell whose face in
+  the same direction is exposed and record its height, then fit
+  `t = a*di + b*dk + c` and take `(-a, -b, 1)` in the face's frame.  Because a
+  plane fit is *exact* for any planar surface however the samples are
+  distributed, a flat face stays perfectly flat, and because the fitted normal
+  keeps a +1 component along the face normal by construction it can never tip
+  past 90° or point back into the solid.  (This replaced an occupancy-gradient
+  fit that measured where the solid *mass* sat rather than where the *surface*
+  ran: on a one-voxel-thick plate the empty space above and below cancelled its
+  vertical term exactly, so an interior smooth face came out aimed at the
+  plate's far corner, 90° from where it belonged — `badNormals.ovox`, covered
+  now by `OV_SELFTEST`.)  Two global render params tune it: **smooth radius**
+  (1–4) sets how broad the fit is, **smooth amount** (0–1) blends between the
+  flat face normal and the fitted normal.  The effect appears in both the
+  oblique render and the "match render" 3D preview.  (Only the
   *shading* normal changes — the voxel geometry, occlusion and shadow-ray
   origins are untouched.)
 * **Meeting constraints** are what make corners work automatically, with no
@@ -283,9 +306,9 @@ MagicaVoxel `.vox`** below).
   smooth but whose top/bottom faces are flat rounds only circumferentially (the
   flat caps pin the vertical tangent), and a cylinder's top rim keeps a crisp
   flat cap edge with no dark patch.  A **bevel sign-guard** additionally fixes
-  "inner corner" voxels: at a near-symmetric corner the fitted gradient's
-  primary signal cancels and far cells can tip its in-plane component the *wrong*
-  way (a shading discontinuity).  So the meeting scan also builds a purely
+  "inner corner" voxels: at a near-symmetric corner the fit has little in-plane
+  signal to work with and a lone far column can tip its in-plane component the
+  *wrong* way (a shading discontinuity).  So the meeting scan also builds a purely
   geometric bevel direction — the flat face normal plus the outward normal of
   every *smooth* perpendicular neighbour it rounds toward — and where the fitted
   normal's tangent points opposite that geometry, that component is flipped to

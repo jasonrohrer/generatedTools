@@ -454,35 +454,123 @@ static void layerSwap( int a, int b )
 static int   g_smoothRadius = 2;    /* neighbourhood radius for fitted normals  */
 static float g_smoothAmt    = 1.0f; /* 0 = blocky face normal, 1 = fully fitted */
 
-/* Estimate the outward surface normal at voxel v as the (negated) gradient
- * of the solid-occupancy field over a (2R+1)^3 neighbourhood: sum the
- * directions pointing away from every nearby solid cell, distance-weighted.
- * The result is the local "curve of best fit" normal.  Returns 0 (leaving
- * *nx,*ny,*nz untouched) when the neighbourhood is degenerate/flat.
+/* Cap on a fitted height-field slope (3 = ~72 degrees along one axis): keeps a
+ * near-vertical local surface from shading a face as if it faced fully
+ * sideways. */
+#define MAX_FIT_SLOPE 3.0
+
+static double det3( double a, double b, double c,
+                    double d, double e, double f,
+                    double g, double h, double i )
+{
+    return a*(e*i - f*h) - b*(d*i - f*g) + c*(d*h - e*g);
+}
+
+/* Estimate the outward surface normal for one FACE of voxel v: the normal of
+ * the least-squares plane fitted to the local surface, seen as a height field
+ * over that face's own plane.
  *
- * This is the local "curve of best fit" surface normal for a smooth face. */
-static int voxSmoothNormal( const Voxel *v,
+ * The face normal (fx,fy,fz) picks the "up" axis: for every in-plane offset
+ * (di,dk) within radius R we walk that column for the nearest solid cell whose
+ * face in the same direction is exposed, and record its height t along the face
+ * normal.  A distance-weighted least-squares plane t = a*di + b*dk + c over
+ * those samples gives the local surface slope, and the fitted normal is
+ * (-a, -b, 1) in that face's frame.  Returns 0 (leaving *nx,*ny,*nz untouched)
+ * when there is not enough surface to fit.
+ *
+ * This replaced an earlier estimator that took the negated gradient of the
+ * solid-occupancy field over a (2R+1)^3 ball.  That measured where the solid
+ * MASS sits rather than where the SURFACE runs, which broke badly on flat
+ * shapes: on a one-voxel-thick plate the empty space above and below cancels
+ * the gradient's vertical component exactly, leaving only the plate's lateral
+ * mass -- so an interior smooth face came out with a normal lying flat in the
+ * plate, pointing diagonally at the plate's far corner, 90 degrees from where
+ * it belonged (see badNormals.ovox).  A least-squares plane fit has no such
+ * failure mode: it is exact for any planar surface no matter how the samples
+ * are distributed (so a flat face stays perfectly flat however the smoothed
+ * patch is shaped), it is as accurate as the gradient on a voxel sphere, and
+ * because the fitted normal keeps a +1 component along the face normal by
+ * construction, it can never tip past 90 degrees or point back into the solid.
+ *
+ * A tiny ridge term regularizes the two slope terms, so a surface that offers
+ * samples along only one in-plane axis (a one-voxel-wide rib) still fits along
+ * that axis and simply reports zero slope across it instead of going singular. */
+static int voxSmoothNormal( const Voxel *v, double fx, double fy, double fz,
                             double *nx, double *ny, double *nz )
 {
-    int di, dj, dk, R = g_smoothRadius;
-    double ax = 0.0, ay = 0.0, az = 0.0, len;
+    int R = g_smoothRadius;
+    int fa, sgn, a1, a2, di, dk, cnt = 0;
+    int base[3], c[3], up[3];
+    double Sxx=0.0, Sxy=0.0, Sx=0.0, Syy=0.0, Sy=0.0, Sw=0.0;
+    double Shx=0.0, Shy=0.0, Sh=0.0;
+    double M[3][3], B[3], D, a, b, n[3], len, ridge;
+
     if( R < 1 ) R = 1;
+    fa  = ( fy != 0.0 ) ? 1 : ( fz != 0.0 ? 2 : 0 );
+    sgn = ( ( fa == 0 ? fx : ( fa == 1 ? fy : fz ) ) > 0.0 ) ? 1 : -1;
+    a1  = ( fa + 1 ) % 3;
+    a2  = ( fa + 2 ) % 3;
+    base[0] = v->x; base[1] = v->y; base[2] = v->z;
+
     for( di = -R; di <= R; di++ )
-      for( dj = -R; dj <= R; dj++ )
-        for( dk = -R; dk <= R; dk++ ) {
-            double d2, w;
-            Voxel *n;
-            if( di == 0 && dj == 0 && dk == 0 ) continue;
-            d2 = (double)( di*di + dj*dj + dk*dk );
-            if( d2 > (double)( R*R ) + 0.5 ) continue;   /* keep it spherical */
-            n = voxAt( v->x + di, v->y + dj, v->z + dk );
-            if( !n ) continue;
-            w = 1.0 / d2;                 /* nearer solids weigh more */
-            ax -= di * w; ay -= dj * w; az -= dk * w;   /* away from solid */
+      for( dk = -R; dk <= R; dk++ ) {
+        int t, found = 0, h = 0;
+        if( di*di + dk*dk > R*R ) continue;        /* keep the disc round */
+        /* nearest exposed surface cell in this column, searching outward from
+         * our own height so a nearby ledge wins over a distant one */
+        for( t = 0; t <= R && !found; t++ ) {
+            int s;
+            for( s = 0; s < 2; s++ ) {
+                int tt = ( s == 0 ) ? t : -t;
+                if( s == 1 && t == 0 ) continue;
+                c[0] = base[0]; c[1] = base[1]; c[2] = base[2];
+                c[a1] += di; c[a2] += dk; c[fa] += sgn * tt;
+                if( !voxAt( c[0], c[1], c[2] ) ) continue;
+                up[0] = c[0]; up[1] = c[1]; up[2] = c[2];
+                up[fa] += sgn;
+                if( voxAt( up[0], up[1], up[2] ) ) continue;   /* buried */
+                h = tt; found = 1; break;
+            }
         }
-    len = sqrt( ax*ax + ay*ay + az*az );
-    if( len < 1e-6 ) return 0;
-    *nx = ax/len; *ny = ay/len; *nz = az/len;
+        if( !found ) continue;
+        {
+            double x = (double)di, y = (double)dk, hh = (double)h;
+            double w = 1.0 / ( 1.0 + x*x + y*y );  /* nearer columns weigh more */
+            Sxx += w*x*x; Sxy += w*x*y; Sx  += w*x;
+            Syy += w*y*y; Sy  += w*y;   Sw  += w;
+            Shx += w*hh*x; Shy += w*hh*y; Sh += w*hh;
+            cnt++;
+        }
+      }
+
+    if( cnt < 2 || Sw < 1e-9 ) return 0;
+
+    ridge = 1e-3 * Sw;
+    M[0][0] = Sxx + ridge; M[0][1] = Sxy;         M[0][2] = Sx;
+    M[1][0] = Sxy;         M[1][1] = Syy + ridge; M[1][2] = Sy;
+    M[2][0] = Sx;          M[2][1] = Sy;          M[2][2] = Sw;
+    B[0] = Shx; B[1] = Shy; B[2] = Sh;
+    D = det3( M[0][0], M[0][1], M[0][2],
+              M[1][0], M[1][1], M[1][2],
+              M[2][0], M[2][1], M[2][2] );
+    if( D < 1e-12 && D > -1e-12 ) return 0;
+    a = det3( B[0], M[0][1], M[0][2],
+              B[1], M[1][1], M[1][2],
+              B[2], M[2][1], M[2][2] ) / D;
+    b = det3( M[0][0], B[0], M[0][2],
+              M[1][0], B[1], M[1][2],
+              M[2][0], B[2], M[2][2] ) / D;
+    /* a near-vertical local surface would fit an enormous slope; cap it so a
+     * face never shades as if it faced fully sideways */
+    if( a >  MAX_FIT_SLOPE ) a =  MAX_FIT_SLOPE;
+    if( a < -MAX_FIT_SLOPE ) a = -MAX_FIT_SLOPE;
+    if( b >  MAX_FIT_SLOPE ) b =  MAX_FIT_SLOPE;
+    if( b < -MAX_FIT_SLOPE ) b = -MAX_FIT_SLOPE;
+
+    n[a1] = -a; n[a2] = -b; n[fa] = (double)sgn;
+    len = sqrt( n[0]*n[0] + n[1]*n[1] + n[2]*n[2] );
+    if( len < 1e-9 ) return 0;
+    *nx = n[0]/len; *ny = n[1]/len; *nz = n[2]/len;
     return 1;
 }
 
@@ -1746,6 +1834,65 @@ static int pickCell( int mx, int my, int *cx, int *cy, int *cz,
         }
     }
     return 0;
+}
+
+/* Zoom the 3D view by `fac` about whatever sits under window pixel (mx,my),
+ * instead of about the camera target.  This is the zoom people expect from a
+ * paint program: zoom out, put the cursor on the next area of interest, zoom
+ * back in, and that area is what fills the view -- no panning needed.
+ *
+ * The anchor P is a point on the cursor ray: the centre of the voxel it hits
+ * (projected back onto the ray so P is exactly under the cursor), else where it
+ * crosses the ground plane, else the plane through the camera target.  Scaling
+ * BOTH the camera and the target about P by the same factor s -- i.e.
+ * T' = P + s*(T - P), which puts the eye at C' = P + s*(C - P) -- leaves
+ * (P - C') parallel to (P - C), so P projects to the very same pixel before and
+ * after.  The same formula is exact in the orthographic view, where the ortho
+ * box is sized from cam_dist: there (P - T) is what the box scales about.
+ * As a bonus the target converges on what you zoomed into, so orbiting
+ * afterwards turns around that spot. */
+static void zoomViewAt( int mx, int my, float fac )
+{
+    double ox, oy, oz, dx, dy, dz, ex, ey, ez;
+    double fwx, fwy, fwz, flen, t = -1.0, px, py, pz, s;
+    int hx, hy, hz, nx2, ny2, nz2, ax;
+    float newDist = clampf( cam_dist * fac, 1.5f, 400.0f );
+
+    if( cam_dist < 1e-6f ) { cam_dist = newDist; return; }
+    s = (double)newDist / (double)cam_dist;
+    if( s > 0.9999 && s < 1.0001 ) return;      /* clamped: nothing to re-centre */
+
+    /* the ray must come from the camera as it stands NOW -- its origin moves
+     * with cam_dist, so reading it after the zoom would anchor the wrong point */
+    mouseRay( mx, my, &ox, &oy, &oz, &dx, &dy, &dz );
+
+    if( rayVoxel( ox, oy, oz, dx, dy, dz, &hx, &hy, &hz,
+                  &nx2, &ny2, &nz2, &ax ) ) {
+        /* depth of the hit voxel's centre along the ray */
+        t = ( hx + 0.5 - ox )*dx + ( hy + 0.5 - oy )*dy + ( hz + 0.5 - oz )*dz;
+    } else if( dy < -1e-6 ) {
+        double tg = -oy / dy;                    /* the y=0 ground plane */
+        if( tg > 0.0 && tg < 1e5 ) t = tg;
+    }
+    if( t <= 0.0 ) {
+        /* nothing under the cursor: fall back to the plane through the target */
+        camEye( &ex, &ey, &ez );
+        fwx = cam_tx - ex; fwy = cam_ty - ey; fwz = cam_tz - ez;
+        flen = sqrt( fwx*fwx + fwy*fwy + fwz*fwz );
+        if( flen < 1e-9 ) { cam_dist = newDist; return; }
+        fwx /= flen; fwy /= flen; fwz /= flen;
+        { double den = dx*fwx + dy*fwy + dz*fwz;
+          if( den < 1e-6 ) { cam_dist = newDist; return; }
+          t = ( ( cam_tx - ox )*fwx + ( cam_ty - oy )*fwy
+                                    + ( cam_tz - oz )*fwz ) / den; }
+        if( t <= 0.0 ) { cam_dist = newDist; return; }
+    }
+
+    px = ox + dx*t; py = oy + dy*t; pz = oz + dz*t;
+    cam_dist = newDist;
+    cam_tx = (float)( px + s * ( cam_tx - px ) );
+    cam_ty = (float)( py + s * ( cam_ty - py ) );
+    cam_tz = (float)( pz + s * ( cam_tz - pz ) );
 }
 
 /* Intersect the mouse ray with the working plane (axisN = planeCoord+0.5) and
@@ -3433,8 +3580,9 @@ static void blendSmoothN( int have, double wnx, double wny, double wnz,
  *
  *   - A non-smooth face keeps its blocky axis normal (returned unchanged).
  *
- *   - A smooth face starts from the fitted surface normal (the negated gradient
- *     of local occupancy -- what makes a voxel sphere shade round), then is
+ *   - A smooth face starts from the fitted surface normal (the least-squares
+ *     plane through the local surface -- what makes a voxel sphere shade
+ *     round; see voxSmoothNormal), then is
  *     "met" to its neighbouring visible faces: for each of the four in-plane
  *     neighbour directions we find the visible face that continues the surface
  *     (coplanar if the next cell is solid & open above; a perpendicular face on
@@ -3461,16 +3609,17 @@ static void shadingNormalForFace( const Voxel *v,
     *ox = fx; *oy = fy; *oz = fz;
     if( !( ( v->smoothFaces >> faceDir6( fx, fy, fz ) ) & 1 ) ) return;
 
-    if( !voxSmoothNormal( v, &n[0], &n[1], &n[2] ) ) return;  /* flat fit */
+    /* fit the local surface as a height field over THIS face's own plane */
+    if( !voxSmoothNormal( v, fx, fy, fz, &n[0], &n[1], &n[2] ) ) return;
 
     faceAxis = ( fy != 0.0 ) ? 1 : ( fz != 0.0 ? 2 : 0 );
     lock[0] = lock[1] = lock[2] = 0;
     /* bev = the purely geometric "bevel" direction this face should lean:
      * the flat face normal plus the outward normal of every SMOOTH
      * perpendicular neighbour it rounds toward.  Used only to sanity-check the
-     * fitted normal's in-plane sign below -- the fitted gradient can point the
-     * wrong way at a near-symmetric corner (where its primary signal cancels
-     * and far cells tip it), and that geometry knows which way is correct. */
+     * fitted normal's in-plane sign below -- at a near-symmetric corner the fit
+     * has little in-plane signal to work with and a lone far column can tip it
+     * the wrong way, while this geometry knows which way is correct. */
     bev[0]=fx; bev[1]=fy; bev[2]=fz;
 
     /* examine the four axis-aligned in-plane neighbour faces */
@@ -3621,8 +3770,8 @@ static void renderOblique( void )
             /* visible only if nothing occupies the cell in front */
             int occFront = voxOccUVW( u, v, w + 1 );
             double sfx, sfy, sfz;
-            shadingNormalForFace( vox, fnwX, fnwY, fnwZ, &sfx, &sfy, &sfz );
             if( !occFront ) {
+                shadingNormalForFace( vox, fnwX, fnwY, fnwZ, &sfx, &sfy, &sfz );
                 for( py = fy0; py < fy1; py++ ) {
                     if( py < 0 || py >= imgH ) continue;
                     for( ny = 0; ny < W; ny++ ) {
@@ -3654,8 +3803,8 @@ static void renderOblique( void )
             int ty1 = (int)( by - frontH ), ty0 = ty1 - topH;
             int occTop = voxOccUVW( u, v + 1, w );
             double stx, sty, stz;
-            shadingNormalForFace( vox, 0,1,0, &stx, &sty, &stz );
             if( !occTop ) {
+                shadingNormalForFace( vox, 0,1,0, &stx, &sty, &stz );
                 for( py = ty0; py < ty1; py++ ) {
                     if( py < 0 || py >= imgH ) continue;
                     for( ny = 0; ny < W; ny++ ) {
@@ -4391,6 +4540,29 @@ static void setView( float yaw, float pitch )
     cam_yaw = yaw; cam_pitch = pitch;
 }
 
+static void compositeBounds( int lo[3], int hi[3] );
+
+/* Re-centre and re-fit the 3D view on the whole (visible) sculpture, leaving
+ * the orbit angles alone.  Cursor-anchored wheel zoom deliberately walks the
+ * camera target toward whatever you point at, so after a lot of zooming around
+ * an empty corner the target can end up far from the model; this puts it back
+ * without hunting for it by hand. */
+static void frameView( void )
+{
+    int lo[3], hi[3];
+    float ex, ey, ez, big;
+    compositeBounds( lo, hi );
+    ex = (float)( hi[0] - lo[0] + 1 );
+    ey = (float)( hi[1] - lo[1] + 1 );
+    ez = (float)( hi[2] - lo[2] + 1 );
+    big = ex > ey ? ex : ey;
+    if( ez > big ) big = ez;
+    cam_tx = (float)lo[0] + ex * 0.5f;
+    cam_ty = (float)lo[1] + ey * 0.5f;
+    cam_tz = (float)lo[2] + ez * 0.5f;
+    cam_dist = clampf( big * 2.0f, 1.5f, 400.0f );
+}
+
 /* True if two angles are within a small tolerance modulo 2*pi. */
 static int angClose( float a, float b )
 {
@@ -4534,6 +4706,7 @@ static void buildMenuBar( int *quit )
         if( gui_menu_item( "Bottom", "6", 1 ) ) setView( -1.5708f,-1.5620f );
         if( gui_menu_item( "Iso",    "7", 1 ) ) setView( 0.9f, 0.6f );
         gui_separator();
+        if( gui_menu_item( "Frame model", "F", 1 ) ) frameView();
         if( gui_menu_item_check( "Orthographic", "0", &g_ortho ) ) {}
         gui_end_menu();
     }
@@ -5610,6 +5783,123 @@ int main( int argc, char **argv )
             remove( p );
             layersReset(); histClear();
         }
+        /* Fitted smooth-shading normals.
+         *
+         * (a) A flat plate whose interior top faces are marked smooth must
+         *     still shade dead flat.  The earlier occupancy-gradient estimator
+         *     failed exactly here: a one-voxel-thick plate cancels the
+         *     gradient's vertical term, so those normals came out lying IN the
+         *     plate, aimed at its far corner (userNotes / badNormals.ovox).
+         * (b) A voxel sphere must still round: every smooth top face tilts
+         *     toward the true radial normal, and no fitted normal may ever tip
+         *     out of its own face's hemisphere. */
+        {
+            int x, y, z, flatBad = 0, hemiBad = 0, nround = 0;
+            double worstDot = 1.0, nx, ny, nz;
+            int svRad = g_smoothRadius; float svAmt = g_smoothAmt;
+            layersReset(); histClear();
+            g_symOn[0]=g_symOn[1]=g_symOn[2]=0;
+            g_smoothRadius = 4; g_smoothAmt = 1.0f;
+
+            voxClear();
+            for( x = 0; x < 6; x++ ) for( z = 0; z < 6; z++ )
+                voxSet( x, 0, z, 15, 15, 1 );
+            for( x = 1; x <= 4; x++ ) for( z = 1; z <= 4; z++ ) {
+                Voxel *v = voxAt( x, 0, z );
+                if( v ) v->smoothFaces = 1 << faceDir6( 0, 1, 0 );
+            }
+            for( x = 1; x <= 4; x++ ) for( z = 1; z <= 4; z++ ) {
+                Voxel *v = voxAt( x, 0, z );
+                if( !v ) continue;
+                shadingNormalForFace( v, 0, 1, 0, &nx, &ny, &nz );
+                if( ny < 0.999 ) { flatBad = 1; if( ny < worstDot ) worstDot = ny; }
+            }
+            if( flatBad ) { ok=0;
+                fprintf(stderr,"FAIL smooth-flat-normal (n.y down to %.3f)\n",
+                        worstDot); }
+
+            voxClear();
+            for( x = -6; x <= 6; x++ ) for( y = -6; y <= 6; y++ )
+              for( z = -6; z <= 6; z++ )
+                if( x*x + y*y + z*z <= 36 ) {
+                    Voxel *v;
+                    voxSet( x, y, z, 15, 15, 1 );
+                    v = voxAt( x, y, z );
+                    if( v ) v->smoothFaces = 0x3F;
+                }
+            worstDot = 1.0;
+            for( x = -6; x <= 6; x++ ) for( y = -6; y <= 6; y++ )
+              for( z = -6; z <= 6; z++ ) {
+                Voxel *v = voxAt( x, y, z );
+                double tx, ty, tz, tl, d;
+                if( !v || voxAt( x, y+1, z ) ) continue;   /* top faces only */
+                shadingNormalForFace( v, 0, 1, 0, &nx, &ny, &nz );
+                if( ny <= 0.0 ) hemiBad = 1;               /* tipped inward */
+                tx = x; ty = y + 0.5; tz = z;              /* true radial */
+                tl = sqrt( tx*tx + ty*ty + tz*tz );
+                if( tl < 1e-6 ) continue;
+                tx /= tl; ty /= tl; tz /= tl;
+                d = nx*tx + ny*ty + nz*tz;
+                if( d < worstDot ) worstDot = d;
+                nround++;
+              }
+            if( hemiBad ) { ok=0; fprintf(stderr,"FAIL smooth-hemisphere\n"); }
+            if( nround < 50 ) { ok=0; fprintf(stderr,"FAIL smooth-sphere-faces\n"); }
+            /* 0.85 = within ~32 degrees of the true radial normal everywhere,
+             * including the near-vertical faces down at the sphere's equator */
+            if( worstDot < 0.85 ) { ok=0;
+                fprintf(stderr,"FAIL smooth-sphere-normal (worst dot %.3f)\n",
+                        worstDot); }
+
+            g_smoothRadius = svRad; g_smoothAmt = svAmt;
+            voxClear(); layersReset(); histClear();
+        }
+        /* Wheel zoom is anchored to the cursor, not to the view centre: the
+         * world point under the mouse must project to the same pixel before and
+         * after a zoom step (userNotes).  With an empty scene the anchor is the
+         * ray's ground-plane crossing, which the test recomputes independently. */
+        {
+            int mx, my, i;
+            double ox, oy, oz, dx, dy, dz, t, px, py, pz;
+            double sx0, sy0, sx1, sy1;
+            float svDist = cam_dist, svYaw = cam_yaw, svPitch = cam_pitch;
+            float svTx = cam_tx, svTy = cam_ty, svTz = cam_tz;
+            int svVX = g_viewX, svVY = g_viewY, svVW = g_viewW, svVH = g_viewH;
+            int svWinH = g_winH, svOrtho = g_ortho, pass = 1;
+
+            voxClear(); layersReset(); histClear();
+            g_viewX = 160; g_viewY = 24; g_viewW = 800; g_viewH = 600;
+            g_winH  = 650;
+            cam_yaw = 0.9f; cam_pitch = 0.6f; cam_dist = 40.0f;
+            cam_tx = 0.0f; cam_ty = 2.0f; cam_tz = 0.0f;
+            mx = g_viewX + 200; my = g_viewY + 150;      /* well off centre */
+
+            for( g_ortho = 0; g_ortho <= 1; g_ortho++ ) {
+                mouseRay( mx, my, &ox, &oy, &oz, &dx, &dy, &dz );
+                if( dy > -1e-6 ) { pass = 0; continue; }
+                t = -oy / dy;
+                px = ox + dx*t; py = oy + dy*t; pz = oz + dz*t;
+                if( !worldToScreen( px, py, pz, &sx0, &sy0 ) ) pass = 0;
+                for( i = 0; i < 6; i++ )
+                    zoomViewAt( mx, my, ( i < 4 ) ? 0.9f : 1.1111f );
+                if( !worldToScreen( px, py, pz, &sx1, &sy1 ) ) pass = 0;
+                if( sx1 - sx0 > 0.5 || sx0 - sx1 > 0.5 ||
+                    sy1 - sy0 > 0.5 || sy0 - sy1 > 0.5 ) {
+                    pass = 0;
+                    fprintf( stderr, "  zoom anchor drifted %.2f,%.2f px (%s)\n",
+                             sx1-sx0, sy1-sy0,
+                             g_ortho ? "ortho" : "perspective" );
+                }
+                cam_dist = 40.0f;
+                cam_tx = 0.0f; cam_ty = 2.0f; cam_tz = 0.0f;
+            }
+            if( !pass ) { ok=0; fprintf(stderr,"FAIL zoom-at-cursor\n"); }
+
+            cam_dist = svDist; cam_yaw = svYaw; cam_pitch = svPitch;
+            cam_tx = svTx; cam_ty = svTy; cam_tz = svTz;
+            g_viewX = svVX; g_viewY = svVY; g_viewW = svVW; g_viewH = svVH;
+            g_winH = svWinH; g_ortho = svOrtho;
+        }
         fprintf( stderr, ok ? "SELFTEST OK\n" : "SELFTEST FAILED\n" );
         gui_shutdown(); SDL_GL_DeleteContext(glctx); SDL_DestroyWindow(window);
         SDL_Quit();
@@ -5646,6 +5936,7 @@ int main( int argc, char **argv )
                         else if( k == SDLK_6 ) setView( -1.5708f,-1.5620f );
                         else if( k == SDLK_7 ) setView( 0.9f, 0.6f );
                         else if( k == SDLK_0 ) g_ortho = !g_ortho;
+                        else if( k == SDLK_f ) frameView();
                         /* ---- draw/erase mode ---- */
                         else if( k == SDLK_d ) g_mode = 0;   /* draw */
                         else if( k == SDLK_e ) g_mode = 1;   /* erase */
@@ -5785,10 +6076,9 @@ int main( int argc, char **argv )
                     break;
                 case SDL_MOUSEWHEEL:
                     { int mxw, myw; SDL_GetMouseState( &mxw, &myw );
-                      if( !overGui && inView( mxw, myw ) ) {
-                        cam_dist *= ( ev.wheel.y > 0 ) ? 0.9f : 1.1111f;
-                        cam_dist = clampf( cam_dist, 1.5f, 400.0f );
-                      } }
+                      if( !overGui && inView( mxw, myw ) )
+                        zoomViewAt( mxw, myw,
+                                    ( ev.wheel.y > 0 ) ? 0.9f : 1.1111f ); }
                     break;
                 default: break;
             }

@@ -1,9 +1,20 @@
 (Add new testing notes below.)
 
 
-Okay!  The smoothing is generally working MUCH better now.  The normals make sense, when inspected visually.
+One thing that's still troublesome is the fact that top and front-face foreshortening (called Top Scrunch and Front Scrunch) ONLY work if there are multiple pixels per voxel.  The reasons for this limitation are obvious (b/c you need something to scrunch).
+
+However, the main use of this tool is to make 1-to-1 pixel art from voxels, where every face of a voxel becomes a pixel (squares only, no rectangles).
+
+Yet...  a full "top front oblique" view with no foreshortening is pretty darn ugly.  It's a very odd, unnatural perspective.  One unit of "top scrunch" makes things look much more natural.
+
+I've been working around this in 1:1 pixels renderings by making pre-scrunched models directly (making a "square" base 16 wide and only 8 deep... baking the foreshortening into the model itself).   This works okay, but it's actually pretty error-prone, especially when sizing things relative to each other, attempting to make spherical shapes (which must become ovoids), etc.
+
+It seems like there could be some kind of automated way to "scrunch" a model during the rendering step without going to 2x2 pixels per voxel.   First, you could just remove every other "wafer" of voxels, front-to-back.   Of course, this might completely obliterate fine details.  Imagine a King chess piece with a 1-pixel-thick cross on top.  Depending on which "wafer" this cross was aligned with, it might disappear completely.
+
+But fine details, by nature, are always "sticking out into the air" (like the cross mentioned).
+
+So it seems like you could actually *mash* wafers together (take their union) and preseve any positive details in those layers (the cross example would survive a union with the air around it).  Mashing wafers would obliterate NEGATIVE details (like little pockets or holes).... but this is okay, since the obliterated ones would be on the top face only (in case of top scrunching)---front-facing details, both positive and negative, would be preserved.
 
 
-However, I previously suggested that "boundary" smoothed faces should not be smoothed at all.  As you pointed out in your notes, this means that the rims of thin rings cannot be smoothed.  This is actually incorrect behavior.  The boundary faces should still be smoothed!   But they should only consider other smoothed, connected faces in their basket for averaging, and ignore neighboring faces that are not smoothed.
+So I think you can do this, in the rendering step, if there's 1 pixel per voxel, and the user still asks for "top scrunch" or "front scrunch" greater than 1.  All of the wafer unions should happen BEFORE shading happens, and smoothed faces should be unioned too (the merged voxel has all smoothed faces from any source voxels that were merged into it).   Do something sensible if merged voxels have different colors or color ramps (probably just drop one of the colors in some reasonable way).  Most of the time, the end user will not try to "scrunch" things that have varying colors.
 
-There's an example called "rimNotSmoothed.ovox" that has a thin rectangular shape with just the rim smoothed.   Several versions ago, those edge faces would get their normals rotated, but now that doesn't happen.

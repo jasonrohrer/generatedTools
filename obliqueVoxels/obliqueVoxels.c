@@ -191,6 +191,10 @@ static int faceDir6( double nx, double ny, double nz )
  * points g_activeLayer at FLAT_LAYER so the very same code sees the union. */
 #define MAX_LAYERS 16
 #define FLAT_LAYER MAX_LAYERS      /* reserved scratch slot for the composite */
+#define MASH_LAYER ( MAX_LAYERS + 1 ) /* scratch: scrunch-mashed composite (see
+                                       * buildMash) -- the render's input when a
+                                       * scrunch can't be a whole pixel */
+#define NUM_LAYER_SLOTS ( MAX_LAYERS + 2 )
 
 typedef struct {
     Voxel *vox;
@@ -199,7 +203,7 @@ typedef struct {
     char   name[32];
 } Layer;
 
-static Layer g_layers[ MAX_LAYERS + 1 ];   /* +1 for the FLAT_LAYER scratch */
+static Layer g_layers[ NUM_LAYER_SLOTS ];  /* + the FLAT / MASH scratch slots */
 static int   g_numLayers   = 1;
 static int   g_activeLayer = 0;
 static int   g_flatDirty   = 1;    /* composite needs rebuilding */
@@ -312,14 +316,14 @@ static void voxSet( int x, int y, int z, int color, int rs, int rl )
     if( g_voxCap == 0 ) voxInit( 1024 );
     if( ( g_voxUsed + g_voxTomb ) * 10 >= g_voxCap * 7 ) voxGrow();
     voxInsertRaw( x, y, z, color, rs, rl );
-    if( g_activeLayer != FLAT_LAYER ) g_flatDirty = 1;
+    if( g_activeLayer < FLAT_LAYER ) g_flatDirty = 1;
 }
 
 static void voxErase( int x, int y, int z )
 {
     int i = voxFind( x, y, z );
     if( i >= 0 ) { g_vox[i].used = 2; g_voxUsed--; g_voxTomb++; }
-    if( g_activeLayer != FLAT_LAYER ) g_flatDirty = 1;
+    if( g_activeLayer < FLAT_LAYER ) g_flatDirty = 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -334,7 +338,7 @@ static int  g_renderDirty;            /* tentative decl; defined with =1 below *
 static void layersReset( void )
 {
     int i;
-    for( i = 0; i <= MAX_LAYERS; i++ ) {
+    for( i = 0; i < NUM_LAYER_SLOTS; i++ ) {
         free( g_layers[i].vox );
         g_layers[i].vox = NULL;
         g_layers[i].cap = g_layers[i].used = g_layers[i].tomb = 0;
@@ -1019,23 +1023,118 @@ static void fromUVW( double u, double v, double w, double *x, double *y, double 
  * parallel projection, it is constant over the whole image. */
 static void obliqueViewDir( double *vx, double *vy, double *vz )
 {
-    int frontH = g_voxPx / g_frontScrunch;
-    int topH   = g_voxPx / g_topScrunch;
+    /* per-CELL face heights, as exact fractions: when a scrunch is finer than
+     * a pixel the render mashes wafers so a slab of k cells is k*voxPx/s px
+     * tall, i.e. voxPx/s per cell -- the same ratio, so the projector holds. */
+    double frontH = (double)g_voxPx / (double)g_frontScrunch;
+    double topH   = (double)g_voxPx / (double)g_topScrunch;
     double len;
-    if( frontH < 1 ) frontH = 1;
-    if( topH   < 1 ) topH   = 1;
-    fromUVW( 0.0, (double)topH, (double)frontH, vx, vy, vz );
+    fromUVW( 0.0, topH, frontH, vx, vy, vz );
     len = sqrt( (*vx)*(*vx) + (*vy)*(*vy) + (*vz)*(*vz) );
     if( len > 1e-9 ) { *vx /= len; *vy /= len; *vz /= len; }
+}
+
+/* The voxel at an integer view-frame cell, or NULL. */
+static Voxel *voxAtUVW( int iu, int iv, int iw )
+{
+    double x, y, z;
+    fromUVW( (double)iu, (double)iv, (double)iw, &x, &y, &z );
+    return voxAt( (int)floor( x + 0.5 ), (int)floor( y + 0.5 ),
+                  (int)floor( z + 0.5 ) );
 }
 
 /* Occupancy test in the view frame (integer cell). */
 static int voxOccUVW( int iu, int iv, int iw )
 {
-    double x, y, z;
-    fromUVW( (double)iu, (double)iv, (double)iw, &x, &y, &z );
-    return voxAt( (int)floor( x + 0.5 ), (int)floor( y + 0.5 ),
-                  (int)floor( z + 0.5 ) ) != NULL;
+    return voxAtUVW( iu, iv, iw ) != NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* scrunch mashing -- foreshortening below one pixel per voxel          */
+/* ------------------------------------------------------------------ */
+
+/* A scrunch of s makes a face voxPx/s pixels tall, which only works when that
+ * divides.  The main use of the tool is 1:1 pixel art (voxPx 1), where the
+ * un-foreshortened top-front oblique looks odd and one step of top scrunch is
+ * what makes it read naturally -- so rather than clamp, we MASH: merge every
+ * run of k consecutive wafers of voxels along the scrunched axis into one
+ * slab that is drawn k*voxPx/s pixels tall, with k the smallest count that
+ * makes that a whole number (k = s / gcd(voxPx, s)).  voxPx 1 + scrunch 2
+ * merges pairs of wafers into 1-pixel faces; voxPx 2 + scrunch 3 merges
+ * triples into 2-pixel faces; voxPx 2 + scrunch 2 needs no merging at all.
+ *
+ * Merging is a UNION, so a positive detail (a 1-voxel cross on a king)
+ * survives whichever wafer it sits in; only negative details -- pockets and
+ * holes on the scrunched faces -- fill in, which is the acceptable loss.
+ * Front-facing detail is untouched by a top scrunch (and vice versa). */
+static int mashFactor( int voxPx, int scrunch )
+{
+    int a = voxPx, b = scrunch;
+    if( scrunch < 1 ) return 1;
+    while( b ) { int t = a % b; a = b; b = t; }   /* a = gcd */
+    return scrunch / a;
+}
+
+/* Floor division, correct for negative cell coordinates. */
+static int floorDiv( int a, int k )
+{
+    return ( a >= 0 ) ? a / k : -( ( -a + k - 1 ) / k );
+}
+
+/* Build the MASH scratch layer from the current active layer (the FLAT
+ * composite): every kV x kW block of cells (kV wafers up, kW wafers deep, in
+ * the view frame) that holds at least one voxel is filled solid.  The filled
+ * slab keeps unit cells in world space, so the unchanged shading, shadow-ray
+ * and surface-walk code shades it as the (chunkier) voxel model it is, at the
+ * true world points the render samples.
+ *
+ * Each filled cell OR-s together the smooth masks of every source voxel in
+ * its block, so a smooth surface stays smooth after the merge.  Colour/ramp:
+ * a cell that was itself a source keeps its own; an air cell that got filled
+ * copies the nearest source in the block, ties going to the one nearest the
+ * viewer / the top (the face the render actually shows).  (The scratch
+ * layer's `sel` field holds that donor distance while building.) */
+static void buildMash( int kV, int kW )
+{
+    int src = g_activeLayer, i;
+    Layer *S = &g_layers[src];
+    g_activeLayer = MASH_LAYER;
+    voxClear();
+    for( i = 0; i < S->cap; i++ ) {
+        Voxel *s = &S->vox[i];
+        int u, v, w, vb, wb, dv, dw;
+        if( s->used != 1 ) continue;
+        toUVW( s->x, s->y, s->z, &u, &v, &w );
+        vb = floorDiv( v, kV ) * kV;
+        wb = floorDiv( w, kW ) * kW;
+        for( dv = 0; dv < kV; dv++ ) for( dw = 0; dw < kW; dw++ ) {
+            int cv = vb + dv, cw = wb + dw;
+            /* rank: nearer source wins, then the higher one, then the nearer
+             * the viewer; 0 = the cell's own voxel */
+            int dist = abs( cv - v ) + abs( cw - w );
+            int rank = dist * 64 + ( kV - 1 - ( v - vb ) ) * 8
+                                 + ( kW - 1 - ( w - wb ) );
+            double x, y, z;
+            int cx, cy, cz;
+            Voxel *d;
+            fromUVW( (double)u, (double)cv, (double)cw, &x, &y, &z );
+            cx = (int)floor( x + 0.5 ); cy = (int)floor( y + 0.5 );
+            cz = (int)floor( z + 0.5 );
+            d = voxAt( cx, cy, cz );
+            if( !d ) {
+                voxSet( cx, cy, cz, s->color, s->rampStart, s->rampLen );
+                d = voxAt( cx, cy, cz );
+                d->sel = rank;
+            } else if( rank < d->sel ) {
+                d->color = s->color; d->rampStart = s->rampStart;
+                d->rampLen = s->rampLen; d->sel = rank;
+            }
+            d->smoothFaces |= s->smoothFaces;
+        }
+    }
+    for( i = 0; i < g_voxCap; i++ )      /* done ranking: leave sel clean */
+        if( g_vox[i].used == 1 ) g_vox[i].sel = 0;
+    g_activeLayer = src;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2294,7 +2393,7 @@ static void smoothOneFace( int cx, int cy, int cz, int nx, int ny, int nz )
      * layer won't pick it up unless we flag it dirty -- otherwise the pixel render,
      * which shades the composite, keeps the stale mask until an unrelated edit
      * happens to rebuild it. */
-    if( g_activeLayer != FLAT_LAYER ) g_flatDirty = 1;
+    if( g_activeLayer < FLAT_LAYER ) g_flatDirty = 1;
     g_renderDirty = 1;
 }
 
@@ -2512,7 +2611,7 @@ static void selSmooth( int flag )
         n++;
     }
     groupEnd();
-    if( g_activeLayer != FLAT_LAYER ) g_flatDirty = 1;   /* see smoothOneFace */
+    if( g_activeLayer < FLAT_LAYER ) g_flatDirty = 1;   /* see smoothOneFace */
     g_renderDirty = 1;
     { char m[64]; sprintf( m, "%s %d voxels",
         flag ? "Smoothed" : "Unsmoothed", n ); setStatus( m ); }
@@ -3667,20 +3766,31 @@ static void renderOblique( void )
     double shX, shY, shZ;       /* uvw->world sample shift */
     double fnwX, fnwY, fnwZ;    /* front-face world normal (top is always +Y) */
 
+    /* Scrunch mashing: kV / kW are how many wafers of voxels each drawn slab
+     * spans up / deep (both 1 when the scrunch is a whole number of pixels,
+     * in which case this is exactly the one-voxel-per-slab render).  A slab is
+     * one cell of the "slab grid" (u, v/kV, w/kW), and the caller has pointed
+     * g_activeLayer at a model whose every slab is filled solid (buildMash), so
+     * only the slab-origin cells are walked here and the true world extents of
+     * the slab are what get sampled and shaded. */
+    int kV = mashFactor( g_voxPx, g_frontScrunch );
+    int kW = mashFactor( g_voxPx, g_topScrunch );
+
     W      = g_voxPx;
-    frontH = g_voxPx / g_frontScrunch; if( frontH < 1 ) frontH = 1;
-    topH   = g_voxPx / g_topScrunch;   if( topH < 1 ) topH = 1;
+    frontH = kV * g_voxPx / g_frontScrunch; if( frontH < 1 ) frontH = 1;
+    topH   = kW * g_voxPx / g_topScrunch;   if( topH < 1 ) topH = 1;
 
     { double fx0, fy0, fz0;
       fromUVW( 0.5, 1.0, 0.5, &fx0, &fy0, &fz0 );   /* top-face center of vox 0 */
       shX = 0.5 - fx0; shY = 1.0 - fy0; shZ = 0.5 - fz0; }
     fromUVW( 0.0, 0.0, 1.0, &fnwX, &fnwY, &fnwZ );   /* +w unit dir -> world */
 
-    /* gather view-frame bounds */
+    /* gather slab-grid bounds */
     for( i = 0; i < g_voxCap; i++ ) {
         int u, v, w;
         if( g_vox[i].used != 1 ) continue;
         toUVW( g_vox[i].x, g_vox[i].y, g_vox[i].z, &u, &v, &w );
+        v = floorDiv( v, kV ); w = floorDiv( w, kW );
         if( !have ) { umin=umax=u; vmin=vmax=v; wmin=wmax=w; have=1; }
         if( u<umin ) umin=u;
         if( u>umax ) umax=u;
@@ -3726,45 +3836,61 @@ static void renderOblique( void )
     for( i = 0; i < imgW*imgH; i++ ) zbuf[i] = -1e30f;
     g_imgW = imgW; g_imgH = imgH;
 
-    /* rasterize front + top faces of every voxel with a per-pixel depth test */
+    /* rasterize front + top faces of every slab with a per-pixel depth test.
+     * (u,v,w) below is the slab's ORIGIN cell (its lowest, farthest cell) and
+     * (sv,sw) its slab-grid index; with kV == kW == 1 they coincide. */
     for( C = 0; C < g_voxCap; C++ ) {
-        int u, v, w, x0, py, px, ny;
+        int u, v, w, sv, sw, x0, py, px, ny;
         long by;
         Voxel *vox;
         if( g_vox[C].used != 1 ) continue;
         vox = &g_vox[C];
         toUVW( vox->x, vox->y, vox->z, &u, &v, &w );
+        sv = floorDiv( v, kV ); sw = floorDiv( w, kW );
+        if( v != sv * kV || w != sw * kW ) continue;   /* not a slab origin */
         x0 = ( u - umin ) * W;
-        by = - (long)v * frontH + (long)w * topH - topMin;  /* into image space */
+        by = - (long)sv * frontH + (long)sw * topH - topMin; /* into image space */
 
         /* ---- front face (+w side, world normal fnw) ---- */
         {
             int fy0 = (int)( by - frontH ), fy1 = (int)by;
-            /* visible only if nothing occupies the cell in front */
-            int occFront = voxOccUVW( u, v, w + 1 );
-            double sfx, sfy, sfz;
+            /* visible only if nothing occupies the slab in front */
+            int occFront = voxOccUVW( u, v, w + kW );
+            double sfx = 0, sfy = 0, sfz = 0;
+            const Voxel *cell = NULL;   /* the slab cell owning the current row */
             if( !occFront ) {
-                shadingNormalForFace( vox, fnwX, fnwY, fnwZ, &sfx, &sfy, &sfz );
                 for( py = fy0; py < fy1; py++ ) {
+                    double fyf = ( py - fy0 + 0.5 ) / frontH;  /* 0 top .. 1 bot */
+                    int dv;
                     if( py < 0 || py >= imgH ) continue;
+                    /* the front cell of the slab at this height */
+                    dv = (int)floor( ( 1.0 - fyf ) * kV );
+                    if( dv > kV - 1 ) dv = kV - 1;
+                    if( dv < 0 ) dv = 0;
+                    { const Voxel *c = voxAtUVW( u, v + dv, w + kW - 1 );
+                      if( !c ) continue;   /* can't happen: slabs are solid */
+                      if( c != cell ) {
+                          cell = c;
+                          shadingNormalForFace( cell, fnwX, fnwY, fnwZ,
+                                                &sfx, &sfy, &sfz );
+                      } }
                     for( ny = 0; ny < W; ny++ ) {
-                        double fx, fyf, Px, Py, Pz, Wx, Wy, Wz;
+                        double fx, Px, Py, Pz, Wx, Wy, Wz;
                         float depth;
                         px = x0 + ny;
                         if( px < 0 || px >= imgW ) continue;
                         fx  = ( ny + 0.5 ) / W;                 /* 0..1 across u */
-                        fyf = ( py - fy0 + 0.5 ) / frontH;      /* 0 top .. 1 bot */
                         Px = u + fx;
-                        Py = v + ( 1.0 - fyf );
-                        Pz = w + 1.0;                            /* front plane */
-                        depth = (float)( ( v + (1.0-fyf) ) * topH + (w+1.0) * frontH );
+                        Py = v + ( 1.0 - fyf ) * kV;
+                        Pz = w + (double)kW;                     /* front plane */
+                        depth = (float)( ( sv + (1.0-fyf) ) * topH + (sw+1.0) * frontH );
                         if( depth > zbuf[ py*imgW + px ] ) {
                             unsigned char *o = &g_img[ (py*imgW + px)*4 ];
                             zbuf[ py*imgW + px ] = depth;
                             fromUVW( Px, Py, Pz, &Wx, &Wy, &Wz );
                             Wx += shX; Wy += shY; Wz += shZ;
                             shadeWorld( Wx, Wy, Wz, sfx, sfy, sfz,
-                                        fnwX, fnwY, fnwZ, vox, o );
+                                        fnwX, fnwY, fnwZ, cell, o );
                         }
                     }
                 }
@@ -3774,30 +3900,41 @@ static void renderOblique( void )
         /* ---- top face (+v side, world normal (0,1,0)) ---- */
         {
             int ty1 = (int)( by - frontH ), ty0 = ty1 - topH;
-            int occTop = voxOccUVW( u, v + 1, w );
-            double stx, sty, stz;
+            int occTop = voxOccUVW( u, v + kV, w );
+            double stx = 0, sty = 0, stz = 0;
+            const Voxel *cell = NULL;   /* the slab cell owning the current row */
             if( !occTop ) {
-                shadingNormalForFace( vox, 0,1,0, &stx, &sty, &stz );
                 for( py = ty0; py < ty1; py++ ) {
+                    double fzf = ( py - ty0 + 0.5 ) / topH;  /* 0 back(top) 1 front */
+                    int dw;
                     if( py < 0 || py >= imgH ) continue;
+                    /* the top cell of the slab at this depth */
+                    dw = (int)floor( fzf * kW );
+                    if( dw > kW - 1 ) dw = kW - 1;
+                    if( dw < 0 ) dw = 0;
+                    { const Voxel *c = voxAtUVW( u, v + kV - 1, w + dw );
+                      if( !c ) continue;   /* can't happen: slabs are solid */
+                      if( c != cell ) {
+                          cell = c;
+                          shadingNormalForFace( cell, 0,1,0, &stx, &sty, &stz );
+                      } }
                     for( ny = 0; ny < W; ny++ ) {
-                        double fx, fzf, Px, Py, Pz, Wx, Wy, Wz;
+                        double fx, Px, Py, Pz, Wx, Wy, Wz;
                         float depth;
                         px = x0 + ny;
                         if( px < 0 || px >= imgW ) continue;
                         fx  = ( ny + 0.5 ) / W;
-                        fzf = ( py - ty0 + 0.5 ) / topH;   /* 0 back(top) 1 front */
                         Px = u + fx;
-                        Py = v + 1.0;                       /* top plane */
-                        Pz = w + fzf;
-                        depth = (float)( ( v + 1.0 ) * topH + ( w + fzf ) * frontH );
+                        Py = v + (double)kV;                /* top plane */
+                        Pz = w + fzf * kW;
+                        depth = (float)( ( sv + 1.0 ) * topH + ( sw + fzf ) * frontH );
                         if( depth > zbuf[ py*imgW + px ] ) {
                             unsigned char *o = &g_img[ (py*imgW + px)*4 ];
                             zbuf[ py*imgW + px ] = depth;
                             fromUVW( Px, Py, Pz, &Wx, &Wy, &Wz );
                             Wx += shX; Wy += shY; Wz += shZ;
                             shadeWorld( Wx, Wy, Wz, stx, sty, stz,
-                                        0,1,0, vox, o );
+                                        0,1,0, cell, o );
                         }
                     }
                 }
@@ -4122,9 +4259,19 @@ static void ensureRender( void )
 {
     if( g_renderDirty ) {
         int save = g_activeLayer;
+        int kV = mashFactor( g_voxPx, g_frontScrunch );
+        int kW = mashFactor( g_voxPx, g_topScrunch );
         ensureFlat();                 /* union of visible layers -> FLAT scratch */
         g_activeLayer = FLAT_LAYER;   /* render & preview see the composite */
-        renderOblique();
+        if( kV > 1 || kW > 1 ) {
+            /* a scrunch finer than a pixel: render the wafer-mashed model */
+            buildMash( kV, kW );
+            g_activeLayer = MASH_LAYER;
+            renderOblique();
+            g_activeLayer = FLAT_LAYER;
+        } else {
+            renderOblique();
+        }
         rebuildPreviewFaces();
         g_activeLayer = save;
         uploadRenderTexture();
@@ -4997,6 +5144,22 @@ static void buildRightPanel( float top, float h, float winW )
     if( gui_slider_int( "voxel px", &g_voxPx, 1, 12 ) )       g_renderDirty = 1;
     if( gui_slider_int( "front scrunch", &g_frontScrunch, 1, 3 ) ) g_renderDirty = 1;
     if( gui_slider_int( "top scrunch", &g_topScrunch, 1, 3 ) )     g_renderDirty = 1;
+    {   /* say so when a scrunch is finer than a pixel and wafers get mashed */
+        int kV = mashFactor( g_voxPx, g_frontScrunch );
+        int kW = mashFactor( g_voxPx, g_topScrunch );
+        if( kV > 1 || kW > 1 ) {
+            char m[96];
+            if( kV > 1 && kW > 1 )
+                sprintf( m, "mashing %d wafers up, %d deep per slab", kV, kW );
+            else if( kV > 1 )
+                sprintf( m, "mashing %d wafers up per %dpx front", kV,
+                         kV * g_voxPx / g_frontScrunch );
+            else
+                sprintf( m, "mashing %d wafers deep per %dpx top", kW,
+                         kW * g_voxPx / g_topScrunch );
+            gui_text_colored( 1.0f, 0.85f, 0.4f, m );
+        }
+    }
     if( gui_combo( "view dir", &g_orient, orientItems, 4 ) )  g_renderDirty = 1;
     if( gui_slider_int( "smooth radius", &g_smoothRadius, 1, 8 ) ) g_renderDirty = 1;
     if( gui_slider_float( "smooth amount", &g_smoothAmt, 0.0f, 1.0f, "%.2f" ) )
@@ -6037,6 +6200,80 @@ int main( int argc, char **argv )
             cam_tx = svTx; cam_ty = svTy; cam_tz = svTz;
             g_viewX = svVX; g_viewY = svVY; g_viewW = svVW; g_viewH = svVH;
             g_winH = svWinH; g_ortho = svOrtho;
+        }
+        /* Scrunch mashing (userNotes): a scrunch finer than a pixel merges
+         * runs of wafers as a union, so positive detail survives whichever
+         * wafer it sits in, smooth masks OR together, and a filled air cell
+         * takes the nearest source's colour (ties to the viewer side). */
+        {
+            int svPx = g_voxPx, svFS = g_frontScrunch, svTS = g_topScrunch;
+            int svOr = g_orient, sv;
+            Voxel *m;
+            if( mashFactor(1,1)!=1 || mashFactor(1,2)!=2 || mashFactor(1,3)!=3 ||
+                mashFactor(2,2)!=1 || mashFactor(2,3)!=3 || mashFactor(3,2)!=2 ||
+                mashFactor(6,3)!=1 || mashFactor(4,3)!=3 )
+                { ok=0; fprintf(stderr,"FAIL mash-factor\n"); }
+            if( floorDiv(-1,2)!=-1 || floorDiv(-2,2)!=-1 || floorDiv(1,2)!=0 ||
+                floorDiv(-3,2)!=-2 || floorDiv(3,2)!=1 || floorDiv(0,3)!=0 )
+                { ok=0; fprintf(stderr,"FAIL mash-floordiv\n"); }
+            /* orient 0: w = -z, so z 0/-1 are the wafer pair w 0/1 */
+            layersReset(); histClear(); g_orient = 0;
+            voxSet(0,0,0,5,5,1);  voxAt(0,0,0)->smoothFaces = 1<<0;
+            voxSet(0,0,-4,7,7,1); voxAt(0,0,-4)->smoothFaces = 1<<2;
+            voxSet(0,0,-5,9,9,1);
+            g_flatDirty=1; ensureFlat();
+            sv=g_activeLayer; g_activeLayer=FLAT_LAYER; buildMash(1,2);
+            g_activeLayer=MASH_LAYER;
+            if( g_voxUsed != 4 )
+                { ok=0; fprintf(stderr,"FAIL mash-fill (%d)\n",g_voxUsed); }
+            m = voxAt(0,0,-1);            /* air cell filled from its wafer-mate */
+            if( !m || m->color != 5 || m->smoothFaces != (1<<0) )
+                { ok=0; fprintf(stderr,"FAIL mash-air-fill\n"); }
+            m = voxAt(0,0,-4);            /* keeps its own colour, ORs smooth */
+            if( !m || m->color != 7 || m->smoothFaces != (1<<2) )
+                { ok=0; fprintf(stderr,"FAIL mash-own\n"); }
+            m = voxAt(0,0,-5);
+            if( !m || m->color != 9 || m->smoothFaces != (1<<2) )
+                { ok=0; fprintf(stderr,"FAIL mash-smooth-or\n"); }
+            /* equidistant donors: the one nearer the viewer (higher w) wins */
+            g_activeLayer=sv; layersReset();
+            voxSet(0,0,0,5,5,1); voxSet(0,0,-2,7,7,1);
+            g_flatDirty=1; ensureFlat();
+            g_activeLayer=FLAT_LAYER; buildMash(1,3); g_activeLayer=MASH_LAYER;
+            m = voxAt(0,0,-1);
+            if( g_voxUsed != 3 || !m || m->color != 7 )
+                { ok=0; fprintf(stderr,"FAIL mash-tie\n"); }
+            g_activeLayer=sv;
+            /* Render at 1 px/voxel with top scrunch 2: a 3-wide base 4 deep
+             * under a 1-voxel-thick 2-tall spike in its SECOND wafer -- the
+             * wafer plain decimation would drop.  Base -> 2 slabs (image rows
+             * 3), spike adds 2 front rows: height 5, and its column's top
+             * pixel is opaque while a base-only column's is not. */
+            layersReset(); histClear();
+            { int x, z;
+              for( x = 0; x < 3; x++ ) for( z = 0; z > -4; z-- )
+                  voxSet( x, 0, z, 5, 5, 1 );
+              voxSet( 0, 1, -1, 5, 5, 1 ); voxSet( 0, 2, -1, 5, 5, 1 ); }
+            g_voxPx = 1; g_frontScrunch = 1; g_topScrunch = 2;
+            g_renderDirty = 1; ensureRender();
+            if( g_imgW != 3 || g_imgH != 5 )
+                { ok=0; fprintf(stderr,"FAIL mash-render-size (%dx%d)\n",
+                                g_imgW, g_imgH); }
+            else if( g_img[ (0*3+2)*4+3 ] == 0 || g_img[ (0*3+0)*4+3 ] != 0 ||
+                     g_img[ (4*3+0)*4+3 ] == 0 )
+                { ok=0; fprintf(stderr,"FAIL mash-render-spike\n"); }
+            /* the same scene at a whole-pixel scrunch (2 px, top 2 -> 2x1)
+             * needs no mashing: the image spans the view-frame bounding box,
+             * from the spike's top-face top (v 2, w 0) to the base's front
+             * bottom (v 0, w 3): 2*2 + 1 + 3*1 + 2 = 10 rows, 6 wide */
+            g_voxPx = 2; g_topScrunch = 2;
+            g_renderDirty = 1; ensureRender();
+            if( g_imgW != 6 || g_imgH != 10 )
+                { ok=0; fprintf(stderr,"FAIL mash-none-size (%dx%d)\n",
+                                g_imgW, g_imgH); }
+            g_voxPx = svPx; g_frontScrunch = svFS; g_topScrunch = svTS;
+            g_orient = svOr;
+            layersReset(); histClear(); g_renderDirty = 1;
         }
         fprintf( stderr, ok ? "SELFTEST OK\n" : "SELFTEST FAILED\n" );
         gui_shutdown(); SDL_GL_DeleteContext(glctx); SDL_DestroyWindow(window);

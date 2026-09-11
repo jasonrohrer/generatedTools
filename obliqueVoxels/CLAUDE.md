@@ -30,11 +30,65 @@ Occlusion uses a per-pixel depth buffer keyed by `closeness = v*topH + w*frontH`
 
 * **voxel px** = horizontal size of a voxel (and its face width).
 * **front/top scrunch** ∈ {1,2,3} foreshortens a face: `faceH = voxPx/scrunch`
-  (whole-pixel ratios only — e.g. voxPx 2, top scrunch 2 → 2×1 top squares).
+  (e.g. voxPx 2, top scrunch 2 → 2×1 top squares).  When that is not a whole
+  pixel (voxPx 1 with any scrunch, voxPx 2 with scrunch 3) the render **mashes
+  wafers** instead of clamping — see **Scrunch mashing** below.
 * **orient** 0/90/180/270 yaws the oblique view around vertical.  The four
   named orientations (Front/Right/Back/Left) are aligned to show the SAME face
   as the matching 3D-view preset: Front sees the −z face, Right +x, Back +z,
   Left −x (so `toUVW`/`fromUVW`/`g_frontDir` and the light rotation all agree).
+
+## Scrunch mashing (foreshortening below one pixel per voxel)
+
+The main use of the tool is 1:1 pixel art (voxPx 1), and the un-foreshortened
+top-front oblique looks odd there — one step of top scrunch is what makes it
+read naturally.  But a scrunch only has pixels to remove when a face is more
+than one pixel tall, so at voxPx 1 the user used to have to bake the
+foreshortening into the model (a 16-wide "square" base only 8 deep), which is
+error-prone (spheres must be ovoids, relative sizes drift).
+
+So when `voxPx/scrunch` is not a whole number the renderer **merges wafers of
+voxels** along that axis before shading (`mashFactor`, `buildMash`,
+`MASH_LAYER`): every run of `k` consecutive wafers — perpendicular to the depth
+axis for a top scrunch, horizontal for a front scrunch, counted in the *view
+frame* so it follows `orient` — becomes one **slab** drawn `k·voxPx/scrunch`
+pixels tall, with `k = scrunch / gcd(voxPx, scrunch)` the smallest count that
+makes that an integer.  voxPx 1 + scrunch 2 merges pairs into 1-px faces;
+voxPx 1 + scrunch 3 merges triples; voxPx 2 + scrunch 3 merges triples into
+2-px faces; voxPx 2 + scrunch 2 needs no merging (`k = 1`) and, like every
+whole-pixel case, renders **bit-for-bit as before** (verified on the sample
+`.ovox` files).  Both axes can mash at once (blocks of `kV × kW` cells).
+
+* **It is a union, not a decimation.**  A block that contains *any* voxel is
+  filled solid, so a positive detail (the 1-voxel cross on a king) survives
+  whichever wafer it sits in — plain "drop every other wafer" would delete it
+  depending on alignment.  Only *negative* detail on the scrunched faces
+  (pockets, holes) fills in, and front-facing detail is untouched by a top
+  scrunch (and vice versa).  A self-test renders exactly that king-and-cross
+  case.
+* **Smooth masks OR together** across the merged cells, so a smooth surface is
+  still smooth after the merge.  **Colour/ramp:** a cell that was itself a
+  source keeps its own; an air cell that got filled copies the nearest source
+  in its block, ties going to the one nearest the viewer / the top (the face
+  that actually shows).  Scrunching a multi-colour model is not really the use
+  case, so this just has to be sensible.
+* **Shading happens on the mashed model, in true world space.**  The slab keeps
+  unit cells (the block is filled cell-by-cell in the scratch layer), so the
+  unchanged Lambert / shadow-ray / surface-walk code sees it as the chunkier
+  voxel model it is.  `renderOblique` walks only *slab-origin* cells, drawing
+  each slab's front face `frontH` px tall and its top face `topH` px tall,
+  sampling world points across the slab's real `kV`/`kW`-cell extent, and
+  using the shading normal of whichever slab cell owns each pixel row.
+  Occlusion uses slab-grid indices, so the depth key is exactly the ordinary
+  one on the slab grid.  The cross's shadow lands on the mashed body, as it
+  should.
+* The **projector direction** (`obliqueViewDir`) is now the exact rational
+  `(0, voxPx/topScrunch, voxPx/frontScrunch)` per cell — the same ratio a slab
+  has, so specular still agrees with the projection.
+* The 3D view (and its "match render" shading) still shows the *unmashed*
+  model — the sculpture you edit.  The render panel prints an orange
+  `mashing N wafers …` line whenever a mash is in effect, so a render that is
+  suddenly shorter than the model is not a mystery.
 
 ## Shading
 

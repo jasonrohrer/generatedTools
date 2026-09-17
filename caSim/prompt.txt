@@ -1,0 +1,108 @@
+In this folder, you will find a sub-folder containing the source code for a new game called Chessamphetamine (CA).  You are going to write a SIMULATOR for this game, to do automated play-testing in a headless mode.  Call your simulator "caSim".
+
+You may find this folder otherwise empty, in which case, you're just getting started.  On the other hand, you may find that someone before you has already made some progress.  If that's the case, pick up where they left off, analyze the current situation, and try to make some improvements.
+
+Also, as users test your simulator, they will leave notes about any issues or problems in userNotes.txt  Please study that file and fix any reported issues.
+
+Your simulator will be written in pure C89 code with absolutely no header includes, beyond including the necessary CA source headers.  You can use stdout.h for output only.
+
+CA is built on top of a graphical game engine which you will find in mingin.h and maxigin.h, but you shouldn't need to use those at all.
+
+Instead of actually "running the game" through the game engine, you should simulate what would happen in the game, step-by-step, using the underlying souce code.  This will make your simulations much faster than they would be if you actually tried to play the graphical version of the game and simulate mouse clicks, etc.
+
+Files that you will likely need include:
+
+chess.h
+levels.h
+formation.h
+decks.h
+playerDeck.h
+rarity.h
+roll.h
+shop.h
+money.h
+sideBoard.h
+
+Some of these headers DO depend on maxign.h for their draw functions, so you may need to include it, and maxigin.h depends on mingin.h, but make sure to undefine these so the "null" implementation of mingin.h gets compiled in (otherwise it will include code for platform-specific main entry points):
+
+__linux__
+_WIN32
+
+Now, it may be unclear from the source code how CA works, step-by-step.  That could be gleaned from a deep study of game.c (which stiches everything together).  However, I will try to save you that work by explaining it.
+
+Players start the game on Level 0 with 2 hearts (in 2 heart containers) and 2 formation spots (plus their King formation spot.... 3 total).  They start with a deck containing the 15 normal chess pieces (minus the king).  8 p, 2 R, 2 N, 2 B, 1 Q.
+
+Players always play as WHITE.
+
+The game plays in rounds that repeat until they run out of hearts and die.
+
+In each round, they do this, in this order:
+
+1.  Arrange their formation spots in their back 3 rows however they want.  They do this blindly, without seeing the enemy formation.
+
+2.  See the enemy formation (which is fixed for this level) and what pieces the enemy has in its formation (the spots are picked using level.h, which populates the spots from the enemey's growing deck).
+
+3.  Draw pieces from their deck into their non-King formation spot, and also to fill their sideboard.
+
+4.  Swap pieces around in their various formation spots (except for the king spot) and also to/from the sideboard.   Potentially pay to redraw the sideboard from their deck with a rising cost.  The formula for redraw costs is described below.  Once their formation looks good (or they run out of money to redraw), they are done with the formation step.
+
+5.  Run an AI simulated match (AI picking moves for both sides) by repeated calls to getChessMove (from chess.h) until one side is checkmated OR there's an overrun condition (50 moves with no capture generally, or 20 moves with no capture if isForcedCheckmatePossible( &postMoveState ) returns false).  In the case of an overrun, whoever has the highest score through getScore( &postMoveState ) wins (player wins in the case of a tie score on overrun).  During a match, the player earns money for each enemy piece captured according to moneyAddCapture.
+
+6.  If they get checkmated or get overrun (enemy has higher score after overrun), then they lose a heart.  If they checkmate the enemy, they gain a heart, up to the heart container limit.  They do NOT gain a heart if they win through an overrun in their favor.  Essentially, hearts are a buffer.  In order to lose the game, you have to get checkmated/overrun 2x in a row with no checkmates in your favor in between.
+
+7.  After the match, they visit the shop.  You can study shop.h to see the various costs.  Pieces are drawn according to rarities into the slots, and each level, there's always an extra formation slot available for a rising cost (each additional slot costs more).  You can only buy ONE formation slot per shop visit, though.  You can reroll the shop and keep buying pieces as long as you have money.
+
+8.  After the shop, they level count increments, and they return to Step 1 above (adjusting their formation, which may include a new spot they just purchased).
+
+
+
+    /* redraw costs are 1, 2, 3, 6, 10, etc */
+    drawCost = costInit( 1,   /* cost starts at 1 */
+                         1,   /* every redraw, cost goes up by inc=1 */
+                         -1,
+                         -1,
+                         1,   /* every redraw, we add 1 to inc */
+                         0,
+                         -1,
+                         -1,  /* cost never increases as levels rise*/
+                         0 );
+						 
+
+Note that, to restart the simulation from scratch, you should not call various init functions again (like shopInit), because some of those attempt to load graphics and sounds.  So you should call the various clearing and reset functions instead.
+
+
+There's also an unlock system, with permanent unlocks triggered when the player checkmates at or beyond levels 8, 16, and 32 (triggered through unlocksBeatLevel( int  inLevel )).  Overrun in their favor does NOT trigger an unlock.  The various features (shop, sideboard) pay attention to the unlocks system to determine their features (number of slots, perma-sale, etc.).
+
+
+Okay, so that's how CA works.... now what is the purpose of your simulation?
+
+
+Through human playtesting, I'm getting a general idea of whether the game is too difficult or too easy.  However, tweaking the parameters (like piece rarities, shop costs) and then re-testing doesn't give much info, because each run has so much RNG influencing it.  I really need a lot more data to judge the impact of a change.  How do runs change, on AVERAGE, if I raise all shop costs by 1?   And how easy can the game possibly be?  Is it possible for some players to beat level 32 on their first run, with no unlocks to start?  Also, how hard?  Is it possible for some unlucky players to grind away for hours and never make it to level 8?  And how much do the unlocks help?
+
+
+For your first try at this, why don't you make a naive but competent player who tries to buy good things in the shop, tries to expand the formation, tries to lay the formation out in a reasonable way, and tries to place pieces to facilitate good early-game trades, etc.
+
+For each simulation, you will start the player from scratch, with no unlocks, and see how far they get.  Then repeat again from scratch, generating a histogram for how many times they reached each level, and also what the average reach was.
+
+Then you can also simulate again with various unlocks (by manually doing unlocksBeatLevel and unlocksHardReset) to see how those shift the histogram.
+
+Finally, there should be a settings file (called logOn.ini) which, if it contains 1, causes stdout output of all the decisions, formation, shop layouts, board states, etc., so we can sanity check if the game is being played correctly.
+
+If logOn.ini does not contain 1, verbose output should be off, and only the end histogram reports should be generated (along with some brief signs-of-life outputs above various phases of simulation being entered).
+
+There should be another settings file (called numPerBatch.ini) that gives the number of runs per batch.
+
+And the following batches should be run:
+
+--No unlocks
+--First unlock only
+--First two unlocks only
+--All three unlocks
+
+(Note that during any of these runs, if the player passes the required level and checkmates as required, they should gain the unlock for the remainder of their run, but then hard reset it again for the next run).
+
+
+
+
+
+After you work on this program, please commit your changes to the local git repo with a detailed commit message describing what you did.

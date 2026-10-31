@@ -1,0 +1,41 @@
+In this folder, you are going to make a brand new, clean-room graphical programmer's text editor.  Not an IDE... just a text editor, like Emacs or VIM.  Call it "cedit"
+
+
+You may find this folder empty, in which case, you're just getting started.  On the other hand, you may find that someone before you has already made some progress.  If that's the case, pick up where they left off, analyze the current situation, and try to make some improvements.
+
+Also, as users test your text editor, they will leave notes about any issues or problems in userNotes.txt  Please study that file and fix any reported issues.
+
+The program will be written in pure C89 code, to be compiled with GCC.  The only linked library dependencies will be SDL 2 and OpenGL for creating a window and doing accellerated graphics.
+
+For graphical user interface stuff, you will compile in IMGui code, which you will find already in a sub-folder here.
+
+
+Now about the editor itself:
+
+You are essentially trying to make a Emacs-killer, specifically for editing c89 code.
+
+Emacs is incredible for it's robust and configurable auto-indentation features, where it strictly enforces an indentation style, and also handles lots of complex cases gratefully (like indenting lists of function arguments to line up with each other).
+
+However, emacs is a bit bloated and slow... so many moving parts... it's really a swiss army knife... what can't you do in emacs?   But this bloat makes it slow to launch (3 seconds until you can type, even re-launching on a hot hard drive cache), and it has trouble scrolling big files full of syntax highlighting.
+
+
+The ONLY thing this editor will do is edit C89 files and compile the project (with a configurable compile command... maybe even from a config file in the current folder) and step through compiler errors.  It will be able to open huge files and scroll through them smoothly, and instantly switch between multiple open files with keyboard commands.
+
+
+The editor will have full-featured C89 syntax highlighting, with a user-configurable color file for every aspect of the language.
+
+The editor will have robust auto-indenting, with user-configurable file for tweaking the indentation style.   I personally use a Ratliff-like style, which most editors don't support (though I've been able to configure Emacs to support it).
+
+It only needs to support spaces, and never tabs.
+
+It should also have robust user-configurable support for other auto-formatting things, like adding spaces around function arguments, or adding two spaces between a variable type and name, or auto-formatting variable declarations at the top of a block into a nice table with columns (by inserting spaces, an adding new spaces as needed to previous rows as the minimum column width changes).
+
+All commands should be available through the keyboard, including opening new files and typing/auto-completing the path.
+
+Auto-completion of tokens should be possible, but do it in a very simple way, like Emacs does, where it just searches back through the document (and then other open documents), looking for close matches, and then letting you cycle through them with the keyboard.  Maybe no pop-up auto-completion is needed at all.
+
+The other thing the editor should have is a user-configurable debug command, which lets the user launch whatever external debugger they want and specify the current file and line number to break on.   Probably something like:
+
+myDebugger ./myProgram  game.c:251
+
+There should be some way to specify a debug command like this, probably in a config file in the current folder.  Thus, there's no notion of a "project," but just that we're working in a folder of C89 files, and here's the structure of the compile command (and the editor will parse the gcc output and let is step through the errors), and here's the structure of the debug command.

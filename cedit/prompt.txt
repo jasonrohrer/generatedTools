@@ -39,3 +39,9 @@ The other thing the editor should have is a user-configurable debug command, whi
 myDebugger ./myProgram  game.c:251
 
 There should be some way to specify a debug command like this, probably in a config file in the current folder.  Thus, there's no notion of a "project," but just that we're working in a folder of C89 files, and here's the structure of the compile command (and the editor will parse the gcc output and let is step through the errors), and here's the structure of the debug command.
+
+
+You can launch your editor and grab screen shots of it with scrot to see if it looks correct.  I think there's some way you can do this in some kind of x headless display without making a window appear on my screen and interfering with other work that I'm doing on this computer.
+
+After you work on this program, please commit your changes to the local git repo with a detailed commit message describing what you did.
+

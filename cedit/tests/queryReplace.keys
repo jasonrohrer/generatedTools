@@ -1,0 +1,2 @@
+# query replace with ! on base.c
+M-% "totalValue" RET "sum" RET "!"

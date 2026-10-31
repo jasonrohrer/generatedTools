@@ -1,0 +1,1589 @@
+/*
+  cedit.c
+
+  cedit -- a fast, focused editor for C89 code.
+
+  This file holds main(), the SDL event loop, and all rendering.  The
+  editor state and commands are in editor.c;  the document model,
+  lexer/highlighter, indenter, formatter, config and compile modules are
+  pure C89 with no SDL dependency.
+
+  Headless modes (no window, for scripting and testing):
+
+    cedit --reindent FILE        print FILE re-indented
+    cedit --format FILE          print FILE re-indented and auto-formatted
+    cedit --check-indent FILE..  list lines whose indentation differs from
+                                 what cedit would produce
+    cedit --script KEYS FILE     replay keystrokes from the file KEYS
+                                 against FILE, then print the buffer
+    cedit --write-config         write commented default config files
+                                 into ~/.cedit/
+
+  Environment:
+    CEDIT_QUIT_AFTER=N           quit after N rendered frames (timing)
+*/
+
+#include "editor.h"
+#include "gui.h"
+#include "config.h"
+#include "syntax.h"
+#include "indent.h"
+#include "format.h"
+#include "compile.h"
+
+#include <SDL.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+
+#define CEDIT_VERSION  "0.1"
+
+
+/* layout of the last rendered frame, used for mouse hit testing */
+typedef struct Layout {
+        float  lineH;
+        float  charW;
+        float  tabTop;
+        float  tabBottom;
+        float  textTop;
+        float  textBottom;
+        float  textLeft;
+        float  compileTop;
+        float  compileBottom;
+        int    compileFirstLine;
+        /* x extents of each tab */
+        float *tabX0;
+        float *tabX1;
+        int    numTabs;
+        float  winW;
+        float  winH;
+    } Layout;
+
+static Layout  layout;
+
+static SDL_Window  *window  =  NULL;
+
+
+
+/* ------------------------------------------------------------------
+   Headless modes
+   ------------------------------------------------------------------ */
+
+static int headlessReindent( const char  *inPath,
+                             int          inFormat ) {
+    TextBuffer  *tb  =  tb_load( inPath, config.tabWidth, NULL );
+    int          i;
+
+    if( tb == NULL ) {
+        fprintf( stderr, "cedit:  can't read %s\n", inPath );
+        return 1;
+        }
+    syn_scanTypedefs( tb );
+    ind_indentRegion( tb, 0, tb->numLines - 1 );
+    if( inFormat ) {
+        config.formatOnEnter = 1;
+        fmt_formatRegion( tb, 0, tb->numLines - 1 );
+        }
+    for( i = 0;
+         i < tb->numLines;
+         i ++ ) {
+        if( i == tb->numLines - 1 && tb->lines[ i ].len == 0 ) {
+            break;
+            }
+        printf( "%.*s\n", tb->lines[ i ].len, tb->lines[ i ].text );
+        }
+    tb_destroy( tb );
+    return 0;
+    }
+
+
+
+static int headlessCheckIndent( int     inNumFiles,
+                                char  **inFiles ) {
+    int  f;
+    int  total  =  0;
+    int  diff   =  0;
+
+    for( f = 0;
+         f < inNumFiles;
+         f ++ ) {
+        TextBuffer  *tb  =  tb_load( inFiles[ f ], config.tabWidth, NULL );
+        int         *before;
+        int          i;
+
+        if( tb == NULL ) {
+            fprintf( stderr, "cedit:  can't read %s\n", inFiles[ f ] );
+            continue;
+            }
+        syn_scanTypedefs( tb );
+        before = (int *)malloc( (size_t)tb->numLines * sizeof( int ) );
+        for( i = 0;
+             i < tb->numLines;
+             i ++ ) {
+            before[ i ] = tb_lineIndent( tb, i );
+            }
+        ind_indentRegion( tb, 0, tb->numLines - 1 );
+        for( i = 0;
+             i < tb->numLines;
+             i ++ ) {
+            if( ! tb_lineIsBlank( tb, i )
+                &&
+                tb_lineIndent( tb, i ) != before[ i ] ) {
+                printf( "%s:%d: indent %d, cedit wants %d\n", inFiles[ f ],
+                        i + 1, before[ i ], tb_lineIndent( tb, i ) );
+                diff ++;
+                }
+            }
+        total += tb->numLines;
+        free( before );
+        tb_destroy( tb );
+        }
+    printf( "%d of %d lines differ\n", diff, total );
+    return diff > 0 ? 1 : 0;
+    }
+
+
+
+/* parses one key token like "C-x", "M-S-Up", "RET", "a" */
+static int parseKeyToken( const char  *inTok,
+                          int         *outKey,
+                          int         *outMods ) {
+    const char  *p     =  inTok;
+    int          mods  =  0;
+
+    while( p[ 0 ] != '\0' && p[ 1 ] == '-' && p[ 2 ] != '\0' ) {
+        if( p[ 0 ] == 'C' ) {
+            mods |= MOD_CTRL;
+            }
+        else if( p[ 0 ] == 'M' ) {
+            mods |= MOD_ALT;
+            }
+        else if( p[ 0 ] == 'S' ) {
+            mods |= MOD_SHIFT;
+            }
+        else {
+            break;
+            }
+        p += 2;
+        }
+    *outMods = mods;
+    if( strcmp( p, "RET" ) == 0 ) {
+        *outKey = SDLK_RETURN;
+        }
+    else if( strcmp( p, "TAB" ) == 0 ) {
+        *outKey = SDLK_TAB;
+        }
+    else if( strcmp( p, "BS" ) == 0 ) {
+        *outKey = SDLK_BACKSPACE;
+        }
+    else if( strcmp( p, "DEL" ) == 0 ) {
+        *outKey = SDLK_DELETE;
+        }
+    else if( strcmp( p, "ESC" ) == 0 ) {
+        *outKey = SDLK_ESCAPE;
+        }
+    else if( strcmp( p, "SPC" ) == 0 ) {
+        *outKey = SDLK_SPACE;
+        }
+    else if( strcmp( p, "Up" ) == 0 ) {
+        *outKey = SDLK_UP;
+        }
+    else if( strcmp( p, "Down" ) == 0 ) {
+        *outKey = SDLK_DOWN;
+        }
+    else if( strcmp( p, "Left" ) == 0 ) {
+        *outKey = SDLK_LEFT;
+        }
+    else if( strcmp( p, "Right" ) == 0 ) {
+        *outKey = SDLK_RIGHT;
+        }
+    else if( strcmp( p, "Home" ) == 0 ) {
+        *outKey = SDLK_HOME;
+        }
+    else if( strcmp( p, "End" ) == 0 ) {
+        *outKey = SDLK_END;
+        }
+    else if( strcmp( p, "PgUp" ) == 0 ) {
+        *outKey = SDLK_PAGEUP;
+        }
+    else if( strcmp( p, "PgDn" ) == 0 ) {
+        *outKey = SDLK_PAGEDOWN;
+        }
+    else if( p[ 0 ] == 'F' && p[ 1 ] >= '1' && p[ 1 ] <= '9' ) {
+        *outKey = SDLK_F1 + atoi( p + 1 ) - 1;
+        }
+    else if( p[ 0 ] != '\0' && p[ 1 ] == '\0' ) {
+        *outKey = (unsigned char)p[ 0 ];
+        }
+    else {
+        return 0;
+        }
+    return 1;
+    }
+
+
+
+/* replays a key script.  Tokens are whitespace separated;  "quoted text"
+   is typed character by character (\n in it presses Enter, \" is a
+   quote);  everything else is a key like C-x, M-/, RET, TAB, S-Down.
+   Lines starting with # are comments. */
+static int headlessScript( const char  *inScript,
+                           const char  *inFile ) {
+    FILE         *f  =  fopen( inScript, "r" );
+    char          line[ 4096 ];
+    char         *argv[ 2 ];
+    TextBuffer   *tb;
+    int           i;
+
+    if( f == NULL ) {
+        fprintf( stderr, "cedit:  can't read %s\n", inScript );
+        return 1;
+        }
+    argv[ 0 ] = (char *)"cedit";
+    argv[ 1 ] = (char *)inFile;
+    ed_init( inFile != NULL ? 2 : 1, argv );
+
+    while( fgets( line, sizeof( line ), f ) != NULL ) {
+        char  *p  =  line;
+
+        if( line[ 0 ] == '#' ) {
+            continue;
+            }
+        while( *p != '\0' ) {
+            while( *p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' ) {
+                p ++;
+                }
+            if( *p == '\0' ) {
+                break;
+                }
+            if( *p == '"' ) {
+                p ++;
+                while( *p != '\0' && *p != '"' ) {
+                    char  s[ 2 ];
+
+                    if( *p == '\\' && p[ 1 ] == 'n' ) {
+                        ed_keyDown( SDLK_RETURN, 0 );
+                        p += 2;
+                        continue;
+                        }
+                    if( *p == '\\' && p[ 1 ] != '\0' ) {
+                        p ++;
+                        }
+                    s[ 0 ] = *p;
+                    s[ 1 ] = '\0';
+                    if( ! ed_keyDown( (unsigned char)*p, 0 ) ) {
+                        ed_textInput( s );
+                        }
+                    p ++;
+                    }
+                if( *p == '"' ) {
+                    p ++;
+                    }
+                }
+            else {
+                char  tok[ 64 ];
+                int   n  =  0;
+                int   key;
+                int   mods;
+
+                while( *p != '\0' && *p != ' ' && *p != '\t' && *p != '\n'
+                       && *p != '\r' && n < 63 ) {
+                    tok[ n ++ ] = *p ++;
+                    }
+                tok[ n ] = '\0';
+                if( parseKeyToken( tok, &key, &mods ) ) {
+                    ed_keyDown( key, mods );
+                    }
+                else {
+                    fprintf( stderr, "cedit:  bad key token %s\n", tok );
+                    }
+                }
+            while( comp_isRunning() ) {
+                ed_tick();
+                SDL_Delay( 5 );
+                }
+            }
+        }
+    fclose( f );
+
+    tb = ed_cur();
+    for( i = 0;
+         i < tb->numLines;
+         i ++ ) {
+        printf( "%.*s\n", tb->lines[ i ].len, tb->lines[ i ].text );
+        }
+    fprintf( stderr, "cursor %d:%d  message: %s\n", tb->cursorLine + 1,
+             tb->cursorCol, ed.message );
+    return 0;
+    }
+
+
+
+/* ------------------------------------------------------------------
+   Rendering helpers
+   ------------------------------------------------------------------ */
+
+static unsigned int UC( int  inWhich ) {
+    return config.uiColor[ inWhich ];
+    }
+
+
+
+static void drawString( float         inX,
+                        float         inY,
+                        unsigned int  inColor,
+                        const char   *inS ) {
+    gui_text( inX, inY, inColor, inS, (int)strlen( inS ) );
+    }
+
+
+
+/* draws a run of bytes of one line at character cells, handling UTF-8
+   (a multi-byte char is drawn at the cell of its first byte) */
+static void drawCells( float         inX,
+                       float         inY,
+                       float         inCharW,
+                       unsigned int  inColor,
+                       const char   *inText,
+                       int           inLen ) {
+    int  i;
+    int  start  =  0;
+
+    for( i = 0;
+         i <= inLen;
+         i ++ ) {
+        if( i == inLen || ( inText[ i ] & 0x80 ) ) {
+            if( i > start ) {
+                gui_text( inX + (float)start * inCharW, inY, inColor,
+                          inText + start, i - start );
+                }
+            if( i < inLen ) {
+                int  n  =  1;
+
+                while( i + n < inLen && ( inText[ i + n ] & 0xC0 ) == 0x80 ) {
+                    n ++;
+                    }
+                gui_text( inX + (float)i * inCharW, inY, inColor, inText + i,
+                          n );
+                i += n - 1;
+                start = i + 1;
+                }
+            }
+        }
+    }
+
+
+
+static int numDigits( int  inN ) {
+    int  d  =  1;
+
+    while( inN >= 10 ) {
+        inN /= 10;
+        d ++;
+        }
+    return d;
+    }
+
+
+
+static int matchAtFold( Line        *inL,
+                        int          inCol,
+                        const char  *inText,
+                        int          inLen,
+                        int          inFold ) {
+    int  i;
+
+    if( inCol + inLen > inL->len ) {
+        return 0;
+        }
+    for( i = 0;
+         i < inLen;
+         i ++ ) {
+        char  a  =  inL->text[ inCol + i ];
+        char  b  =  inText[ i ];
+
+        if( inFold ) {
+            if( a >= 'A' && a <= 'Z' ) {
+                a = (char)( a - 'A' + 'a' );
+                }
+            if( b >= 'A' && b <= 'Z' ) {
+                b = (char)( b - 'A' + 'a' );
+                }
+            }
+        if( a != b ) {
+            return 0;
+            }
+        }
+    return 1;
+    }
+
+
+
+/* ------------------------------------------------------------------
+   Main text view
+   ------------------------------------------------------------------ */
+
+static void updateScroll( TextBuffer  *inTB,
+                          int          inRows,
+                          int          inCols,
+                          float        inDT ) {
+    int    cl      =  inTB->cursorLine;
+    int    cc      =  inTB->cursorCol;
+    int    margin  =  config.scrollMargin;
+    float  maxTop  =  (float)( inTB->numLines - 1 );
+    float  t;
+
+    if( margin > inRows / 2 - 1 ) {
+        margin = inRows / 2 - 1;
+        }
+    if( margin < 0 ) {
+        margin = 0;
+        }
+
+    if( ed.recenterRequest ) {
+        inTB->targetScrollY = (float)( cl - inRows / 2 );
+        ed.recenterRequest = 0;
+        }
+    t = inTB->targetScrollY;
+    if( (float)cl < t + (float)margin ) {
+        t = (float)( cl - margin );
+        }
+    if( (float)cl > t + (float)( inRows - 1 - margin ) ) {
+        t = (float)( cl - inRows + 1 + margin );
+        }
+    if( t > maxTop ) {
+        t = maxTop;
+        }
+    if( t < 0 ) {
+        t = 0;
+        }
+    /* whole lines only for the resting position */
+    t = (float)floor( t + 0.5 );
+    inTB->targetScrollY = t;
+
+    if( config.smoothScroll
+        &&
+        fabs( t - inTB->scrollY ) < (float)inRows * 3.0f ) {
+        float  k  =  inDT * 20.0f;
+
+        if( k > 1.0f ) {
+            k = 1.0f;
+            }
+        inTB->scrollY += ( t - inTB->scrollY ) * k;
+        if( fabs( t - inTB->scrollY ) < 0.02f ) {
+            inTB->scrollY = t;
+            }
+        }
+    else {
+        inTB->scrollY = t;
+        }
+
+    /* horizontal */
+    if( (float)cc < inTB->scrollX ) {
+        inTB->scrollX = (float)( cc - inCols / 4 );
+        }
+    if( (float)cc > inTB->scrollX + (float)inCols - 2 ) {
+        inTB->scrollX = (float)( cc - inCols + inCols / 4 );
+        }
+    if( inTB->scrollX < 0 ) {
+        inTB->scrollX = 0;
+        }
+    }
+
+
+
+static int isAnimating( void ) {
+    TextBuffer  *tb  =  ed_cur();
+
+    return tb->scrollY != tb->targetScrollY;
+    }
+
+
+
+static void drawTextView( float  inTop,
+                          float  inBottom,
+                          float  inW,
+                          float  inDT ) {
+    static unsigned char  *classes     =  NULL;
+    static int             classesCap  =  0;
+    TextBuffer            *tb          =  ed_cur();
+    float                  lineH       =  layout.lineH;
+    float                  charW       =  layout.charW;
+    float                  gutterW;
+    float                  textX;
+    int                    rows;
+    int                    cols;
+    int                    firstLine;
+    float                  yOff;
+    int                    i;
+    int                    sl          =  0;
+    int                    sc          =  0;
+    int                    el          =  0;
+    int                    ec          =  0;
+    int                    hasRegion;
+    int                    cl;
+    int                    cc;
+    int                    scrollXi;
+    const char            *searchText  =  NULL;
+    int                    searchFold  =  0;
+    int                    searchLen   =  0;
+    int                    parenL1     =  -1;
+    int                    parenC1     =  -1;
+    int                    parenL2     =  -1;
+    int                    parenC2     =  -1;
+    int                    errLine     =  -1;
+    int                    markL;
+    int                    markC;
+
+    if( config.showLineNumbers ) {
+        gutterW = (float)( numDigits( tb->numLines ) + 2 ) * charW;
+        }
+    else {
+        gutterW = charW * 0.5f;
+        }
+    textX = gutterW;
+    layout.textLeft = textX;
+    layout.textTop = inTop;
+    layout.textBottom = inBottom;
+
+    rows = (int)( ( inBottom - inTop ) / lineH );
+    if( rows < 1 ) {
+        rows = 1;
+        }
+    cols = (int)( ( inW - textX ) / charW );
+    if( cols < 1 ) {
+        cols = 1;
+        }
+    ed.visibleRows = rows;
+    ed.visibleCols = cols;
+
+    updateScroll( tb, rows, cols, inDT );
+
+    cl = tb->cursorLine;
+    cc = tb->cursorCol;
+    scrollXi = (int)tb->scrollX;
+    firstLine = (int)floor( tb->scrollY );
+    yOff = inTop - ( tb->scrollY - (float)firstLine ) * lineH;
+
+    hasRegion = ed_getRegion( &sl, &sc, &el, &ec );
+    if( ed_searchHighlight( &searchText, &searchFold ) ) {
+        searchLen = (int)strlen( searchText );
+        }
+
+    /* bracket matching */
+    {
+        Line  *l  =  &( tb->lines[ cl ] );
+
+        if( cc < l->len && strchr( "([{", l->text[ cc ] ) != NULL ) {
+            parenL1 = cl;
+            parenC1 = cc;
+            }
+        else if( cc > 0 && strchr( ")]}", l->text[ cc - 1 ] ) != NULL ) {
+            parenL1 = cl;
+            parenC1 = cc - 1;
+            }
+        else if( cc < l->len && strchr( ")]}", l->text[ cc ] ) != NULL ) {
+            parenL1 = cl;
+            parenC1 = cc;
+            }
+        if( parenL1 >= 0
+            &&
+            ! ind_findMatchingBracket( tb, parenL1, parenC1, 3000, &parenL2,
+                                       &parenC2 ) ) {
+            parenL2 = -2;
+            }
+        }
+
+    /* current compile error location in this buffer */
+    if( ed.currentError >= 0 ) {
+        CompileError  *e  =  comp_getError( ed.currentError );
+
+        if( e != NULL && e->buffer == tb ) {
+            int  ecol;
+
+            tb_getMarker( tb, e->marker, &errLine, &ecol );
+            }
+        }
+
+    tb_getMarker( tb, tb->markMarker, &markL, &markC );
+
+    gui_rect( 0, inTop, inW, inBottom, UC( UI_BACKGROUND ) );
+    gui_rect( 0, inTop, gutterW, inBottom, UC( UI_GUTTER_BG ) );
+
+    gui_pushClip( textX, inTop, inW, inBottom );
+
+    /* backgrounds */
+    for( i = 0;
+         i <= rows;
+         i ++ ) {
+        int    line  =  firstLine + i;
+        float  y     =  yOff + (float)i * lineH;
+        Line  *l;
+
+        if( line >= tb->numLines ) {
+            break;
+            }
+        l = &( tb->lines[ line ] );
+
+        if( line == cl && config.highlightCurrentLine ) {
+            gui_rect( textX, y, inW, y + lineH, UC( UI_CURRENT_LINE ) );
+            }
+        if( line == errLine ) {
+            gui_rect( textX, y, inW, y + lineH, UC( UI_ERROR_LINE ) );
+            }
+
+        if( config.showTrailingSpace && l->len > 0
+            && l->text[ l->len - 1 ] == ' '
+            && ! ( line == cl && cc == l->len ) ) {
+            int  s  =  l->len;
+
+            while( s > 0 && l->text[ s - 1 ] == ' ' ) {
+                s --;
+                }
+            gui_rect( textX + (float)( s - scrollXi ) * charW, y,
+                      textX + (float)( l->len - scrollXi ) * charW, y + lineH,
+                      UC( UI_TRAILING_SPACE ) );
+            }
+
+        if( hasRegion && line >= sl && line <= el ) {
+            int  s  =  ( line == sl ) ? sc : 0;
+            int  e  =  ( line == el ) ? ec : l->len + 1;
+
+            if( e > s ) {
+                gui_rect( textX + (float)( s - scrollXi ) * charW, y,
+                          textX + (float)( e - scrollXi ) * charW, y + lineH,
+                          UC( UI_SELECTION ) );
+                }
+            }
+
+        if( searchLen > 0 ) {
+            int  c;
+
+            for( c = 0;
+                 c + searchLen <= l->len;
+                 c ++ ) {
+                if( matchAtFold( l, c, searchText, searchLen, searchFold ) ) {
+                    int  cur  =  ( line == ed.matchLine && c == ed.matchCol );
+
+                    gui_rect( textX + (float)( c - scrollXi ) * charW, y,
+                              textX + (float)( c + searchLen - scrollXi )
+                              * charW, y + lineH,
+                              UC( cur ? UI_SEARCH_CURRENT
+                                  : UI_SEARCH_MATCH ) );
+                    c += searchLen - 1;
+                    }
+                }
+            }
+
+        if( line == parenL1 || line == parenL2 ) {
+            int  pc  =  line == parenL1 ? parenC1 : parenC2;
+            unsigned int  col  =  parenL2 == -2 ? UC( UI_MISMATCH_PAREN )
+                                  : UC( UI_MATCH_PAREN );
+
+            if( parenL2 != -2 || line == parenL1 ) {
+                gui_rect( textX + (float)( pc - scrollXi ) * charW, y,
+                          textX + (float)( pc + 1 - scrollXi ) * charW,
+                          y + lineH, col );
+                }
+            if( line == parenL1 && line == parenL2 ) {
+                gui_rect( textX + (float)( parenC2 - scrollXi ) * charW, y,
+                          textX + (float)( parenC2 + 1 - scrollXi ) * charW,
+                          y + lineH, col );
+                }
+            }
+
+        if( tb->markSet && line == markL
+            && ! ( markL == cl && markC == cc ) ) {
+            /* visible mark */
+            gui_rect( textX + (float)( markC - scrollXi ) * charW, y,
+                      textX + (float)( markC + 1 - scrollXi ) * charW,
+                      y + lineH, UC( UI_MARK ) );
+            gui_rect( textX + (float)( markC - scrollXi ) * charW,
+                      y + lineH - 2,
+                      textX + (float)( markC + 1 - scrollXi ) * charW,
+                      y + lineH, UC( UI_CURSOR ) );
+            }
+        }
+
+    /* current column band and ruler */
+    if( config.highlightCurrentColumn ) {
+        float  x  =  textX + (float)( cc - scrollXi ) * charW;
+
+        gui_rect( x, inTop, x + charW, inBottom, UC( UI_CURRENT_COLUMN ) );
+        }
+    if( config.showRuler && config.fillColumn > 0 ) {
+        float  x  =  textX + (float)( config.fillColumn - scrollXi ) * charW;
+
+        gui_line( x, inTop, x, inBottom, UC( UI_RULER ), 1.0f );
+        }
+
+    /* text */
+    for( i = 0;
+         i <= rows;
+         i ++ ) {
+        int    line  =  firstLine + i;
+        float  y     =  yOff + (float)i * lineH;
+        Line  *l;
+        int    s;
+        int    e;
+        int    c;
+
+        if( line >= tb->numLines ) {
+            break;
+            }
+        l = &( tb->lines[ line ] );
+        if( l->len == 0 ) {
+            continue;
+            }
+        if( classesCap < l->len ) {
+            classesCap = l->len * 2 + 256;
+            classes = (unsigned char *)realloc( classes, (size_t)classesCap );
+            }
+        syn_highlightLine( tb, line, classes );
+
+        s = scrollXi;
+        e = scrollXi + cols + 1;
+        if( e > l->len ) {
+            e = l->len;
+            }
+        c = s;
+        while( c < e ) {
+            int  k    =  c;
+            int  cls  =  classes[ c ];
+
+            if( l->text[ c ] == ' ' ) {
+                c ++;
+                continue;
+                }
+            while( k < e && classes[ k ] == cls && l->text[ k ] != ' ' ) {
+                k ++;
+                }
+            drawCells( textX + (float)( c - scrollXi ) * charW, y, charW,
+                       config.syntaxColor[ cls ], l->text + c, k - c );
+            c = k;
+            }
+        }
+
+    /* cursor */
+    {
+        int    row  =  cl - firstLine;
+        float  y    =  yOff + (float)row * lineH;
+        float  x    =  textX + (float)( cc - scrollXi ) * charW;
+        Line  *l    =  &( tb->lines[ cl ] );
+
+        if( ed.mbMode == MB_NONE || ed.mbMode == MB_ISEARCH
+            || ed.mbMode == MB_QUERY_REPLACE ) {
+            gui_rect( x, y, x + charW, y + lineH, UC( UI_CURSOR ) );
+            if( cc < l->len && l->text[ cc ] != ' ' ) {
+                int  n  =  1;
+
+                while( cc + n < l->len
+                       && ( l->text[ cc + n ] & 0xC0 ) == 0x80 ) {
+                    n ++;
+                    }
+                gui_text( x, y, UC( UI_CURSOR_TEXT ), l->text + cc, n );
+                }
+            }
+        else {
+            gui_rectOutline( x, y, x + charW, y + lineH, UC( UI_CURSOR ),
+                             1.0f );
+            }
+        }
+
+    gui_popClip();
+
+    /* line numbers */
+    if( config.showLineNumbers ) {
+        gui_pushClip( 0, inTop, gutterW, inBottom );
+        for( i = 0;
+             i <= rows;
+             i ++ ) {
+            int    line  =  firstLine + i;
+            float  y     =  yOff + (float)i * lineH;
+            char   num[ 32 ];
+            int    n;
+
+            if( line >= tb->numLines ) {
+                break;
+                }
+            n = sprintf( num, "%d", line + 1 );
+            gui_text( gutterW - (float)( n + 1 ) * charW, y,
+                      UC( line == cl ? UI_LINE_NUMBER_CURRENT
+                          : UI_LINE_NUMBER ), num, n );
+            }
+        gui_popClip();
+        }
+    }
+
+
+
+/* ------------------------------------------------------------------
+   Chrome:  tab bar, compile pane, status line, minibuffer
+   ------------------------------------------------------------------ */
+
+/* tab label:  "3 name" (number is the M-3 shortcut) with a * when
+   modified */
+static void tabLabel( int    inIndex,
+                      char  *outLabel ) {
+    TextBuffer  *tb   =  ed.buffers[ inIndex ];
+    int          mod  =  tb_isModified( tb ) && tb->path != NULL;
+
+    if( inIndex < 9 ) {
+        sprintf( outLabel, "%d %s%.500s", inIndex + 1, mod ? "*" : "",
+                 tb->name );
+        }
+    else {
+        sprintf( outLabel, "%s%.500s", mod ? "*" : "", tb->name );
+        }
+    }
+
+
+
+static void drawTabBar( float  inTop,
+                        float  inH,
+                        float  inW ) {
+    float  charW     =  layout.charW;
+    float  total     =  0;
+    float  x;
+    float  offset    =  0;
+    float  activeX1  =  0;
+    int    i;
+    char   label[ 600 ];
+
+    layout.tabX0 = (float *)realloc( layout.tabX0,
+                                     (size_t)( ed.numBuffers + 1 )
+                                     * sizeof( float ) );
+    layout.tabX1 = (float *)realloc( layout.tabX1,
+                                     (size_t)( ed.numBuffers + 1 )
+                                     * sizeof( float ) );
+    layout.numTabs = ed.numBuffers;
+    layout.tabTop = inTop;
+    layout.tabBottom = inTop + inH;
+
+    gui_rect( 0, inTop, inW, inTop + inH, UC( UI_TAB_BG ) );
+
+    /* scroll the bar so the active tab is visible */
+    for( i = 0;
+         i < ed.numBuffers;
+         i ++ ) {
+        float  w;
+
+        tabLabel( i, label );
+        w = (float)( strlen( label ) + 3 ) * charW;
+        if( i == ed.current ) {
+            activeX1 = total + w;
+            }
+        total += w + 2;
+        }
+    if( activeX1 > inW ) {
+        offset = activeX1 - inW + charW * 4;
+        }
+
+    x = - offset;
+    for( i = 0;
+         i < ed.numBuffers;
+         i ++ ) {
+        int    act  =  ( i == ed.current );
+        float  w;
+
+        tabLabel( i, label );
+        w = (float)( strlen( label ) + 3 ) * charW;
+        layout.tabX0[ i ] = x;
+        layout.tabX1[ i ] = x + w;
+        if( x + w > 0 && x < inW ) {
+            gui_rect( x, inTop + 3, x + w, inTop + inH,
+                      UC( act ? UI_TAB_ACTIVE_BG : UI_TAB_BG ) );
+            if( ! act ) {
+                gui_line( x + w, inTop + 6, x + w, inTop + inH - 3,
+                          UC( UI_TAB_FG ), 1.0f );
+                }
+            drawString( x + charW * 1.5f,
+                        inTop + 3 + ( inH - 3 - layout.lineH ) / 2,
+                        UC( act ? UI_TAB_ACTIVE_FG : UI_TAB_FG ), label );
+            }
+        x += w + 2;
+        }
+    }
+
+
+
+static void drawCompilePane( float  inTop,
+                             float  inBottom,
+                             float  inW ) {
+    TextBuffer  *cb      =  ed.compileBuffer;
+    float        lineH   =  layout.lineH;
+    float        charW   =  layout.charW;
+    int          rows;
+    int          first;
+    int          i;
+    char         header[ 1200 ];
+    int          ne;
+    int          nw;
+
+    layout.compileTop = inTop;
+    layout.compileBottom = inBottom;
+
+    gui_rect( 0, inTop, inW, inBottom, UC( UI_COMPILE_BG ) );
+    gui_rect( 0, inTop, inW, inTop + lineH + 2, UC( UI_STATUS_BG ) );
+
+    comp_countErrors( &ne, &nw );
+    if( comp_isRunning() ) {
+        sprintf( header, " *compile*   running...   %d error%s, %d warning%s",
+                 ne, ne == 1 ? "" : "s", nw, nw == 1 ? "" : "s" );
+        }
+    else {
+        sprintf( header, " *compile*   %s   %d error%s, %d warning%s   "
+                 "(F4 next, S-F4 prev, C-x 1 hides)",
+                 comp_exitStatus() == 0 ? "finished" : "exited abnormally",
+                 ne, ne == 1 ? "" : "s", nw, nw == 1 ? "" : "s" );
+        }
+    drawString( 0, inTop + 1, UC( UI_STATUS_FG ), header );
+
+    inTop += lineH + 2;
+    rows = (int)( ( inBottom - inTop ) / lineH );
+    if( rows < 1 ) {
+        return;
+        }
+    ed.compileRows = rows;
+
+    if( ed.compileFollow ) {
+        ed.compileScroll = cb->numLines - rows;
+        }
+    else if( ed.compileHighlightLine >= 0 ) {
+        if( ed.compileHighlightLine < ed.compileScroll
+            ||
+            ed.compileHighlightLine >= ed.compileScroll + rows ) {
+            ed.compileScroll = ed.compileHighlightLine - 1;
+            }
+        }
+    if( ed.compileScroll > cb->numLines - rows ) {
+        ed.compileScroll = cb->numLines - rows;
+        }
+    if( ed.compileScroll < 0 ) {
+        ed.compileScroll = 0;
+        }
+    first = ed.compileScroll;
+    layout.compileFirstLine = first;
+
+    gui_pushClip( 0, inTop, inW, inBottom );
+    for( i = 0;
+         i < rows && first + i < cb->numLines;
+         i ++ ) {
+        int           line  =  first + i;
+        Line         *l     =  &( cb->lines[ line ] );
+        float         y     =  inTop + (float)i * lineH;
+        unsigned int  col   =  UC( UI_COMPILE_FG );
+        int           k;
+
+        if( line == ed.compileHighlightLine ) {
+            gui_rect( 0, y, inW, y + lineH, UC( UI_COMPILE_CURRENT ) );
+            }
+        for( k = 0;
+             k < comp_numErrors();
+             k ++ ) {
+            CompileError  *e  =  comp_getError( k );
+
+            if( e->outLine == line ) {
+                col = e->kind == CE_ERROR ? UC( UI_COMPILE_ERROR )
+                      : ( e->kind == CE_WARNING ? UC( UI_COMPILE_WARNING )
+                          : UC( UI_COMPILE_FG ) );
+                break;
+                }
+            if( e->outLine > line ) {
+                break;
+                }
+            }
+        gui_text( charW * 0.5f, y, col, l->text, l->len );
+        }
+    gui_popClip();
+    }
+
+
+
+static void drawStatus( float  inTop,
+                        float  inH,
+                        float  inW ) {
+    TextBuffer  *tb  =  ed_cur();
+    char         s[ 2048 ];
+    char         pos[ 64 ];
+    int          mod  =  tb_isModified( tb ) && tb->path != NULL;
+    float        x;
+
+    gui_rect( 0, inTop, inW, inTop + inH, UC( UI_STATUS_BG ) );
+
+    if( tb->scrollY <= 0 ) {
+        strcpy( pos, "Top" );
+        }
+    else if( (int)tb->scrollY + ed.visibleRows >= tb->numLines ) {
+        strcpy( pos, "Bot" );
+        }
+    else {
+        sprintf( pos, "%d%%", (int)( 100.0 * tb->scrollY
+                                     / (double)tb->numLines ) );
+        }
+
+    sprintf( s, " %s%s ", tb->readOnly ? "%%" : ( mod ? "**" : "--" ),
+             "" );
+    x = 0;
+    drawString( x, inTop + 2, mod ? UC( UI_STATUS_MODIFIED )
+                : UC( UI_STATUS_FG ), s );
+    x += (float)strlen( s ) * layout.charW;
+
+    sprintf( s, " %.500s", tb->name );
+    drawString( x, inTop + 2, UC( UI_STATUS_FG ), s );
+    x += (float)( strlen( s ) + 3 ) * layout.charW;
+    if( x < layout.charW * 28 ) {
+        x = layout.charW * 28;
+        }
+
+    sprintf( s, "%-4s L%-6d C%-4d  %d lines   %s%s%s", pos,
+             tb->cursorLine + 1, tb->cursorCol, tb->numLines,
+             config.autoNewline ? "(C/a" : "(C",
+             config.hungryDelete ? "h" : "",
+             ")" );
+    drawString( x, inTop + 2, UC( UI_STATUS_FG ), s );
+    x += (float)( strlen( s ) + 3 ) * layout.charW;
+
+    if( comp_isRunning() ) {
+        drawString( x, inTop + 2, UC( UI_STATUS_MODIFIED ), "[compiling]" );
+        }
+    else if( comp_numErrors() > 0 ) {
+        int  ne;
+        int  nw;
+
+        comp_countErrors( &ne, &nw );
+        sprintf( s, "[%d err %d warn]", ne, nw );
+        drawString( x, inTop + 2, ne > 0 ? UC( UI_COMPILE_ERROR )
+                    : UC( UI_STATUS_FG ), s );
+        }
+    }
+
+
+
+static void drawMinibuffer( float  inTop,
+                            float  inH,
+                            float  inW ) {
+    float  charW  =  layout.charW;
+    float  y      =  inTop + 2;
+
+    gui_rect( 0, inTop, inW, inTop + inH, UC( UI_MINIBUF_BG ) );
+
+    if( ed.mbMode != MB_NONE ) {
+        float  x  =  charW * 0.5f;
+        float  cx;
+
+        drawString( x, y, UC( UI_PROMPT ), ed.mbPrompt );
+        x += (float)strlen( ed.mbPrompt ) * charW;
+        drawString( x, y, UC( UI_MINIBUF_FG ), ed.mbText );
+        cx = x + (float)ed.mbCursor * charW;
+        if( ed.mbMode != MB_QUERY_REPLACE && ed.mbMode != MB_YES_NO
+            && ed.mbMode != MB_ISEARCH ) {
+            gui_rect( cx, y, cx + charW, y + layout.lineH, UC( UI_CURSOR ) );
+            if( ed.mbCursor < (int)strlen( ed.mbText ) ) {
+                gui_text( cx, y, UC( UI_CURSOR_TEXT ), ed.mbText + ed.mbCursor,
+                          1 );
+                }
+            }
+        else {
+            gui_rect( cx, y, cx + charW, y + layout.lineH, UC( UI_CURSOR ) );
+            }
+        }
+    else if( ed.message[ 0 ] != '\0' ) {
+        drawString( charW * 0.5f, y, ed.messageIsError
+                    ? UC( UI_MESSAGE_ERROR ) : UC( UI_MINIBUF_FG ),
+                    ed.message );
+        }
+    }
+
+
+
+/* completion candidates, drawn as a list growing up from the minibuffer */
+static void drawCandidates( float  inBottom,
+                            float  inW,
+                            float  inMaxH ) {
+    float  lineH  =  layout.lineH;
+    float  charW  =  layout.charW;
+    int    maxRows;
+    int    rows;
+    int    i;
+    float  top;
+
+    if( ed.numCands == 0 || ed.mbMode == MB_NONE ) {
+        return;
+        }
+    maxRows = (int)( inMaxH / lineH ) - 1;
+    if( maxRows > 15 ) {
+        maxRows = 15;
+        }
+    if( maxRows < 1 ) {
+        return;
+        }
+    rows = ed.numCands < maxRows ? ed.numCands : maxRows;
+
+    if( ed.candSel >= 0 ) {
+        if( ed.candSel < ed.candScroll ) {
+            ed.candScroll = ed.candSel;
+            }
+        if( ed.candSel >= ed.candScroll + rows ) {
+            ed.candScroll = ed.candSel - rows + 1;
+            }
+        }
+    if( ed.candScroll > ed.numCands - rows ) {
+        ed.candScroll = ed.numCands - rows;
+        }
+    if( ed.candScroll < 0 ) {
+        ed.candScroll = 0;
+        }
+
+    top = inBottom - (float)rows * lineH - 4;
+    if( ed.numCands > rows ) {
+        top -= lineH;
+        }
+    gui_rect( 0, top, inW, inBottom, UC( UI_LIST_BG ) );
+    gui_line( 0, top, inW, top, UC( UI_STATUS_BG ), 1.0f );
+    for( i = 0;
+         i < rows;
+         i ++ ) {
+        int    k  =  ed.candScroll + i;
+        float  y  =  top + 2 + (float)i * lineH;
+
+        if( k == ed.candSel ) {
+            gui_rect( 0, y, inW, y + lineH, UC( UI_LIST_SELECTED ) );
+            }
+        drawString( charW, y, UC( UI_LIST_FG ), ed.cands[ k ] );
+        }
+    if( ed.numCands > rows ) {
+        char  more[ 128 ];
+
+        sprintf( more, "  [%d of %d shown;  type to narrow, Tab completes, "
+                 "Up/Down choose]", rows, ed.numCands );
+        drawString( charW, top + 2 + (float)rows * lineH, UC( UI_TAB_FG ),
+                    more );
+        }
+    }
+
+
+
+static void renderFrame( float  inDT ) {
+    int    w;
+    int    h;
+    float  lineH;
+    float  tabH;
+    float  statusH;
+    float  miniH;
+    float  compileH  =  0;
+    float  textBottom;
+
+    SDL_GetWindowSize( window, &w, &h );
+    layout.winW = (float)w;
+    layout.winH = (float)h;
+
+    gui_newFrame();
+
+    if( gui_fontSize() != ed.fontSize ) {
+        gui_setFontSize( ed.fontSize );
+        }
+    layout.charW = gui_charWidth();
+    lineH = (float)floor( ed.fontSize * 1.2f ) + (float)config.lineSpacing;
+    layout.lineH = lineH;
+
+    tabH = lineH + 6;
+    statusH = lineH + 4;
+    miniH = lineH + 4;
+
+    if( ed.showCompile && ed.compileBuffer != NULL ) {
+        int  rows  =  (int)( ( (float)h * 0.3f ) / lineH );
+
+        if( rows < 4 ) {
+            rows = 4;
+            }
+        if( rows > 14 ) {
+            rows = 14;
+            }
+        compileH = (float)( rows + 1 ) * lineH + 2;
+        }
+    textBottom = (float)h - miniH - statusH - compileH;
+
+    drawTabBar( 0, tabH, (float)w );
+    drawTextView( tabH, textBottom, (float)w, inDT );
+    drawStatus( textBottom, statusH, (float)w );
+    if( compileH > 0 ) {
+        drawCompilePane( textBottom + statusH, (float)h - miniH, (float)w );
+        }
+    else {
+        layout.compileTop = layout.compileBottom = -1;
+        }
+    drawMinibuffer( (float)h - miniH, miniH, (float)w );
+    drawCandidates( (float)h - miniH, (float)w, textBottom - tabH );
+
+    gui_render();
+    SDL_GL_SwapWindow( window );
+    }
+
+
+
+/* ------------------------------------------------------------------
+   Mouse
+   ------------------------------------------------------------------ */
+
+static void mouseToTextPos( int   inX,
+                            int   inY,
+                            int  *outLine,
+                            int  *outCol ) {
+    TextBuffer  *tb  =  ed_cur();
+    float        fy  =  ( (float)inY - layout.textTop ) / layout.lineH
+                        + tb->scrollY;
+    float        fx  =  ( (float)inX - layout.textLeft ) / layout.charW
+                        + (float)(int)tb->scrollX;
+    int          l   =  (int)floor( fy );
+    int          c   =  (int)floor( fx + 0.5f );
+
+    if( l < 0 ) {
+        l = 0;
+        }
+    if( l >= tb->numLines ) {
+        l = tb->numLines - 1;
+        }
+    if( c < 0 ) {
+        c = 0;
+        }
+    if( c > tb->lines[ l ].len ) {
+        c = tb->lines[ l ].len;
+        }
+    *outLine = l;
+    *outCol = c;
+    }
+
+
+
+/* ------------------------------------------------------------------
+   main
+   ------------------------------------------------------------------ */
+
+static void usage( void ) {
+    printf( "cedit %s -- a C89 code editor\n\n"
+            "usage:  cedit [+LINE] [FILE...]\n"
+            "        cedit --reindent FILE\n"
+            "        cedit --format FILE\n"
+            "        cedit --check-indent FILE...\n"
+            "        cedit --script KEYS [FILE]\n"
+            "        cedit --write-config\n\n"
+            "Press F1 inside cedit for keys.\n", CEDIT_VERSION );
+    }
+
+
+
+static void setTitle( void ) {
+    static char  last[ 600 ]  =  "";
+    char         title[ 600 ];
+    TextBuffer  *tb  =  ed_cur();
+
+    sprintf( title, "cedit: %.500s", tb->name );
+    if( strcmp( title, last ) != 0 ) {
+        SDL_SetWindowTitle( window, title );
+        strcpy( last, title );
+        }
+    }
+
+
+
+int main( int     inArgc,
+          char  **inArgv ) {
+    SDL_GLContext  glContext;
+    int            running       =  1;
+    Uint32         lastTicks;
+    int            framesLeft    =  -1;
+    int            dragging      =  0;
+    int            suppressText  =  0;
+    int            winW;
+    int            winH;
+    int            dirtyFrames   =  2;
+
+    config_load();
+
+    if( inArgc >= 2 ) {
+        if( strcmp( inArgv[ 1 ], "--help" ) == 0
+            || strcmp( inArgv[ 1 ], "-h" ) == 0 ) {
+            usage();
+            return 0;
+            }
+        if( strcmp( inArgv[ 1 ], "--version" ) == 0 ) {
+            printf( "cedit %s\n", CEDIT_VERSION );
+            return 0;
+            }
+        if( strcmp( inArgv[ 1 ], "--reindent" ) == 0 && inArgc >= 3 ) {
+            return headlessReindent( inArgv[ 2 ], 0 );
+            }
+        if( strcmp( inArgv[ 1 ], "--format" ) == 0 && inArgc >= 3 ) {
+            return headlessReindent( inArgv[ 2 ], 1 );
+            }
+        if( strcmp( inArgv[ 1 ], "--check-indent" ) == 0 ) {
+            return headlessCheckIndent( inArgc - 2, inArgv + 2 );
+            }
+        if( strcmp( inArgv[ 1 ], "--script" ) == 0 && inArgc >= 3 ) {
+            return headlessScript( inArgv[ 2 ],
+                                   inArgc >= 4 ? inArgv[ 3 ] : NULL );
+            }
+        if( strcmp( inArgv[ 1 ], "--write-config" ) == 0 ) {
+            char  msg[ 1024 ];
+
+            config_writeDefaults( config_homeDir(), msg, sizeof( msg ) );
+            printf( "%s\n", msg );
+            return 0;
+            }
+        }
+
+    if( getenv( "CEDIT_QUIT_AFTER" ) != NULL ) {
+        framesLeft = atoi( getenv( "CEDIT_QUIT_AFTER" ) );
+        if( framesLeft < 1 ) {
+            framesLeft = 1;
+            }
+        }
+
+    if( SDL_Init( SDL_INIT_VIDEO ) != 0 ) {
+        fprintf( stderr, "cedit:  SDL_Init failed:  %s\n", SDL_GetError() );
+        return 1;
+        }
+    SDL_GL_SetAttribute( SDL_GL_DOUBLEBUFFER, 1 );
+    SDL_GL_SetAttribute( SDL_GL_DEPTH_SIZE, 0 );
+
+    {
+        float  fs     =  (float)config.fontSize;
+        float  charW  =  fs * 0.6f;
+        float  lineH  =  (float)floor( fs * 1.2f ) + (float)config.lineSpacing;
+
+        winW = (int)( charW * (float)( config.windowCols + 7 ) );
+        winH = (int)( lineH * (float)( config.windowRows + 3 ) + 18 );
+        }
+
+    window = SDL_CreateWindow( "cedit", SDL_WINDOWPOS_CENTERED,
+                               SDL_WINDOWPOS_CENTERED, winW, winH,
+                               SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE );
+    if( window == NULL ) {
+        fprintf( stderr, "cedit:  can't create window:  %s\n",
+                 SDL_GetError() );
+        return 1;
+        }
+    glContext = SDL_GL_CreateContext( window );
+    if( glContext == NULL ) {
+        fprintf( stderr, "cedit:  can't create GL context:  %s\n",
+                 SDL_GetError() );
+        return 1;
+        }
+    SDL_GL_MakeCurrent( window, glContext );
+    SDL_GL_SetSwapInterval( 1 );
+
+    if( ! gui_init( window, glContext, config.fontPath,
+                    (float)config.fontSize ) ) {
+        fprintf( stderr, "cedit:  GUI init failed\n" );
+        return 1;
+        }
+
+    ed_init( inArgc, inArgv );
+    SDL_StartTextInput();
+
+    lastTicks = SDL_GetTicks();
+    /* show the first frame as soon as possible */
+    renderFrame( 0 );
+
+    while( running ) {
+        SDL_Event  e;
+        int        gotEvent;
+        int        timeout   =  1000;
+        Uint32     now;
+        float      dt;
+
+        if( isAnimating() || comp_isRunning() || dirtyFrames > 0 ) {
+            timeout = 15;
+            }
+        gotEvent = SDL_WaitEventTimeout( &e, timeout );
+
+        while( gotEvent ) {
+            gui_processEvent( &e );
+
+            switch( e.type ) {
+                case SDL_QUIT:
+                    ed_requestQuit();
+                    break;
+
+                case SDL_WINDOWEVENT:
+                    if( e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED ) {
+                        extern void ed_checkFilesOnDisk( void );
+
+                        ed_checkFilesOnDisk();
+                        }
+                    break;
+
+                case SDL_KEYDOWN: {
+                    int  mods  =  0;
+                    SDL_Keymod  m  =  (SDL_Keymod)e.key.keysym.mod;
+
+                    if( m & KMOD_CTRL ) {
+                        mods |= MOD_CTRL;
+                        }
+                    if( m & KMOD_ALT ) {
+                        mods |= MOD_ALT;
+                        }
+                    if( m & KMOD_SHIFT ) {
+                        mods |= MOD_SHIFT;
+                        }
+                    suppressText = ed_keyDown( e.key.keysym.sym, mods )
+                                   || ( mods & ( MOD_CTRL | MOD_ALT ) ) != 0;
+                    break;
+                    }
+
+                case SDL_TEXTINPUT:
+                    if( ! suppressText
+                        && (unsigned char)e.text.text[ 0 ] >= 32 ) {
+                        ed_textInput( e.text.text );
+                        }
+                    break;
+
+                case SDL_MOUSEBUTTONDOWN:
+                    if( e.button.button == SDL_BUTTON_LEFT ) {
+                        float  mx  =  (float)e.button.x;
+                        float  my  =  (float)e.button.y;
+
+                        if( my < layout.tabBottom ) {
+                            int  i;
+
+                            for( i = 0;
+                                 i < layout.numTabs;
+                                 i ++ ) {
+                                if( mx >= layout.tabX0[ i ]
+                                    && mx < layout.tabX1[ i ] ) {
+                                    ed_switchToBuffer( i );
+                                    }
+                                }
+                            }
+                        else if( my >= layout.textTop
+                                 && my < layout.textBottom ) {
+                            int  l;
+                            int  c;
+                            int  shift  =  ( SDL_GetModState() & KMOD_SHIFT )
+                                           != 0;
+
+                            mouseToTextPos( e.button.x, e.button.y, &l, &c );
+                            if( e.button.clicks == 2 ) {
+                                ed_mouseSelectWord( l, c );
+                                }
+                            else {
+                                ed_mouseSetCursor( l, c, shift );
+                                dragging = 1;
+                                }
+                            }
+                        else if( my >= layout.compileTop
+                                 && my < layout.compileBottom
+                                 && ed.compileBuffer != NULL ) {
+                            int  row  =  (int)( ( my - layout.compileTop
+                                                  - layout.lineH - 2 )
+                                                / layout.lineH );
+
+                            if( row >= 0 ) {
+                                ed_visitErrorAtOutputLine(
+                                    layout.compileFirstLine + row );
+                                }
+                            }
+                        }
+                    break;
+
+                case SDL_MOUSEBUTTONUP:
+                    if( e.button.button == SDL_BUTTON_LEFT ) {
+                        dragging = 0;
+                        }
+                    break;
+
+                case SDL_MOUSEMOTION:
+                    if( dragging ) {
+                        int  l;
+                        int  c;
+
+                        mouseToTextPos( e.motion.x, e.motion.y, &l, &c );
+                        ed_mouseSetCursor( l, c, 1 );
+                        }
+                    break;
+
+                case SDL_MOUSEWHEEL: {
+                    int  mx;
+                    int  my;
+
+                    SDL_GetMouseState( &mx, &my );
+                    if( (float)my >= layout.compileTop
+                        && (float)my < layout.compileBottom ) {
+                        ed.compileFollow = 0;
+                        ed.compileScroll -= e.wheel.y * 3;
+                        }
+                    else {
+                        TextBuffer  *tb  =  ed_cur();
+                        float        t   =  tb->targetScrollY
+                                            - (float)( e.wheel.y * 3 );
+                        float        mxs =  (float)( tb->numLines - 1 );
+
+                        if( t < 0 ) {
+                            t = 0;
+                            }
+                        if( t > mxs ) {
+                            t = mxs;
+                            }
+                        tb->targetScrollY = t;
+                        /* scrolling drags the cursor along, like emacs */
+                        if( tb->cursorLine < (int)t + config.scrollMargin ) {
+                            ed_mouseSetCursor( (int)t + config.scrollMargin,
+                                               0, 0 );
+                            }
+                        else if( tb->cursorLine > (int)t + ed.visibleRows
+                                 - 1 - config.scrollMargin ) {
+                            ed_mouseSetCursor( (int)t + ed.visibleRows - 1
+                                               - config.scrollMargin, 0, 0 );
+                            }
+                        }
+                    break;
+                    }
+
+                default:
+                    break;
+                }
+            dirtyFrames = 2;
+            gotEvent = SDL_PollEvent( &e );
+            }
+
+        if( ed_tick() ) {
+            dirtyFrames = 2;
+            }
+        if( ed.wantQuit ) {
+            break;
+            }
+
+        now = SDL_GetTicks();
+        dt = (float)( now - lastTicks ) / 1000.0f;
+        if( dt > 0.1f ) {
+            dt = 0.1f;
+            }
+        lastTicks = now;
+
+        setTitle();
+        renderFrame( dt );
+        if( dirtyFrames > 0 ) {
+            dirtyFrames --;
+            }
+
+        if( framesLeft > 0 ) {
+            framesLeft --;
+            if( framesLeft == 0 ) {
+                break;
+                }
+            }
+        }
+
+    if( comp_isRunning() ) {
+        comp_kill();
+        }
+    gui_shutdown();
+    SDL_GL_DeleteContext( glContext );
+    SDL_DestroyWindow( window );
+    SDL_Quit();
+    return 0;
+    }

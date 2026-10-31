@@ -1,0 +1,20 @@
+static int foo( int  a, char  *b ) {
+    Deck            *d      =  getDeck();
+    int              i;
+    long             total  =  0;
+    unsigned char  **ptr    =  NULL;
+    int              counts[ 10 ];
+
+    x = (int)( a+b );
+    y = foo( a, b[ i ] );
+    z = (Deck *) q;
+    if( a ) {
+        bar( (char*)a, sizeof( int ) );
+        }
+    return 0;
+    }
+
+void maxigin_initMakeDropShadowSprite( int             inSpriteHandle,
+                                       int             inBlurRadius,
+                                       unsigned char   inBottomAlpha,
+                                       const char     *inName );

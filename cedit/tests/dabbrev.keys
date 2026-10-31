@@ -1,0 +1,2 @@
+# dabbrev from earlier in the buffer
+M-g g "10" RET C-e RET "x = to" M-/

@@ -1,0 +1,11 @@
+static int computeTotal( int  inCount ) {
+    int  sum  =  0;
+    int  i;
+
+    for( i = 0;
+         i < inCount;
+         i ++ ) {
+        sum += i;
+        }
+    return sum;
+    }

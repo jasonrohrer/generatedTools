@@ -1,0 +1,5 @@
+*.o
+imgui/*.o
+imgui/backends/*.o
+cedit
+*~

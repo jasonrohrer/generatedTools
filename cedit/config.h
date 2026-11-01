@@ -64,6 +64,8 @@ enum UIColor {
     UI_LIST_BG,
     UI_LIST_FG,
     UI_LIST_SELECTED,
+    UI_SCROLLBAR_BG,
+    UI_SCROLLBAR_THUMB,
     UI_COUNT
     };
 
@@ -83,6 +85,7 @@ typedef struct Config {
         int    highlightCurrentColumn;
         int    fillColumn;
         int    showRuler;
+        int    showScrollBar;
         int    showTrailingSpace;
         int    smoothScroll;
         int    scrollMargin;
@@ -121,6 +124,12 @@ typedef struct Config {
         int    alignDeclarations;
         int    declTypeSpaces;
         int    declEqualsSpaces;
+        int    declTableBlankLines;
+        int    assignSpaces;
+        int    spaceBeforeBrace;
+        int    splitArgLists;
+        int    splitForClauses;
+        int    alignForClauses;
 
         /* --- compile / debug --- */
         char   compileCommand[ 1024 ];

@@ -12,6 +12,12 @@
           Deck  *d      =  getDeck();
           int    i;
           long   total  =  0;
+    - spaces around assignments ( x = 6; ), and before a block's '{'
+    - the arguments of calls and parameter lists one per line, lined up
+      after the '(', and for( ) clauses one per line as a table:
+          for( x = 0;
+               x < 10;
+               x   ++ ) {
 
   Only spaces are ever added or removed, and never inside strings or
   comments.  Spacing that is already wider than needed is left alone
@@ -26,19 +32,28 @@
 #include "textBuffer.h"
 
 
-/* formats one line in place.  inCursorCol is a column on that line;
-   returns where that column ended up after the edits. */
+/* flag:  the cursor's line may be an unfinished declaration ("int  "
+   or a parameter "Deck *"), and the cursor goes to where its name will
+   line up with the table around it (Tab does this) */
+#define FMT_PARTIAL  1
+
+
+/* formats one line in place (which may split it into several lines).
+   ioCursorLine/ioCursorCol (may be NULL) are moved along with the text
+   they were on.  Returns the number of lines added. */
 int fmt_formatLine( TextBuffer  *inTB,
                     int          inLine,
-                    int          inCursorCol );
+                    int          inFlags,
+                    int         *ioCursorLine,
+                    int         *ioCursorCol );
 
 
-/* if inLine is a declaration, lines up the run of consecutive
-   declarations around it.  Returns 1 if anything changed.
-   If ioCursorLine/ioCursorCol are non-NULL and on an affected line, the
-   cursor is moved along with its text. */
+/* if inLine is (part of) a declaration, lines up the run of consecutive
+   declarations around it.  Returns 1 if anything changed.  The cursor
+   (may be NULL) is moved along with its text. */
 int fmt_alignDeclarations( TextBuffer  *inTB,
                            int          inLine,
+                           int          inFlags,
                            int         *ioCursorLine,
                            int         *ioCursorCol );
 

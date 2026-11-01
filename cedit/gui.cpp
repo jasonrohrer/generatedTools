@@ -86,8 +86,10 @@ extern "C" int gui_init( SDL_Window  *inWindow,
     if( ! ImGui_ImplOpenGL2_Init() ) {
         return 0;
         }
-    /* close estimate until the first frame measures it exactly */
-    charW = inFontSize * 0.6f;
+    /* build the atlas now (the first frame would anyway), so the exact
+       character advance is known before the window is sized */
+    io.Fonts->Build();
+    measure();
     return 1;
     }
 

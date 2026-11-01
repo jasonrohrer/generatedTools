@@ -98,21 +98,60 @@ Every offset is configurable in `style.conf` (K&R:  `closeBraceOffset =
 
 ## Auto-formatting
 
-When you leave a line with Enter (or auto-newline), cedit tidies it:
+When you leave a line with Enter (or auto-newline), or press Tab on it,
+cedit tidies it:
 
 - `foo(a,b[i])` becomes `foo( a, b[ i ] )` (casts stay tight: `(int)x`)
+- spaces around assignments (`x=6;` becomes `x = 6;`) and before a
+  block's brace (`while(1){` becomes `while( 1 ) {`)
 - parameters get two spaces between type and name:  `int  inX`
-- multi-line parameter lists and runs of declarations are lined up into
-  a table, with pointer stars hanging left of the name:
+- arguments of calls and parameters of functions go one per line, lined
+  up after the `(`;  the parameters become a table:
+
+```c
+int myFunction( int        inArgA,
+                MyStruct  *inStruct ) {
+    x = myFunction( 10,
+                    &currentStruct );
+```
+
+- `for( )` clauses go on their own lines as a table, with `++` / `--`
+  in the value column:
+
+```c
+    for( x = 0;
+         x < 10;
+         x   ++ ) {
+
+    for( y =  BH - 1;
+         y >= BH - 3;
+         y    -- ) {
+```
+
+- runs of declarations are lined up into a table, with pointer stars
+  hanging left of the name.  One blank line inside a run keeps the
+  table going (two start a new one), and an initializer that is a call
+  continuing onto more lines is still part of the table:
 
 ```c
     Deck           *d      =  getDeck();
     int             i;
+
     unsigned char  *bytes  =  NULL;
+    int             x      =  maxigin_randRange( inRand,
+                                                 inStartX,
+                                                 inEndX );
 ```
 
-Each rule can be turned off in `style.conf`.  `C-c C-f` formats a
-region / the current function, `M-x format-buffer` the whole file.
+Tab on an unfinished declaration (`float ` or `char *`, or a parameter
+on its own line) lines the table up as if it were finished and puts the
+cursor where the name will go.
+
+Each rule can be turned off in `style.conf` (`assignSpaces`,
+`spaceBeforeBrace`, `splitArgLists`, `splitForClauses`,
+`alignForClauses`, `alignDeclarations`, `declTableBlankLines`, ...).
+`C-c C-f` formats a region / the current function, `M-x format-buffer`
+the whole file.
 
 
 ## Configuration
@@ -126,6 +165,13 @@ Plain `key = value` files, read in this order (later wins):
 
 Run `cedit --write-config` (or `M-x write-default-config`) to get fully
 commented copies of all of them in `~/.cedit/`.
+
+`windowCols` is the number of text columns the window opens with, not
+counting the line numbers and the scroll bar:  with `windowCols = 80`
+the window's text area ends exactly at the `fillColumn = 80` ruler (a
+cursor at the end of an 80 column line shows as a bar at the edge).
+The scroll bar can be dragged, or clicked to jump;  it marks the cursor
+line and the current compile error (`showScrollBar = 0` hides it).
 
 A typical per-folder `./cedit.conf`:
 

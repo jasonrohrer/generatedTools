@@ -51,6 +51,12 @@ typedef struct Layout {
         float  textTop;
         float  textBottom;
         float  textLeft;
+        /* the vertical scroll bar at the right of the text view */
+        float  scrollBarX;
+        float  thumbTop;
+        float  thumbBottom;
+        /* scroll range the thumb maps over, in lines */
+        float  scrollRange;
         float  compileTop;
         float  compileBottom;
         int    compileFirstLine;
@@ -389,6 +395,38 @@ static int numDigits( int  inN ) {
 
 
 
+/* width of the line number gutter for a buffer.  At least 4 digits, so
+   the text doesn't jump sideways as a small file grows */
+static float gutterWidth( TextBuffer  *inTB,
+                          float        inCharW ) {
+    int  d;
+
+    if( ! config.showLineNumbers ) {
+        return inCharW * 0.5f;
+        }
+    d = numDigits( inTB->numLines );
+    if( d < 4 ) {
+        d = 4;
+        }
+    return (float)( d + 2 ) * inCharW;
+    }
+
+
+
+static float scrollBarWidth( float  inCharW ) {
+    float  w  =  (float)floor( inCharW * 1.25f );
+
+    if( ! config.showScrollBar ) {
+        return 0;
+        }
+    if( w < 10 ) {
+        w = 10;
+        }
+    return w;
+    }
+
+
+
 static int matchAtFold( Line        *inL,
                         int          inCol,
                         const char  *inText,
@@ -485,7 +523,9 @@ static void updateScroll( TextBuffer  *inTB,
     if( (float)cc < inTB->scrollX ) {
         inTB->scrollX = (float)( cc - inCols / 4 );
         }
-    if( (float)cc > inTB->scrollX + (float)inCols - 2 ) {
+    /* a cursor right after the last visible column still shows (as a
+       bar at the edge), so an 80 column window can edit 80 column lines */
+    if( (float)cc > inTB->scrollX + (float)inCols ) {
         inTB->scrollX = (float)( cc - inCols + inCols / 4 );
         }
     if( inTB->scrollX < 0 ) {
@@ -503,6 +543,75 @@ static int isAnimating( void ) {
 
 
 
+/* the scroll range:  the top line can go from 0 to numLines - 1 */
+static float scrollRangeOf( TextBuffer  *inTB,
+                            int          inRows ) {
+    return (float)( inTB->numLines - 1 + inRows );
+    }
+
+
+
+static void drawScrollBar( TextBuffer  *inTB,
+                           float        inX0,
+                           float        inX1,
+                           float        inTop,
+                           float        inBottom,
+                           int          inRows,
+                           int          inCursorLine,
+                           int          inErrLine ) {
+    float  trackH   =  inBottom - inTop;
+    float  range    =  scrollRangeOf( inTB, inRows );
+    float  perLine  =  trackH / (float)inTB->numLines;
+    float  thumbH;
+    float  thumbY;
+    float  lines;
+    float  pad      =  2;
+
+    layout.scrollBarX = inX0;
+    layout.scrollRange = range;
+    if( inX1 <= inX0 ) {
+        layout.thumbTop = layout.thumbBottom = -1;
+        return;
+        }
+    gui_rect( inX0, inTop, inX1, inBottom, UC( UI_SCROLLBAR_BG ) );
+
+    thumbH = trackH * (float)inRows / range;
+    if( thumbH < 24 ) {
+        thumbH = 24;
+        }
+    if( thumbH > trackH ) {
+        thumbH = trackH;
+        }
+    lines = range - (float)inRows;
+    if( lines < 1 ) {
+        lines = 1;
+        }
+    thumbY = inTop + ( trackH - thumbH ) * inTB->scrollY / lines;
+    if( thumbY + thumbH > inBottom ) {
+        thumbY = inBottom - thumbH;
+        }
+    layout.thumbTop = thumbY;
+    layout.thumbBottom = thumbY + thumbH;
+
+    /* ticks for the cursor line and the current compile error */
+    if( inErrLine >= 0 ) {
+        float  y  =  inTop + perLine * (float)inErrLine;
+
+        gui_rect( inX0, y - 1, inX1, y + 2, UC( UI_COMPILE_ERROR ) );
+        }
+
+    gui_rect( inX0 + pad, thumbY + pad, inX1 - pad, thumbY + thumbH - pad,
+              UC( UI_SCROLLBAR_THUMB ) );
+
+    {
+        float  y  =  inTop + perLine * ( (float)inCursorLine + 0.5f );
+
+        gui_rect( inX0, y - 1, inX1, y + 1, UC( UI_CURSOR ) );
+        }
+    }
+
+
+
 static void drawTextView( float  inTop,
                           float  inBottom,
                           float  inW,
@@ -513,6 +622,7 @@ static void drawTextView( float  inTop,
     float                  lineH       =  layout.lineH;
     float                  charW       =  layout.charW;
     float                  gutterW;
+    float                  sbW;
     float                  textX;
     int                    rows;
     int                    cols;
@@ -538,12 +648,11 @@ static void drawTextView( float  inTop,
     int                    markL;
     int                    markC;
 
-    if( config.showLineNumbers ) {
-        gutterW = (float)( numDigits( tb->numLines ) + 2 ) * charW;
-        }
-    else {
-        gutterW = charW * 0.5f;
-        }
+    gutterW = gutterWidth( tb, charW );
+    sbW = scrollBarWidth( charW );
+    /* everything below draws the text area;  the scroll bar gets the
+       strip to the right of it */
+    inW -= sbW;
     textX = gutterW;
     layout.textLeft = textX;
     layout.textTop = inTop;
@@ -774,6 +883,11 @@ static void drawTextView( float  inTop,
         float  x    =  textX + (float)( cc - scrollXi ) * charW;
         Line  *l    =  &( tb->lines[ cl ] );
 
+        if( x + charW > inW + 0.5f ) {
+            /* the column just past the last full one (the end of a line
+               exactly as wide as the window):  a bar at the edge */
+            x = inW - charW * 0.35f;
+            }
         if( ed.mbMode == MB_NONE || ed.mbMode == MB_ISEARCH
             || ed.mbMode == MB_QUERY_REPLACE ) {
             gui_rect( x, y, x + charW, y + lineH, UC( UI_CURSOR ) );
@@ -816,6 +930,8 @@ static void drawTextView( float  inTop,
             }
         gui_popClip();
         }
+
+    drawScrollBar( tb, inW, inW + sbW, inTop, inBottom, rows, cl, errLine );
     }
 
 
@@ -1229,6 +1345,59 @@ static void renderFrame( float  inDT ) {
    Mouse
    ------------------------------------------------------------------ */
 
+/* scrolls the text view so inTop is the top line, dragging the cursor
+   along to stay on screen, like emacs.  inImmediate skips the smooth
+   scrolling animation (scroll bar dragging). */
+static void scrollViewTo( float  inTop,
+                          int    inImmediate ) {
+    TextBuffer  *tb   =  ed_cur();
+    float        mxs  =  (float)( tb->numLines - 1 );
+    int          t;
+
+    if( inTop > mxs ) {
+        inTop = mxs;
+        }
+    if( inTop < 0 ) {
+        inTop = 0;
+        }
+    tb->targetScrollY = inTop;
+    if( inImmediate ) {
+        tb->scrollY = inTop;
+        }
+    t = (int)( inTop + 0.5f );
+    if( tb->cursorLine < t + config.scrollMargin ) {
+        ed_mouseSetCursor( t + config.scrollMargin, 0, 0 );
+        }
+    else if( tb->cursorLine > t + ed.visibleRows - 1 - config.scrollMargin ) {
+        ed_mouseSetCursor( t + ed.visibleRows - 1 - config.scrollMargin, 0,
+                           0 );
+        }
+    }
+
+
+
+/* the scroll bar thumb's top edge was dragged to inThumbY */
+static void scrollBarDrag( float  inThumbY ) {
+    float  trackH  =  layout.textBottom - layout.textTop;
+    float  thumbH  =  layout.thumbBottom - layout.thumbTop;
+    float  free    =  trackH - thumbH;
+    float  lines   =  layout.scrollRange - (float)ed.visibleRows;
+    float  f;
+
+    if( free <= 0 || lines <= 0 ) {
+        return;
+        }
+    f = ( inThumbY - layout.textTop ) / free;
+    if( f < 0 ) {
+        f = 0;
+        }
+    if( f > 1 ) {
+        f = 1;
+        }
+    scrollViewTo( (float)floor( f * lines + 0.5f ), 1 );
+    }
+
+
 static void mouseToTextPos( int   inX,
                             int   inY,
                             int  *outLine,
@@ -1296,7 +1465,9 @@ int main( int     inArgc,
     int            running       =  1;
     Uint32         lastTicks;
     int            framesLeft    =  -1;
+    /* 1 = selecting text, 2 = dragging the scroll bar thumb */
     int            dragging      =  0;
+    float          thumbGrab     =  0;
     int            suppressText  =  0;
     int            winW;
     int            winH;
@@ -1355,7 +1526,7 @@ int main( int     inArgc,
         float  charW  =  fs * 0.6f;
         float  lineH  =  (float)floor( fs * 1.2f ) + (float)config.lineSpacing;
 
-        winW = (int)( charW * (float)( config.windowCols + 7 ) );
+        winW = (int)( charW * (float)( config.windowCols + 8 ) );
         winH = (int)( lineH * (float)( config.windowRows + 3 ) + 18 );
         }
 
@@ -1384,6 +1555,21 @@ int main( int     inArgc,
 
     ed_init( inArgc, inArgv );
     SDL_StartTextInput();
+
+    /* now that the real font metrics are known, size the window so
+       exactly windowCols columns of text fit beside the gutter and the
+       scroll bar (the guess above can't know the font's advance) */
+    {
+        float  charW  =  gui_charWidth();
+        int    w      =  (int)ceil( gutterWidth( ed_cur(), charW )
+                                    + charW * (float)config.windowCols
+                                    + scrollBarWidth( charW ) );
+
+        SDL_GetWindowSize( window, &winW, &winH );
+        if( w != winW ) {
+            SDL_SetWindowSize( window, w, winH );
+            }
+        }
 
     lastTicks = SDL_GetTicks();
     /* show the first frame as soon as possible */
@@ -1460,6 +1646,23 @@ int main( int     inArgc,
                                 }
                             }
                         else if( my >= layout.textTop
+                                 && my < layout.textBottom
+                                 && layout.thumbTop >= 0
+                                 && mx >= layout.scrollBarX ) {
+                            /* scroll bar:  grab the thumb, or jump so the
+                               thumb centers on the click, then drag */
+                            if( my >= layout.thumbTop
+                                && my < layout.thumbBottom ) {
+                                thumbGrab = my - layout.thumbTop;
+                                }
+                            else {
+                                thumbGrab = ( layout.thumbBottom
+                                              - layout.thumbTop ) / 2;
+                                scrollBarDrag( my - thumbGrab );
+                                }
+                            dragging = 2;
+                            }
+                        else if( my >= layout.textTop
                                  && my < layout.textBottom ) {
                             int  l;
                             int  c;
@@ -1497,7 +1700,10 @@ int main( int     inArgc,
                     break;
 
                 case SDL_MOUSEMOTION:
-                    if( dragging ) {
+                    if( dragging == 2 ) {
+                        scrollBarDrag( (float)e.motion.y - thumbGrab );
+                        }
+                    else if( dragging ) {
                         int  l;
                         int  c;
 
@@ -1517,28 +1723,8 @@ int main( int     inArgc,
                         ed.compileScroll -= e.wheel.y * 3;
                         }
                     else {
-                        TextBuffer  *tb  =  ed_cur();
-                        float        t   =  tb->targetScrollY
-                                            - (float)( e.wheel.y * 3 );
-                        float        mxs =  (float)( tb->numLines - 1 );
-
-                        if( t < 0 ) {
-                            t = 0;
-                            }
-                        if( t > mxs ) {
-                            t = mxs;
-                            }
-                        tb->targetScrollY = t;
-                        /* scrolling drags the cursor along, like emacs */
-                        if( tb->cursorLine < (int)t + config.scrollMargin ) {
-                            ed_mouseSetCursor( (int)t + config.scrollMargin,
-                                               0, 0 );
-                            }
-                        else if( tb->cursorLine > (int)t + ed.visibleRows
-                                 - 1 - config.scrollMargin ) {
-                            ed_mouseSetCursor( (int)t + ed.visibleRows - 1
-                                               - config.scrollMargin, 0, 0 );
-                            }
+                        scrollViewTo( ed_cur()->targetScrollY
+                                      - (float)( e.wheel.y * 3 ), 0 );
                         }
                     break;
                     }

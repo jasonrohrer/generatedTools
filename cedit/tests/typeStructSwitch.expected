@@ -5,7 +5,8 @@ typedef struct Foo {
         char  *name;
     } Foo;
 
-static int foo( int  a, char  *b ) {
+static int foo( int    a,
+                char  *b ) {
     Deck  *d      =  getDeck();
     int    i;
     long   total  =  0;
@@ -20,7 +21,8 @@ static int foo( int  a, char  *b ) {
     while( total > 0 )
         total--;
     do {
-        x( a, b );
+        x( a,
+           b );
         } while( 0 );
     printf( "%d\n",
             total );

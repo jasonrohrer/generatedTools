@@ -135,6 +135,10 @@ static ConfigEntry  entries[]  =  {
     { "color.listFg", CT_COLOR, CF_COLORS, UC( UI_LIST_FG ), 0, "" },
     { "color.listSelected", CT_COLOR, CF_COLORS, UC( UI_LIST_SELECTED ), 0,
       "" },
+    { "color.scrollBar", CT_COLOR, CF_COLORS, UC( UI_SCROLLBAR_BG ), 0,
+      "scroll bar track" },
+    { "color.scrollBarThumb", CT_COLOR, CF_COLORS, UC( UI_SCROLLBAR_THUMB ),
+      0, "" },
 
 
     { "Display", CT_HEADER, CF_STYLE, NULL, 0, "" },
@@ -145,7 +149,8 @@ static ConfigEntry  entries[]  =  {
     { "lineSpacing", CT_INT, CF_STYLE, &config.lineSpacing, 0,
       "extra pixels between lines" },
     { "windowCols", CT_INT, CF_STYLE, &config.windowCols, 0,
-      "initial window size in characters" },
+      "initial window size:  columns of text (not counting the line\n"
+      "numbers and scroll bar), so fillColumn + 1 fits exactly" },
     { "windowRows", CT_INT, CF_STYLE, &config.windowRows, 0, "" },
     { "showLineNumbers", CT_INT, CF_STYLE, &config.showLineNumbers, 0, "" },
     { "highlightCurrentLine", CT_INT, CF_STYLE,
@@ -155,6 +160,8 @@ static ConfigEntry  entries[]  =  {
     { "fillColumn", CT_INT, CF_STYLE, &config.fillColumn, 0,
       "column for the ruler line" },
     { "showRuler", CT_INT, CF_STYLE, &config.showRuler, 0, "" },
+    { "showScrollBar", CT_INT, CF_STYLE, &config.showScrollBar, 0,
+      "vertical scroll bar at the right edge (drag it, or click to jump)" },
     { "showTrailingSpace", CT_INT, CF_STYLE, &config.showTrailingSpace, 0,
       "" },
     { "smoothScroll", CT_INT, CF_STYLE, &config.smoothScroll, 0,
@@ -253,6 +260,26 @@ static ConfigEntry  entries[]  =  {
       "minimum spaces between type column and name column" },
     { "declEqualsSpaces", CT_INT, CF_STYLE, &config.declEqualsSpaces, 0,
       "spaces on each side of = in aligned declarations" },
+    { "declTableBlankLines", CT_INT, CF_STYLE, &config.declTableBlankLines,
+      0, "a declaration table continues across this many blank lines\n"
+      "(1:  one blank line groups declarations within a table, two\n"
+      "start a new table;  0:  any blank line ends the table)" },
+    { "assignSpaces", CT_INT, CF_STYLE, &config.assignSpaces, 0,
+      "1 = at least one space on each side of = += -= etc:  x = 6;" },
+    { "spaceBeforeBrace", CT_INT, CF_STYLE, &config.spaceBeforeBrace, 0,
+      "1 = a space between ) or else and a block's {:  while( 1 ) {" },
+    { "splitArgLists", CT_INT, CF_STYLE, &config.splitArgLists, 0,
+      "1 = function arguments and parameters go one per line, lined\n"
+      "up after the (:\n"
+      "    x = myFunction( 10,\n"
+      "                    &currentStruct );" },
+    { "splitForClauses", CT_INT, CF_STYLE, &config.splitForClauses, 0,
+      "1 = the three clauses of a for( ) go on their own lines" },
+    { "alignForClauses", CT_INT, CF_STYLE, &config.alignForClauses, 0,
+      "1 = ... lined up as a table, ++ / -- in the value column:\n"
+      "    for( x = 0;\n"
+      "         x < 10;\n"
+      "         x   ++ ) {" },
 
 
     { "Compile and debug", CT_HEADER, CF_PROJ, NULL, 0,
@@ -352,6 +379,8 @@ static void setDefaults( void ) {
     u[ UI_LIST_BG ]             = rgb( 0xF0F0D8 );
     u[ UI_LIST_FG ]             = rgb( 0x000000 );
     u[ UI_LIST_SELECTED ]       = rgb( 0xEEDC82 );
+    u[ UI_SCROLLBAR_BG ]        = rgb( 0xF2F2D2 );
+    u[ UI_SCROLLBAR_THUMB ]     = rgb( 0xB4B49A );
 
     config.fontPath[ 0 ] = '\0';
     config.fontSize = 16;
@@ -362,6 +391,7 @@ static void setDefaults( void ) {
     config.highlightCurrentLine = 1;
     config.highlightCurrentColumn = 1;
     config.fillColumn = 80;
+    config.showScrollBar = 1;
     config.showRuler = 1;
     config.showTrailingSpace = 1;
     config.smoothScroll = 1;
@@ -397,6 +427,12 @@ static void setDefaults( void ) {
     config.alignDeclarations = 1;
     config.declTypeSpaces = 2;
     config.declEqualsSpaces = 2;
+    config.declTableBlankLines = 1;
+    config.assignSpaces = 1;
+    config.spaceBeforeBrace = 1;
+    config.splitArgLists = 1;
+    config.splitForClauses = 1;
+    config.alignForClauses = 1;
 
     strcpy( config.compileCommand, "make" );
     config.debugCommand[ 0 ] = '\0';

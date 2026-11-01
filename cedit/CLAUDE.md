@@ -125,6 +125,27 @@ do-blocks, so `} Foo;` and `} while( x );` work), and `case X:` (hanging
 colon).  `;` typed alone after a `}` line joins it (`};`).  Enter
 reindents + formats the line being left.
 
+**Formatter** (`format.c`):  `fmt_formatLine` = `spaceTokens` (paren
+padding, commas, `x = 6`, `) {`) -> `splitLine` (breaks after every `,`
+of a call/param list and `;` of a `for(`, then re-indents the new lines
+so they align after the `(`;  paren groups are classified by the token
+before the `(`, and `findOpenParen` looks back for the group a
+continuation line is inside) -> `formatForTable` (3-row table, `++` in
+the value column, matching Jason's `y =  BH - 1; / y >= BH - 3; /
+y    --`) -> `formatParamList`.  Edits can add lines, so the public
+entry points carry the cursor in a temporary marker
+(`beginCursor`/`endCursor`);  single-line space edits still map it by
+hand (`applyEditsCur`) since a deleted gap would collapse a marker.
+Declaration rows may span lines (initializer call continued:
+`DeclRow.lastLine`;  continuation lines are re-indented after the row
+moves) and tables span `declTableBlankLines` (1) blank lines — both are
+how Jason's real code looks.  `FMT_PARTIAL` (Tab) lets the cursor line
+be an unfinished row (`float `, `char *`) whose name goes at line end.
+
+**Window width.**  `windowCols` = text columns exactly (gutter is >= 4
+digits so it doesn't jump);  `gui_init` builds the font atlas so the real
+advance is known and main() resizes the window right after.
+
 **Keys.**  `ed_keyDown` returns 1 if it consumed the key;  cedit.c then
 drops the SDL_TEXTINPUT for that keypress (otherwise `M-g g` types a `g`
 into the goto prompt).  Printable keys return 0 and arrive as text.

@@ -247,12 +247,273 @@ static int isCast( const char  *inText,
 
 
 
+/* =  +=  -=  *=  /=  %=  &=  |=  ^=  <<=  >>= */
+static int isAssignOp( const char  *inText,
+                       Token       *inT ) {
+    const char  *p  =  inText + inT->start;
+
+    if( inT->type != TK_PUNCT ) {
+        return 0;
+        }
+    if( inT->len == 1 ) {
+        return p[ 0 ] == '=';
+        }
+    if( inT->len == 2 ) {
+        return p[ 1 ] == '=' && strchr( "+-*/%&|^", p[ 0 ] ) != NULL;
+        }
+    if( inT->len == 3 ) {
+        return ( p[ 0 ] == '<' || p[ 0 ] == '>' ) && p[ 1 ] == p[ 0 ]
+            && p[ 2 ] == '=';
+        }
+    return 0;
+    }
+
+
+
+/* <  >  <=  >=  ==  != */
+static int isCompareOp( const char  *inText,
+                        Token       *inT ) {
+    const char  *p  =  inText + inT->start;
+
+    if( inT->type != TK_PUNCT ) {
+        return 0;
+        }
+    if( inT->len == 1 ) {
+        return p[ 0 ] == '<' || p[ 0 ] == '>';
+        }
+    if( inT->len == 2 ) {
+        return p[ 1 ] == '=' && strchr( "<>=!", p[ 0 ] ) != NULL;
+        }
+    return 0;
+    }
+
+
+
+/* ++ or -- */
+static int isIncDec( const char  *inText,
+                     Token       *inT ) {
+    const char  *p  =  inText + inT->start;
+
+    return inT->type == TK_PUNCT && inT->len == 2
+        && ( p[ 0 ] == '+' || p[ 0 ] == '-' ) && p[ 1 ] == p[ 0 ];
+    }
+
+
+
+/* ------------------------------------------------------------------
+   Lexing lines
+   ------------------------------------------------------------------ */
+
+/* lineToks is the main scratch list;  auxToks is for helpers that look
+   at other lines while lineToks is still in use */
+static TokenList  lineToks;
+static TokenList  auxToks;
+static int        toksInit  =  0;
+
+
+/* lexes a line into inList, dropping comments.  Returns number of
+   significant tokens, or -1 if the line isn't plain code.  If
+   outInnerComment is non-NULL, gets 1 if there was a comment anywhere but
+   at the end. */
+static int lexCodeInto( TextBuffer  *inTB,
+                        int          inLine,
+                        TokenList   *inList,
+                        int         *outInnerComment ) {
+    Line  *l           =  &( inTB->lines[ inLine ] );
+    int    state;
+    int    k;
+    int    n           =  0;
+    int    sawComment  =  0;
+
+    if( ! toksInit ) {
+        syn_initTokenList( &lineToks );
+        syn_initTokenList( &auxToks );
+        toksInit = 1;
+        }
+    if( outInnerComment != NULL ) {
+        *outInnerComment = 0;
+        }
+    state = syn_getLineState( inTB, inLine );
+    if( state != 0 ) {
+        return -1;
+        }
+    syn_lexLine( l->text, l->len, state, inList );
+
+    for( k = 0;
+         k < inList->num;
+         k ++ ) {
+        Token  *t  =  &( inList->tokens[ k ] );
+
+        if( t->inPreproc ) {
+            return -1;
+            }
+        if( t->type == TK_COMMENT ) {
+            sawComment = 1;
+            continue;
+            }
+        if( sawComment && outInnerComment != NULL ) {
+            *outInnerComment = 1;
+            }
+        inList->tokens[ n ] = *t;
+        n ++;
+        }
+    inList->num = n;
+    return n;
+    }
+
+
+
+static int lexCode( TextBuffer  *inTB,
+                    int          inLine,
+                    int         *outInnerComment ) {
+    return lexCodeInto( inTB, inLine, &lineToks, outInnerComment );
+    }
+
+
+
+/* ------------------------------------------------------------------
+   The cursor, while a public entry point runs
+
+   Edits made with tb_insert / tb_delete carry a marker along, so the
+   cursor rides in a temporary marker.  Space edits on one line map it
+   more precisely by hand (applyEditsCur).
+   ------------------------------------------------------------------ */
+
+static int  cursorMarker  =  -1;
+/* the line where Tab was pressed on an unfinished declaration
+   ("int  " -> show where the name will go), or -1 */
+static int  partialLine   =  -1;
+/* nesting depth of beginCursor */
+static int  cursorDepth   =  0;
+
+
+
+static void beginCursor( TextBuffer  *inTB,
+                         int          inFlags,
+                         int         *ioCursorLine,
+                         int         *ioCursorCol ) {
+    cursorDepth ++;
+    if( cursorDepth > 1 ) {
+        return;
+        }
+    cursorMarker = -1;
+    partialLine = -1;
+    if( ioCursorLine != NULL && ioCursorCol != NULL && *ioCursorLine >= 0
+        && *ioCursorLine < inTB->numLines ) {
+        cursorMarker = tb_addMarker( inTB, *ioCursorLine, *ioCursorCol );
+        if( inFlags & FMT_PARTIAL ) {
+            partialLine = *ioCursorLine;
+            }
+        }
+    }
+
+
+
+static void endCursor( TextBuffer  *inTB,
+                       int         *ioCursorLine,
+                       int         *ioCursorCol ) {
+    cursorDepth --;
+    if( cursorDepth > 0 ) {
+        return;
+        }
+    if( cursorMarker >= 0 ) {
+        tb_getMarker( inTB, cursorMarker, ioCursorLine, ioCursorCol );
+        tb_removeMarker( inTB, cursorMarker );
+        }
+    cursorMarker = -1;
+    partialLine = -1;
+    }
+
+
+
+static void getCursor( TextBuffer  *inTB,
+                       int         *outLine,
+                       int         *outCol ) {
+    if( cursorMarker >= 0 ) {
+        tb_getMarker( inTB, cursorMarker, outLine, outCol );
+        }
+    else {
+        *outLine = -1;
+        *outCol = 0;
+        }
+    }
+
+
+
+static void setCursor( TextBuffer  *inTB,
+                       int          inLine,
+                       int          inCol ) {
+    if( cursorMarker >= 0 && inLine >= 0 ) {
+        tb_setMarker( inTB, cursorMarker, inLine, inCol );
+        }
+    }
+
+
+
+static void applyEditsCur( TextBuffer  *inTB,
+                           int          inLine,
+                           EditList    *inList ) {
+    int  l;
+    int  c;
+
+    getCursor( inTB, &l, &c );
+    c = applyEdits( inTB, inLine, inList, l == inLine ? c : 0 );
+    if( l == inLine ) {
+        setCursor( inTB, l, c );
+        }
+    }
+
+
+
+/* is the cursor on inLine, with nothing but spaces after it? */
+static int cursorAtLineEnd( TextBuffer  *inTB,
+                            int          inLine ) {
+    Line  *l  =  &( inTB->lines[ inLine ] );
+    int    cl;
+    int    cc;
+    int    i;
+
+    getCursor( inTB, &cl, &cc );
+    if( cl != inLine ) {
+        return 0;
+        }
+    for( i = cc;
+         i < l->len;
+         i ++ ) {
+        if( l->text[ i ] != ' ' ) {
+            return 0;
+            }
+        }
+    return 1;
+    }
+
+
+
+/* re-indents a line that the formatter created or moved, keeping the
+   cursor out of the indentation */
+static void reindentNewLine( TextBuffer  *inTB,
+                             int          inLine ) {
+    int  cl;
+    int  cc;
+
+    ind_indentLine( inTB, inLine );
+    getCursor( inTB, &cl, &cc );
+    if( cl == inLine && cc < tb_lineIndent( inTB, inLine ) ) {
+        setCursor( inTB, cl, tb_lineIndent( inTB, inLine ) );
+        }
+    }
+
+
+
 /* ------------------------------------------------------------------
    Declaration rows (a type, a name, maybe an initializer)
    ------------------------------------------------------------------ */
 
 typedef struct DeclRow {
         int  line;
+        /* last line of the declaration (an initializer like a function
+           call can continue onto following lines), or -1 */
+        int  lastLine;
         int  typeStart;
         int  typeEnd;
         int  numStars;
@@ -264,6 +525,8 @@ typedef struct DeclRow {
         int  valueStart;
         /* column of the token after the name (';' ',' ')' '=') */
         int  afterName;
+        /* 1 if this is an unfinished row with no name yet (Tab) */
+        int  partial;
     } DeclRow;
 
 
@@ -341,82 +604,109 @@ static int parseDeclSpan( const char  *inText,
     outRow->eqStart = -1;
     outRow->valueStart = -1;
     outRow->afterName = -1;
+    outRow->lastLine = -1;
+    outRow->partial = 0;
     return 1;
     }
 
 
 
-static TokenList  lineToks;
-static int        lineToksInit  =  0;
+/* parses toks[ inFrom .. inTo ) as an unfinished declaration:  type
+   words and maybe stars, but no name yet ("unsigned int", "Deck *").
+   The name goes at the end of the line (inLineLen). */
+static int parsePartialSpan( const char  *inText,
+                             int          inLineLen,
+                             Token       *inToks,
+                             int          inFrom,
+                             int          inTo,
+                             DeclRow     *outRow ) {
+    int     k      =  inTo - 1;
+    int     stars  =  0;
+    int     i;
+    Token  *first;
 
-
-/* lexes a line into lineToks, dropping comments.  Returns number of
-   significant tokens, or -1 if the line isn't plain code.  If outComment
-   is non-NULL, gets 1 if there was a comment anywhere but at the end. */
-static int lexCode( TextBuffer  *inTB,
-                    int          inLine,
-                    int         *outInnerComment ) {
-    Line  *l  =  &( inTB->lines[ inLine ] );
-    int    state;
-    int    k;
-    int    n  =  0;
-    int    sawComment  =  0;
-
-    if( ! lineToksInit ) {
-        syn_initTokenList( &lineToks );
-        lineToksInit = 1;
+    while( k >= inFrom && isP( &( inToks[ k ] ), '*' ) ) {
+        stars ++;
+        k --;
         }
-    if( outInnerComment != NULL ) {
-        *outInnerComment = 0;
+    if( k < inFrom ) {
+        return 0;
         }
-    state = syn_getLineState( inTB, inLine );
-    if( state != 0 ) {
-        return -1;
-        }
-    syn_lexLine( l->text, l->len, state, &lineToks );
+    for( i = inFrom;
+         i <= k;
+         i ++ ) {
+        Token  *t  =  &( inToks[ i ] );
 
-    for( k = 0;
-         k < lineToks.num;
-         k ++ ) {
-        Token  *t  =  &( lineToks.tokens[ k ] );
-
-        if( t->inPreproc ) {
-            return -1;
+        if( t->type != TK_IDENT
+            && ! ( t->type == TK_KEYWORD && isDeclKeyword( t->kw ) ) ) {
+            return 0;
             }
-        if( t->type == TK_COMMENT ) {
-            sawComment = 1;
-            continue;
-            }
-        if( sawComment && outInnerComment != NULL ) {
-            *outInnerComment = 1;
-            }
-        lineToks.tokens[ n ] = *t;
-        n ++;
         }
-    lineToks.num = n;
-    return n;
+    /* it must start like a type:  a type keyword, a known type name, or
+       a Capitalized name (not a variable about to be assigned) */
+    first = &( inToks[ inFrom ] );
+    if( first->type == TK_IDENT
+        && ! syn_isTypeName( inText + first->start, first->len )
+        && ! ( inText[ first->start ] >= 'A'
+               && inText[ first->start ] <= 'Z' ) ) {
+        return 0;
+        }
+    /* "Deck" right at the cursor might be a name being typed;  "Deck "
+       or "Deck *" or "unsigned" is clearly a type */
+    if( stars == 0 && inToks[ k ].type == TK_IDENT
+        && tokEnd( &( inToks[ k ] ) ) == inLineLen ) {
+        return 0;
+        }
+    outRow->typeStart = first->start;
+    outRow->typeEnd = tokEnd( &( inToks[ k ] ) );
+    outRow->numStars = stars;
+    outRow->nameStart = inLineLen;
+    outRow->nameEnd = inLineLen;
+    outRow->eqStart = -1;
+    outRow->valueStart = -1;
+    outRow->afterName = -1;
+    outRow->lastLine = -1;
+    outRow->partial = 1;
+    return 1;
     }
 
 
 
-/* parses a whole line as a single declaration */
+/* parses a line as a single declaration.  The initializer may be a call
+   whose arguments continue on the following lines;  outRow->lastLine
+   says where the declaration ends. */
 static int parseDeclLine( TextBuffer  *inTB,
                           int          inLine,
                           DeclRow     *outRow ) {
-    Line   *l      =  &( inTB->lines[ inLine ] );
+    Line   *l        =  &( inTB->lines[ inLine ] );
     int     inner;
-    int     n      =  lexCode( inTB, inLine, &inner );
-    Token  *toks   =  lineToks.tokens;
+    int     n;
+    Token  *toks     =  lineToks.tokens;
     int     k;
-    int     depth  =  0;
-    int     stop   =  -1;
+    int     depth    =  0;
+    int     stop     =  -1;
+    int     endsLine;
+    int     li;
 
+    if( inLine == partialLine && cursorAtLineEnd( inTB, inLine ) ) {
+        n = lexCode( inTB, inLine, &inner );
+        toks = lineToks.tokens;
+        if( n >= 1 && ! inner
+            &&
+            parsePartialSpan( l->text, l->len, toks, 0, n, outRow ) ) {
+            outRow->line = inLine;
+            outRow->lastLine = inLine;
+            return 1;
+            }
+        }
+
+    n = lexCode( inTB, inLine, &inner );
+    toks = lineToks.tokens;
     if( n < 3 || inner ) {
         return 0;
         }
-    if( ! isP( &( toks[ n - 1 ] ), ';' ) ) {
-        return 0;
-        }
+    endsLine = isP( &( toks[ n - 1 ] ), ';' );
+
     for( k = 0;
          k < n;
          k ++ ) {
@@ -446,40 +736,83 @@ static int parseDeclLine( TextBuffer  *inTB,
         return 0;
         }
     outRow->line = inLine;
+    outRow->lastLine = inLine;
     outRow->afterName = toks[ stop ].start;
 
-    if( isP( &( toks[ stop ] ), '=' ) ) {
-        /* initializer must be simple:  no top level comma, no braces */
-        int  d  =  0;
+    if( ! isP( &( toks[ stop ] ), '=' ) ) {
+        return stop == n - 1;
+        }
 
-        if( stop + 1 >= n - 1 ) {
+    /* initializer must be simple:  no top level comma, no braces */
+    depth = 0;
+    for( k = stop + 1;
+         k < n;
+         k ++ ) {
+        Token  *t  =  &( toks[ k ] );
+
+        if( isP( t, '(' ) || isP( t, '[' ) ) {
+            depth ++;
+            }
+        else if( isP( t, ')' ) || isP( t, ']' ) ) {
+            depth --;
+            }
+        else if( isP( t, '{' ) || isP( t, '}' ) ) {
             return 0;
             }
-        for( k = stop + 1;
-             k < n - 1;
+        else if( depth == 0 && isP( t, ',' ) ) {
+            return 0;
+            }
+        }
+    if( stop + 1 >= n - ( endsLine ? 1 : 0 ) ) {
+        return 0;
+        }
+    outRow->eqStart = toks[ stop ].start;
+    outRow->valueStart = toks[ stop + 1 ].start;
+    if( endsLine ) {
+        return depth == 0;
+        }
+    if( depth <= 0 ) {
+        /* continued some other way ( a +\n b ):  not a table row */
+        return 0;
+        }
+
+    /* the call's arguments continue:  find the line that closes it and
+       ends the statement */
+    for( li = inLine + 1;
+         li < inTB->numLines && li <= inLine + 40;
+         li ++ ) {
+        int  m  =  lexCode( inTB, li, NULL );
+
+        if( m <= 0 ) {
+            return 0;
+            }
+        for( k = 0;
+             k < m;
              k ++ ) {
-            Token  *t  =  &( toks[ k ] );
+            Token  *t  =  &( lineToks.tokens[ k ] );
 
             if( isP( t, '(' ) || isP( t, '[' ) ) {
-                d ++;
+                depth ++;
                 }
             else if( isP( t, ')' ) || isP( t, ']' ) ) {
-                d --;
+                depth --;
+                if( depth < 0 ) {
+                    return 0;
+                    }
                 }
             else if( isP( t, '{' ) || isP( t, '}' ) ) {
                 return 0;
                 }
-            else if( d == 0 && isP( t, ',' ) ) {
-                return 0;
+            else if( isP( t, ';' ) ) {
+                if( depth != 0 || k != m - 1 ) {
+                    return 0;
+                    }
+                outRow->lastLine = li;
+                return 1;
                 }
             }
-        outRow->eqStart = toks[ stop ].start;
-        outRow->valueStart = toks[ stop + 1 ].start;
         }
-    else if( stop != n - 1 ) {
-        return 0;
-        }
-    return 1;
+    return 0;
     }
 
 
@@ -493,16 +826,14 @@ int fmt_isDeclarationLine( TextBuffer  *inTB,
 
 
 
-/* lines up rows (each on its own line;  all rows of a table share the
-   same typeStart).  inEqSpaces < 0 means these are parameters (no
+/* lines up rows (each starting its own line;  all rows of a table share
+   the same typeStart).  inEqSpaces < 0 means these are parameters (no
    initializers and no ';' to tighten). */
 static int alignRows( TextBuffer  *inTB,
                       DeclRow     *inRows,
                       int          inNumRows,
                       int          inTypeGap,
-                      int          inEqSpaces,
-                      int         *ioCursorLine,
-                      int         *ioCursorCol ) {
+                      int          inEqSpaces ) {
     static EditList  edits;
     int              typeW    =  0;
     int              starMax  =  0;
@@ -596,18 +927,25 @@ static int alignRows( TextBuffer  *inTB,
             }
 
         if( edits.num > 0 ) {
-            int  onCursor  =  ioCursorLine != NULL
-                              &&
-                              ioCursorCol != NULL
-                              &&
-                              *ioCursorLine == r->line;
-            int  c         =  onCursor ? *ioCursorCol : 0;
-
-            c = applyEdits( inTB, r->line, &edits, c );
-            if( onCursor ) {
-                *ioCursorCol = c;
-                }
+            applyEditsCur( inTB, r->line, &edits );
             changed = 1;
+
+            /* a call's arguments continuing below move with it */
+            for( j = r->line + 1;
+                 j <= r->lastLine;
+                 j ++ ) {
+                reindentNewLine( inTB, j );
+                }
+            }
+        if( r->partial ) {
+            /* the cursor goes where the name will be typed */
+            int  cl;
+            int  cc;
+
+            getCursor( inTB, &cl, &cc );
+            if( cl == r->line ) {
+                setCursor( inTB, cl, inTB->lines[ r->line ].len );
+                }
             }
         }
     return changed;
@@ -615,14 +953,40 @@ static int alignRows( TextBuffer  *inTB,
 
 
 
-int fmt_alignDeclarations( TextBuffer  *inTB,
-                           int          inLine,
-                           int         *ioCursorLine,
-                           int         *ioCursorCol ) {
+/* if inEnd is the last line of a declaration starting at column inIndent,
+   returns the declaration's first line, else -1 */
+static int declEndingAt( TextBuffer  *inTB,
+                         int          inEnd,
+                         int          inIndent ) {
+    DeclRow  row;
+    int      s  =  inEnd;
+
+    if( inEnd < 0 ) {
+        return -1;
+        }
+    /* walk up over continuation lines (indented more than the start) */
+    while( s > 0 && inEnd - s < 40 && ! tb_lineIsBlank( inTB, s )
+           && tb_lineIndent( inTB, s ) > inIndent ) {
+        s --;
+        }
+    if( tb_lineIndent( inTB, s ) == inIndent
+        &&
+        parseDeclLine( inTB, s, &row )
+        &&
+        row.typeStart == inIndent && row.lastLine == inEnd ) {
+        return s;
+        }
+    return -1;
+    }
+
+
+
+static int alignDeclarationsAt( TextBuffer  *inTB,
+                                int          inLine ) {
     static DeclRow  *rows     =  NULL;
     static int       rowCap   =  0;
     int              first    =  inLine;
-    int              last     =  inLine;
+    int              last;
     int              indent;
     int              i;
     int              n        =  0;
@@ -632,41 +996,513 @@ int fmt_alignDeclarations( TextBuffer  *inTB,
         return 0;
         }
     if( ! parseDeclLine( inTB, inLine, &row ) ) {
-        return 0;
+        /* maybe a continuation line of a multi-line declaration:  its
+           first line is the nearest one above that is indented less */
+        int  ind  =  tb_lineIndent( inTB, inLine );
+        int  s    =  inLine - 1;
+
+        while( s >= 0 && inLine - s < 40 && ! tb_lineIsBlank( inTB, s )
+               && tb_lineIndent( inTB, s ) >= ind ) {
+            s --;
+            }
+        if( s < 0 || tb_lineIsBlank( inTB, s )
+            || ! parseDeclLine( inTB, s, &row ) || row.lastLine < inLine ) {
+            return 0;
+            }
+        first = s;
         }
     indent = row.typeStart;
+    last = row.lastLine;
 
-    while( first > 0
-           &&
-           parseDeclLine( inTB, first - 1, &row )
-           &&
-           row.typeStart == indent ) {
-        first --;
+    /* a table can span a few blank lines (declTableBlankLines), the way
+       declarations at the top of a block are often grouped */
+    while( 1 ) {
+        int  e  =  first - 1;
+        int  s;
+
+        while( e >= 0 && first - 1 - e < config.declTableBlankLines
+               && tb_lineIsBlank( inTB, e ) ) {
+            e --;
+            }
+        s = declEndingAt( inTB, e, indent );
+        if( s < 0 ) {
+            break;
+            }
+        first = s;
         }
-    while( last < inTB->numLines - 1
-           &&
-           parseDeclLine( inTB, last + 1, &row )
-           &&
-           row.typeStart == indent ) {
-        last ++;
+    while( 1 ) {
+        int  b  =  last + 1;
+
+        while( b < inTB->numLines
+               && b - ( last + 1 ) < config.declTableBlankLines
+               && tb_lineIsBlank( inTB, b ) ) {
+            b ++;
+            }
+        if( b >= inTB->numLines
+            || ! parseDeclLine( inTB, b, &row ) || row.typeStart != indent ) {
+            break;
+            }
+        last = row.lastLine;
         }
 
     if( rowCap < last - first + 1 ) {
         rowCap = last - first + 1 + 16;
         rows = (DeclRow *)realloc( rows, (size_t)rowCap * sizeof( DeclRow ) );
         }
-    for( i = first;
-         i <= last;
-         i ++ ) {
+    i = first;
+    while( i <= last ) {
         if( parseDeclLine( inTB, i, &( rows[ n ] ) ) ) {
+            i = rows[ n ].lastLine + 1;
             n ++;
+            }
+        else {
+            i ++;
             }
         }
     if( n == 0 ) {
         return 0;
         }
     return alignRows( inTB, rows, n, config.declTypeSpaces,
-                      config.declEqualsSpaces, ioCursorLine, ioCursorCol );
+                      config.declEqualsSpaces );
+    }
+
+
+
+int fmt_alignDeclarations( TextBuffer  *inTB,
+                           int          inLine,
+                           int          inFlags,
+                           int         *ioCursorLine,
+                           int         *ioCursorCol ) {
+    int  result;
+
+    if( inLine < 0 || inLine >= inTB->numLines ) {
+        return 0;
+        }
+    beginCursor( inTB, inFlags, ioCursorLine, ioCursorCol );
+    result = alignDeclarationsAt( inTB, inLine );
+    endCursor( inTB, ioCursorLine, ioCursorCol );
+    return result;
+    }
+
+
+
+/* ------------------------------------------------------------------
+   Paren groups:  what kind of list is a '(' opening?
+   ------------------------------------------------------------------ */
+
+#define G_NONE   0
+#define G_OTHER  1
+/* function call arguments or function parameters */
+#define G_CALL   2
+/* for( ;; ) */
+#define G_FOR    3
+
+
+/* kind of the paren group whose '(' follows the token inPrev (NULL if
+   nothing comes before it) */
+static int groupKind( Token  *inPrev ) {
+    if( inPrev == NULL ) {
+        return G_OTHER;
+        }
+    if( inPrev->type == TK_KEYWORD && inPrev->kw == KW_FOR ) {
+        return G_FOR;
+        }
+    if( inPrev->type == TK_IDENT ) {
+        return G_CALL;
+        }
+    return G_OTHER;
+    }
+
+
+
+/* kind of a '(' that is the first token on inLine:  looks at the last
+   code token of the lines above */
+static int groupKindAtLineStart( TextBuffer  *inTB,
+                                 int          inLine ) {
+    int  li;
+
+    for( li = inLine - 1;
+         li >= 0 && li >= inLine - 8;
+         li -- ) {
+        int  n  =  lexCodeInto( inTB, li, &auxToks, NULL );
+
+        if( n > 0 ) {
+            return groupKind( &( auxToks.tokens[ n - 1 ] ) );
+            }
+        }
+    return G_OTHER;
+    }
+
+
+
+/* finds the innermost '(' that is still open at the start of inLine.
+   Returns 0 if there is none (or the innermost open bracket is a [ or
+   a {). */
+static int findOpenParen( TextBuffer  *inTB,
+                          int          inLine,
+                          int         *outLine,
+                          int         *outCol,
+                          int         *outKind ) {
+    int  li;
+    int  depth  =  0;
+
+    for( li = inLine - 1;
+         li >= 0 && li > inLine - 64;
+         li -- ) {
+        int  n  =  lexCodeInto( inTB, li, &auxToks, NULL );
+        int  j;
+
+        for( j = n - 1;
+             j >= 0;
+             j -- ) {
+            Token  *t  =  &( auxToks.tokens[ j ] );
+
+            if( isP( t, ')' ) || isP( t, ']' ) || isP( t, '}' ) ) {
+                depth ++;
+                }
+            else if( isP( t, '(' ) || isP( t, '[' ) || isP( t, '{' ) ) {
+                if( depth > 0 ) {
+                    depth --;
+                    continue;
+                    }
+                if( ! isP( t, '(' ) ) {
+                    return 0;
+                    }
+                *outLine = li;
+                *outCol = t->start;
+                if( j > 0 ) {
+                    *outKind = groupKind( &( auxToks.tokens[ j - 1 ] ) );
+                    }
+                else {
+                    *outKind = groupKindAtLineStart( inTB, li );
+                    }
+                return 1;
+                }
+            }
+        }
+    return 0;
+    }
+
+
+
+/* does the for( group opening at toks[ inOpen ] have an empty clause
+   (as far as this line shows)? */
+static int forHasEmptyClause( Token  *inToks,
+                              int     inNum,
+                              int     inOpen ) {
+    int  k;
+    int  depth  =  0;
+
+    for( k = inOpen;
+         k < inNum;
+         k ++ ) {
+        Token  *t  =  &( inToks[ k ] );
+
+        if( isP( t, '(' ) ) {
+            depth ++;
+            }
+        else if( isP( t, ')' ) ) {
+            depth --;
+            if( depth == 0 ) {
+                return isP( &( inToks[ k - 1 ] ), ';' );
+                }
+            }
+        else if( depth == 1 && isP( t, ';' ) ) {
+            Token  *p  =  &( inToks[ k - 1 ] );
+
+            if( isP( p, ';' ) || ( k - 1 == inOpen ) ) {
+                return 1;
+                }
+            }
+        }
+    return 0;
+    }
+
+
+
+/* ------------------------------------------------------------------
+   Splitting argument lists and for clauses onto their own lines
+   ------------------------------------------------------------------ */
+
+/* breaks the line after every comma of a call / parameter list and
+   after the ;s of a for( ), when more follows on the line.  The new
+   lines are re-indented (which lines them up after the '(').
+   Returns the number of lines added. */
+static int splitLine( TextBuffer   *inTB,
+                      int           inLine,
+                      LineContext  *inCtx ) {
+    int          kinds[ 128 ];
+    int          splits[ 128 ];
+    int          numKinds   =  0;
+    int          numSplits  =  0;
+    int          base       =  G_NONE;
+    int          inner;
+    int          n;
+    int          k;
+    int          i;
+    Token       *toks;
+
+    if( ! config.splitArgLists && ! config.splitForClauses ) {
+        return 0;
+        }
+    if( inCtx->inComment || inCtx->inPreproc ) {
+        return 0;
+        }
+    if( inCtx->inParen ) {
+        int  ol;
+        int  oc;
+
+        if( ! findOpenParen( inTB, inLine, &ol, &oc, &base ) ) {
+            base = G_OTHER;
+            }
+        }
+
+    n = lexCode( inTB, inLine, &inner );
+    if( n <= 1 || inner ) {
+        return 0;
+        }
+    toks = lineToks.tokens;
+
+    for( k = 0;
+         k < n;
+         k ++ ) {
+        Token  *t    =  &( toks[ k ] );
+        int     top  =  numKinds > 0 ? kinds[ numKinds - 1 ] : base;
+
+        if( isP( t, '(' ) || isP( t, '[' ) || isP( t, '{' ) ) {
+            int  kind  =  G_OTHER;
+
+            if( isP( t, '(' ) ) {
+                if( k > 0 ) {
+                    kind = groupKind( &( toks[ k - 1 ] ) );
+                    }
+                else {
+                    kind = groupKindAtLineStart( inTB, inLine );
+                    }
+                if( kind == G_FOR && forHasEmptyClause( toks, n, k ) ) {
+                    kind = G_OTHER;
+                    }
+                }
+            if( numKinds < 128 ) {
+                kinds[ numKinds ] = kind;
+                numKinds ++;
+                }
+            }
+        else if( isP( t, ')' ) || isP( t, ']' ) || isP( t, '}' ) ) {
+            if( numKinds > 0 ) {
+                numKinds --;
+                }
+            else {
+                base = G_NONE;
+                }
+            }
+        else if( k + 1 < n && numSplits < 128 ) {
+            Token  *next  =  &( toks[ k + 1 ] );
+
+            if( isP( t, ',' ) && top == G_CALL && config.splitArgLists
+                && ! isP( next, ')' ) ) {
+                splits[ numSplits ] = k;
+                numSplits ++;
+                }
+            else if( isP( t, ';' ) && top == G_FOR && config.splitForClauses
+                     && ! isP( next, ';' ) && ! isP( next, ')' ) ) {
+                splits[ numSplits ] = k;
+                numSplits ++;
+                }
+            }
+        }
+
+    /* right to left, so earlier columns stay valid */
+    for( i = numSplits - 1;
+         i >= 0;
+         i -- ) {
+        int  e   =  tokEnd( &( toks[ splits[ i ] ] ) );
+        int  ns  =  toks[ splits[ i ] + 1 ].start;
+
+        if( ns > e ) {
+            tb_delete( inTB, inLine, e, inLine, ns );
+            }
+        tb_insert( inTB, inLine, e, "\n", 1, NULL, NULL );
+        }
+    for( i = 1;
+         i <= numSplits;
+         i ++ ) {
+        reindentNewLine( inTB, inLine + i );
+        }
+    return numSplits;
+    }
+
+
+
+/* ------------------------------------------------------------------
+   for( ;; ) clauses as a table
+
+       for( y =  BH - 1;
+            y >= BH - 3;
+            y    -- ) {
+
+   Left sides line up, operators line up, and right sides (and the
+   ++ / -- of the last clause) start in one column.
+   ------------------------------------------------------------------ */
+
+typedef struct ForRow {
+        int  lhsStart;
+        int  lhsEnd;
+        int  opStart;
+        int  opEnd;
+        /* -1 for a postfix ++ / -- row */
+        int  rhsStart;
+    } ForRow;
+
+
+
+static int parseForClause( const char  *inText,
+                           Token       *inToks,
+                           int          inFrom,
+                           int          inTo,
+                           ForRow      *outRow ) {
+    int  k;
+    int  depth  =  0;
+
+    if( inTo - inFrom < 2 ) {
+        return 0;
+        }
+    for( k = inFrom;
+         k < inTo;
+         k ++ ) {
+        Token  *t  =  &( inToks[ k ] );
+
+        if( isP( t, '(' ) || isP( t, '[' ) ) {
+            depth ++;
+            }
+        else if( isP( t, ')' ) || isP( t, ']' ) ) {
+            depth --;
+            }
+        else if( depth == 0 && k > inFrom
+                 &&
+                 ( isAssignOp( inText, t ) || isCompareOp( inText, t ) ) ) {
+            if( k + 1 >= inTo ) {
+                return 0;
+                }
+            outRow->lhsStart = inToks[ inFrom ].start;
+            outRow->lhsEnd = tokEnd( &( inToks[ k - 1 ] ) );
+            outRow->opStart = t->start;
+            outRow->opEnd = tokEnd( t );
+            outRow->rhsStart = inToks[ k + 1 ].start;
+            return 1;
+            }
+        }
+    if( isIncDec( inText, &( inToks[ inTo - 1 ] ) ) ) {
+        outRow->lhsStart = inToks[ inFrom ].start;
+        outRow->lhsEnd = tokEnd( &( inToks[ inTo - 2 ] ) );
+        outRow->opStart = inToks[ inTo - 1 ].start;
+        outRow->opEnd = tokEnd( &( inToks[ inTo - 1 ] ) );
+        outRow->rhsStart = -1;
+        return 1;
+        }
+    return 0;
+    }
+
+
+
+static void formatForTable( TextBuffer  *inTB,
+                            int          inLine,
+                            int          inOpenCol ) {
+    static EditList  edits;
+    ForRow           rows[ 3 ];
+    int              closeLine;
+    int              closeCol;
+    int              r;
+    int              lhsW     =  0;
+    int              opW      =  0;
+    int              opCol;
+    int              valCol;
+
+    if( ! config.alignForClauses ) {
+        return;
+        }
+    if( ! ind_findMatchingBracket( inTB, inLine, inOpenCol, 8, &closeLine,
+                                   &closeCol )
+        || closeLine != inLine + 2 ) {
+        return;
+        }
+    for( r = 0;
+         r < 3;
+         r ++ ) {
+        int     li     =  inLine + r;
+        int     inner;
+        int     n      =  lexCode( inTB, li, &inner );
+        Token  *toks   =  lineToks.tokens;
+        int     from   =  0;
+        int     to     =  -1;
+        int     k;
+
+        if( n <= 0 || inner ) {
+            return;
+            }
+        if( r == 0 ) {
+            while( from < n && ! ( isP( &( toks[ from ] ), '(' )
+                                   && toks[ from ].start == inOpenCol ) ) {
+                from ++;
+                }
+            from ++;
+            }
+        if( r < 2 ) {
+            if( ! isP( &( toks[ n - 1 ] ), ';' ) ) {
+                return;
+                }
+            to = n - 1;
+            }
+        else {
+            for( k = 0;
+                 k < n;
+                 k ++ ) {
+                if( isP( &( toks[ k ] ), ')' )
+                    && toks[ k ].start == closeCol ) {
+                    to = k;
+                    break;
+                    }
+                }
+            }
+        if( to < 0 || ! parseForClause( inTB->lines[ li ].text, toks, from,
+                                        to, &( rows[ r ] ) ) ) {
+            return;
+            }
+        if( rows[ r ].lhsStart != rows[ 0 ].lhsStart ) {
+            return;
+            }
+        if( rows[ r ].lhsEnd - rows[ r ].lhsStart > lhsW ) {
+            lhsW = rows[ r ].lhsEnd - rows[ r ].lhsStart;
+            }
+        if( rows[ r ].rhsStart >= 0
+            && rows[ r ].opEnd - rows[ r ].opStart > opW ) {
+            opW = rows[ r ].opEnd - rows[ r ].opStart;
+            }
+        }
+    if( opW == 0 ) {
+        return;
+        }
+    opCol = rows[ 0 ].lhsStart + lhsW + 1;
+    valCol = opCol + opW + 1;
+
+    for( r = 0;
+         r < 3;
+         r ++ ) {
+        ForRow  *f  =  &( rows[ r ] );
+
+        edits.num = 0;
+        if( f->rhsStart < 0 ) {
+            addEdit( &edits, f->lhsEnd, f->opStart - f->lhsEnd,
+                     valCol - f->lhsEnd );
+            }
+        else {
+            addEdit( &edits, f->opEnd, f->rhsStart - f->opEnd,
+                     valCol - ( opCol + f->opEnd - f->opStart ) );
+            addEdit( &edits, f->lhsEnd, f->opStart - f->lhsEnd,
+                     opCol - f->lhsEnd );
+            }
+        applyEditsCur( inTB, inLine + r, &edits );
+        }
     }
 
 
@@ -675,16 +1511,14 @@ int fmt_alignDeclarations( TextBuffer  *inTB,
    Function parameter lists
    ------------------------------------------------------------------ */
 
-/* aligns the parameter list whose '(' is token inOpenTok on inLine (in
-   lineToks).  Handles both one-line lists and one-param-per-line
-   tables. */
+/* aligns the parameter list whose '(' is at inOpenCol on inLine.
+   Handles both one-line lists and one-param-per-line tables. */
 static void formatParamList( TextBuffer  *inTB,
                              int          inLine,
-                             int          inOpenCol,
-                             int         *ioCursorLine,
-                             int         *ioCursorCol ) {
+                             int          inOpenCol ) {
     int       closeLine;
     int       closeCol;
+    int       lastLine;
     DeclRow   rows[ 64 ];
     int       numRows  =  0;
     int       li;
@@ -692,22 +1526,30 @@ static void formatParamList( TextBuffer  *inTB,
     if( config.paramTypeSpaces <= 0 ) {
         return;
         }
-    if( ! ind_findMatchingBracket( inTB, inLine, inOpenCol, 64,
-                                   &closeLine, &closeCol ) ) {
-        /* list not closed yet:  format through the current line */
+    if( ind_findMatchingBracket( inTB, inLine, inOpenCol, 64,
+                                 &closeLine, &closeCol ) ) {
+        lastLine = closeLine;
+        }
+    else {
+        /* list not closed yet:  format through the current line, or
+           through the unfinished parameter Tab was pressed on */
         closeLine = -1;
+        lastLine = inLine;
+        if( partialLine > inLine && partialLine < inLine + 64 ) {
+            lastLine = partialLine;
+            }
         }
 
     for( li = inLine;
-         li <= ( closeLine >= 0 ? closeLine : inLine );
+         li <= lastLine;
          li ++ ) {
-        int     n     =  lexCode( inTB, li, NULL );
-        Token  *toks  =  lineToks.tokens;
-        int     k     =  0;
-        int     start;
-        int     numOnLine  =  0;
-        DeclRow lineRows[ 32 ];
-        int     r;
+        int      n          =  lexCode( inTB, li, NULL );
+        Token   *toks       =  lineToks.tokens;
+        int      k          =  0;
+        int      start;
+        int      numOnLine  =  0;
+        DeclRow  lineRows[ 32 ];
+        int      r;
 
         if( n < 0 ) {
             return;
@@ -721,22 +1563,36 @@ static void formatParamList( TextBuffer  *inTB,
             }
         start = k;
         while( k <= n ) {
-            if( k == n || isP( &( toks[ k ] ), ',' )
-                ||
-                ( li == closeLine && isP( &( toks[ k ] ), ')' )
-                  && toks[ k ].start == closeCol ) ) {
+            int  atClose  =  ( k < n && li == closeLine
+                               && isP( &( toks[ k ] ), ')' )
+                               && toks[ k ].start == closeCol );
+
+            if( k == n || isP( &( toks[ k ] ), ',' ) || atClose ) {
                 if( k > start ) {
                     DeclRow  *dr  =  &( lineRows[ numOnLine ] );
 
-                    if( k == n && li != closeLine ) {
-                        /* param continues on next line?  only accept if
-                           this ends with a comma (handled above) */
+                    if( numOnLine >= 32 ) {
                         return;
                         }
-                    if( numOnLine >= 32
-                        ||
-                        ! parseDeclSpan( inTB->lines[ li ].text, toks, start,
-                                         k, dr ) ) {
+                    if( k == n && li != closeLine ) {
+                        /* the line ends mid-parameter:  only OK for the
+                           unfinished one Tab was pressed on */
+                        if( li == partialLine
+                            && cursorAtLineEnd( inTB, li )
+                            &&
+                            parsePartialSpan( inTB->lines[ li ].text,
+                                              inTB->lines[ li ].len, toks,
+                                              start, k, dr ) ) {
+                            dr->line = li;
+                            dr->lastLine = li;
+                            numOnLine ++;
+                            }
+                        else {
+                            return;
+                            }
+                        }
+                    else if( ! parseDeclSpan( inTB->lines[ li ].text, toks,
+                                              start, k, dr ) ) {
                         /* void, ..., function pointer, K&R names:  leave
                            the whole list alone */
                         if( k - start == 1
@@ -754,14 +1610,12 @@ static void formatParamList( TextBuffer  *inTB,
                         }
                     else {
                         dr->line = li;
+                        dr->lastLine = li;
                         dr->afterName = k < n ? toks[ k ].start : -1;
                         numOnLine ++;
                         }
                     }
-                if( k == n
-                    ||
-                    ( li == closeLine && isP( &( toks[ k ] ), ')' )
-                      && toks[ k ].start == closeCol ) ) {
+                if( k == n || atClose ) {
                     break;
                     }
                 start = k + 1;
@@ -784,15 +1638,13 @@ static void formatParamList( TextBuffer  *inTB,
                  r >= 0;
                  r -- ) {
                 alignRows( inTB, &( lineRows[ r ] ), 1,
-                           config.paramTypeSpaces, -1,
-                           ioCursorLine, ioCursorCol );
+                           config.paramTypeSpaces, -1 );
                 }
             }
         }
 
     if( numRows == 1 ) {
-        alignRows( inTB, rows, 1, config.paramTypeSpaces, -1,
-                   ioCursorLine, ioCursorCol );
+        alignRows( inTB, rows, 1, config.paramTypeSpaces, -1 );
         }
     else if( numRows > 1 ) {
         /* table:  all rows must start at the same column */
@@ -805,9 +1657,48 @@ static void formatParamList( TextBuffer  *inTB,
                 return;
                 }
             }
-        alignRows( inTB, rows, numRows, config.paramTypeSpaces, -1,
-                   ioCursorLine, ioCursorCol );
+        alignRows( inTB, rows, numRows, config.paramTypeSpaces, -1 );
         }
+    }
+
+
+
+/* if inLine starts a function definition / prototype at top level
+   ( type-words name( ), returns the column of its '(', else -1 */
+static int paramListOpenCol( TextBuffer  *inTB,
+                             int          inLine ) {
+    int     n     =  lexCode( inTB, inLine, NULL );
+    Token  *toks  =  lineToks.tokens;
+    int     k;
+
+    for( k = 1;
+         k < n;
+         k ++ ) {
+        if( isP( &( toks[ k ] ), '(' ) ) {
+            int  j;
+
+            if( toks[ k - 1 ].type != TK_IDENT || k < 2 ) {
+                return -1;
+                }
+            for( j = 0;
+                 j < k - 1;
+                 j ++ ) {
+                Token  *t  =  &( toks[ j ] );
+
+                if( ! ( t->type == TK_IDENT
+                        || isP( t, '*' )
+                        || ( t->type == TK_KEYWORD
+                             && isDeclKeyword( t->kw ) ) ) ) {
+                    return -1;
+                    }
+                }
+            return toks[ k ].start;
+            }
+        if( isP( &( toks[ k ] ), '=' ) ) {
+            return -1;
+            }
+        }
+    return -1;
     }
 
 
@@ -816,29 +1707,21 @@ static void formatParamList( TextBuffer  *inTB,
    Line formatting
    ------------------------------------------------------------------ */
 
-int fmt_formatLine( TextBuffer  *inTB,
-                    int          inLine,
-                    int          inCursorCol ) {
+/* token spacing on one line:  paren / bracket padding, commas, spaces
+   around assignments, a space before a block's '{' */
+static void spaceTokens( TextBuffer  *inTB,
+                         int          inLine ) {
     static EditList  edits;
     int              n;
     Token           *toks;
     Line            *l;
     int              k;
     int              parenStack[ 128 ];
-    int              numParens   =  0;
-    int              cursor      =  inCursorCol;
-    int              paramOpenCol  =  -1;
-
-    if( ! config.formatOnEnter ) {
-        return inCursorCol;
-        }
-    if( inLine < 0 || inLine >= inTB->numLines ) {
-        return inCursorCol;
-        }
+    int              numParens  =  0;
 
     n = lexCode( inTB, inLine, NULL );
     if( n <= 0 ) {
-        return inCursorCol;
+        return;
         }
     l = &( inTB->lines[ inLine ] );
     toks = lineToks.tokens;
@@ -849,10 +1732,10 @@ int fmt_formatLine( TextBuffer  *inTB,
     for( k = 0;
          k < n;
          k ++ ) {
-        Token  *t     =  &( toks[ k ] );
-        Token  *next  =  k + 1 < n ? &( toks[ k + 1 ] ) : NULL;
-        int     gap   =  0;
-        int     clean =  1;
+        Token  *t      =  &( toks[ k ] );
+        Token  *next   =  k + 1 < n ? &( toks[ k + 1 ] ) : NULL;
+        int     gap    =  0;
+        int     clean  =  1;
 
         if( next != NULL ) {
             int  j;
@@ -955,102 +1838,125 @@ int fmt_formatLine( TextBuffer  *inTB,
         if( isP( t, ',' ) && config.commaSpace && gap == 0 ) {
             addEdit( &edits, tokEnd( t ), 0, 1 );
             }
+
+        /* around assignments:  x = 6;  z[ i ] += 2; */
+        if( config.assignSpaces && gap == 0
+            &&
+            ( isAssignOp( l->text, t ) || isAssignOp( l->text, next ) ) ) {
+            addEdit( &edits, tokEnd( t ), 0, 1 );
+            }
+
+        /* before the '{' of a block or body:  ) {   else {   struct Foo { */
+        if( config.spaceBeforeBrace && gap == 0 && isP( next, '{' )
+            &&
+            ( isP( t, ')' ) || t->type == TK_IDENT
+              || t->type == TK_KEYWORD ) ) {
+            addEdit( &edits, tokEnd( t ), 0, 1 );
+            }
         }
 
-    cursor = applyEdits( inTB, inLine, &edits, cursor );
+    applyEditsCur( inTB, inLine, &edits );
+    }
 
-    /* function parameter list opened on this line? */
-    if( config.paramTypeSpaces > 0 ) {
-        LineContext  ctx;
 
-        n = lexCode( inTB, inLine, NULL );
-        toks = lineToks.tokens;
-        ind_getLineContext( inTB, inLine, &ctx );
 
-        if( ctx.braceDepth == 0 && ! ctx.inParen && ! ctx.inList ) {
-            /* look for  type-words name (  at the start of the line */
-            for( k = 1;
-                 k < n;
-                 k ++ ) {
-                if( isP( &( toks[ k ] ), '(' ) ) {
-                    if( toks[ k - 1 ].type == TK_IDENT && k >= 2 ) {
-                        int  j;
-                        int  ok  =  1;
+static int formatLineAt( TextBuffer  *inTB,
+                         int          inLine ) {
+    int          added;
+    int          li;
+    int          openCols[ 8 ];
+    int          openLines[ 8 ];
+    int          numOpens  =  0;
+    int          i;
+    LineContext  ctx;
 
-                        for( j = 0;
-                             j < k - 1;
-                             j ++ ) {
-                            Token  *t  =  &( toks[ j ] );
+    if( lexCode( inTB, inLine, NULL ) <= 0 ) {
+        return 0;
+        }
+    /* the context at the line's start doesn't change below */
+    ind_getLineContext( inTB, inLine, &ctx );
+    spaceTokens( inTB, inLine );
+    added = splitLine( inTB, inLine, &ctx );
 
-                            if( ! ( t->type == TK_IDENT
-                                    || isP( t, '*' )
-                                    || ( t->type == TK_KEYWORD
-                                         && isDeclKeyword( t->kw ) ) ) ) {
-                                ok = 0;
-                                }
-                            }
-                        if( ok ) {
-                            paramOpenCol = toks[ k ].start;
-                            }
-                        }
-                    break;
-                    }
-                if( isP( &( toks[ k ] ), '=' ) ) {
-                    break;
-                    }
+    /* for( ) headers that start on these lines, or that this line
+       continues */
+    if( ctx.inParen ) {
+        int  ol;
+        int  oc;
+        int  kind;
+
+        if( findOpenParen( inTB, inLine, &ol, &oc, &kind )
+            && kind == G_FOR ) {
+            openLines[ numOpens ] = ol;
+            openCols[ numOpens ] = oc;
+            numOpens ++;
+            }
+        }
+    for( li = inLine;
+         li <= inLine + added;
+         li ++ ) {
+        int     n     =  lexCode( inTB, li, NULL );
+        Token  *toks  =  lineToks.tokens;
+        int     k;
+
+        for( k = 0;
+             k + 1 < n && numOpens < 8;
+             k ++ ) {
+            if( toks[ k ].type == TK_KEYWORD && toks[ k ].kw == KW_FOR
+                && isP( &( toks[ k + 1 ] ), '(' ) ) {
+                openLines[ numOpens ] = li;
+                openCols[ numOpens ] = toks[ k + 1 ].start;
+                numOpens ++;
                 }
-            if( paramOpenCol >= 0 ) {
-                int  cl  =  inLine;
-                int  cc  =  cursor;
+            }
+        }
+    for( i = 0;
+         i < numOpens;
+         i ++ ) {
+        formatForTable( inTB, openLines[ i ], openCols[ i ] );
+        }
 
-                formatParamList( inTB, inLine, paramOpenCol, &cl, &cc );
-                cursor = cc;
+    /* function parameter list opened on this line, or continued by it */
+    if( config.paramTypeSpaces > 0 ) {
+        if( ctx.braceDepth == 0 && ! ctx.inParen && ! ctx.inList ) {
+            int  oc  =  paramListOpenCol( inTB, inLine );
+
+            if( oc >= 0 ) {
+                formatParamList( inTB, inLine, oc );
                 }
             }
         else if( ctx.inParamList ) {
-            /* continuation line of a parameter list:  find its opener */
-            int  li;
+            int  ol;
+            int  oc;
+            int  kind;
 
-            for( li = inLine - 1;
-                 li >= 0 && li > inLine - 64;
-                 li -- ) {
-                int  m  =  lexCode( inTB, li, NULL );
-                int  depth  =  0;
-                int  j;
-                int  found  =  -1;
-
-                if( m < 0 ) {
-                    break;
-                    }
-                for( j = m - 1;
-                     j >= 0;
-                     j -- ) {
-                    Token  *t  =  &( lineToks.tokens[ j ] );
-
-                    if( isP( t, ')' ) ) {
-                        depth ++;
-                        }
-                    else if( isP( t, '(' ) ) {
-                        if( depth == 0 ) {
-                            found = t->start;
-                            break;
-                            }
-                        depth --;
-                        }
-                    }
-                if( found >= 0 ) {
-                    int  cl  =  inLine;
-                    int  cc  =  cursor;
-
-                    formatParamList( inTB, li, found, &cl, &cc );
-                    cursor = cc;
-                    break;
-                    }
+            if( findOpenParen( inTB, inLine, &ol, &oc, &kind ) ) {
+                formatParamList( inTB, ol, oc );
                 }
             }
         }
+    return added;
+    }
 
-    return cursor;
+
+
+int fmt_formatLine( TextBuffer  *inTB,
+                    int          inLine,
+                    int          inFlags,
+                    int         *ioCursorLine,
+                    int         *ioCursorCol ) {
+    int  added;
+
+    if( ! config.formatOnEnter ) {
+        return 0;
+        }
+    if( inLine < 0 || inLine >= inTB->numLines ) {
+        return 0;
+        }
+    beginCursor( inTB, inFlags, ioCursorLine, ioCursorCol );
+    added = formatLineAt( inTB, inLine );
+    endCursor( inTB, ioCursorLine, ioCursorCol );
+    return added;
     }
 
 
@@ -1066,18 +1972,30 @@ void fmt_formatRegion( TextBuffer  *inTB,
     for( i = inFirstLine;
          i <= inLastLine;
          i ++ ) {
-        fmt_formatLine( inTB, i, 0 );
+        inLastLine += fmt_formatLine( inTB, i, 0, NULL, NULL );
         }
     for( i = inFirstLine;
          i <= inLastLine;
          i ++ ) {
-        if( fmt_isDeclarationLine( inTB, i ) ) {
-            fmt_alignDeclarations( inTB, i, NULL, NULL );
-            /* skip the rest of this run */
-            while( i + 1 <= inLastLine
-                   &&
-                   fmt_isDeclarationLine( inTB, i + 1 ) ) {
-                i ++;
+        DeclRow  row;
+
+        if( parseDeclLine( inTB, i, &row ) ) {
+            fmt_alignDeclarations( inTB, i, 0, NULL, NULL );
+            parseDeclLine( inTB, i, &row );
+            i = row.lastLine;
+            /* skip the rest of this run (which may span blank lines) */
+            while( 1 ) {
+                int  b  =  i + 1;
+
+                while( b <= inLastLine
+                       && b - ( i + 1 ) < config.declTableBlankLines
+                       && tb_lineIsBlank( inTB, b ) ) {
+                    b ++;
+                    }
+                if( b > inLastLine || ! parseDeclLine( inTB, b, &row ) ) {
+                    break;
+                    }
+                i = row.lastLine;
                 }
             }
         }

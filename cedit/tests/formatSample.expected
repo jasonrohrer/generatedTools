@@ -1,4 +1,5 @@
-static int foo( int  a, char  *b ) {
+static int foo( int    a,
+                char  *b ) {
     Deck            *d      =  getDeck();
     int              i;
     long             total  =  0;
@@ -6,10 +7,12 @@ static int foo( int  a, char  *b ) {
     int              counts[ 10 ];
 
     x = (int)( a+b );
-    y = foo( a, b[ i ] );
+    y = foo( a,
+             b[ i ] );
     z = (Deck *) q;
     if( a ) {
-        bar( (char*)a, sizeof( int ) );
+        bar( (char*)a,
+             sizeof( int ) );
         }
     return 0;
     }

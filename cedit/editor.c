@@ -1350,9 +1350,11 @@ static void deleteTrailingSpace( int  inLine ) {
 
 
 
-/* format the line (paren padding etc.) and align declarations around it,
-   keeping the cursor attached to its text */
-static void formatLineAt( int  inLine ) {
+/* format the line (paren padding, splitting argument lists etc.) and
+   align declarations around it, keeping the cursor attached to its text.
+   inFlags:  FMT_PARTIAL from Tab */
+static void formatLineAt( int  inLine,
+                          int  inFlags ) {
     int  l;
     int  c;
 
@@ -1360,12 +1362,10 @@ static void formatLineAt( int  inLine ) {
         return;
         }
     getCur( &l, &c );
-    c = fmt_formatLine( B(), inLine, l == inLine ? c : 0 );
-    if( l == inLine ) {
-        setCur( l, c );
-        }
+    fmt_formatLine( B(), inLine, inFlags, &l, &c );
+    setCur( l, c );
     getCur( &l, &c );
-    fmt_alignDeclarations( B(), inLine, &l, &c );
+    fmt_alignDeclarations( B(), inLine, inFlags, &l, &c );
     setCur( l, c );
     }
 
@@ -1384,7 +1384,7 @@ static void newlineAndIndent( void ) {
         if( config.reindentOnEnter && ! tb_lineIsBlank( B(), l ) ) {
             reindentLine( l );
             }
-        formatLineAt( l );
+        formatLineAt( l, 0 );
         }
     getCur( &l, &c );
 
@@ -1477,6 +1477,13 @@ static void cmdTab( void ) {
     getCur( &l, &c );
     if( c < tb_lineIndent( B(), l ) ) {
         setCur( l, tb_lineIndent( B(), l ) );
+        getCur( &l, &c );
+        }
+    if( ! tb_lineIsBlank( B(), l ) && syn_getLineState( B(), l ) == 0
+        && tokenTypeAt( B(), l, c ) == 0 ) {
+        /* tidy the line like Enter does;  on an unfinished declaration
+           ("int  ") also jump to where the name will line up */
+        formatLineAt( l, FMT_PARTIAL );
         }
     if( tb_lineIsBlank( B(), l ) ) {
         /* blank line:  still put cursor where code would go */
@@ -1607,7 +1614,7 @@ static void cmdAlignDeclarations( void ) {
         }
     getCur( &l, &c );
     config.alignDeclarations = 1;
-    if( ! fmt_alignDeclarations( B(), l, &l, &c ) ) {
+    if( ! fmt_alignDeclarations( B(), l, 0, &l, &c ) ) {
         ed_message( "No declaration to align here" );
         }
     config.alignDeclarations = saved;
@@ -3814,7 +3821,9 @@ static const char  *helpLines[]  =  {
     "  M-g g                        goto line",
     "",
     "Editing",
-    "  Tab                          re-indent line (or region)",
+    "  Tab                          re-indent + format line (or indent",
+    "                               region);  on \"int  \" jumps to where",
+    "                               the name lines up in the table",
     "  C-M-\\                        re-indent region, or current function",
     "  Enter                        newline, indent, format the line left",
     "  C-d Del / Backspace          delete (hungry:  eats all whitespace)",

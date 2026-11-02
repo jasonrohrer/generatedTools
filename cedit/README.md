@@ -46,6 +46,12 @@ Emacs-style.  Press **F1** inside cedit for the full list (also
 
 Shift + movement selects;  typing replaces the selection.
 
+Two copy buffers, like emacs and other X programs:  `M-w` / `C-w` /
+`C-y` use the clipboard (and the kill ring), while any selected region
+(mouse drag, Shift + movement, `C-Space` + movement) automatically
+becomes the X PRIMARY selection, and the middle mouse button pastes
+PRIMARY at the click.
+
 
 ## Indentation
 
@@ -102,8 +108,9 @@ When you leave a line with Enter (or auto-newline), or press Tab on it,
 cedit tidies it:
 
 - `foo(a,b[i])` becomes `foo( a, b[ i ] )` (casts stay tight: `(int)x`)
-- spaces around assignments (`x=6;` becomes `x = 6;`) and before a
-  block's brace (`while(1){` becomes `while( 1 ) {`)
+- spaces around assignments (`x=6;` becomes `x = 6;`), comparisons
+  and `&&` / `||` (`x==5` becomes `x == 5`), and before a block's brace
+  (`while(1){` becomes `while( 1 ) {`)
 - parameters get two spaces between type and name:  `int  inX`
 - arguments of calls and parameters of functions go one per line, lined
   up after the `(`;  the parameters become a table:
@@ -113,6 +120,21 @@ int myFunction( int        inArgA,
                 MyStruct  *inStruct ) {
     x = myFunction( 10,
                     &currentStruct );
+```
+
+- the operands of `&&` and `||` inside parens (or after `return`) go
+  on their own lines, with the operator on a line by itself:
+
+```c
+    if( ! spinning
+        &&
+        ( formationShowing
+          ||
+          draftingPieces ) ) {
+
+    return b->pressed
+           &&
+           ! pressedBefore;
 ```
 
 - `for( )` clauses go on their own lines as a table, with `++` / `--`
@@ -148,7 +170,7 @@ on its own line) lines the table up as if it were finished and puts the
 cursor where the name will go.
 
 Each rule can be turned off in `style.conf` (`assignSpaces`,
-`spaceBeforeBrace`, `splitArgLists`, `splitForClauses`,
+`compareSpaces`, `splitBoolOps`, `spaceBeforeBrace`, `splitArgLists`, `splitForClauses`,
 `alignForClauses`, `alignDeclarations`, `declTableBlankLines`, ...).
 `C-c C-f` formats a region / the current function, `M-x format-buffer`
 the whole file.

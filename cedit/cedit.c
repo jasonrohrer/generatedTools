@@ -1398,6 +1398,20 @@ static void scrollBarDrag( float  inThumbY ) {
     }
 
 
+/* 1 if a window position is over the text (not the scroll bar) */
+static int inTextArea( int  inX,
+                       int  inY ) {
+    float  x  =  (float)inX;
+    float  y  =  (float)inY;
+
+    if( y < layout.textTop || y >= layout.textBottom ) {
+        return 0;
+        }
+    return layout.thumbTop < 0 || x < layout.scrollBarX;
+    }
+
+
+
 static void mouseToTextPos( int   inX,
                             int   inY,
                             int  *outLine,
@@ -1690,6 +1704,14 @@ int main( int     inArgc,
                                     layout.compileFirstLine + row );
                                 }
                             }
+                        }
+                    else if( e.button.button == SDL_BUTTON_MIDDLE
+                             && inTextArea( e.button.x, e.button.y ) ) {
+                        int  l;
+                        int  c;
+
+                        mouseToTextPos( e.button.x, e.button.y, &l, &c );
+                        ed_mousePastePrimary( l, c );
                         }
                     break;
 

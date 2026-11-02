@@ -1,57 +1,25 @@
+Excellent work!
 
 
-Wow, what an incredible editor!   The auto-formatting is out of this world, and really above and beyond what Emacs does.
+A few things:
+
+--The program doesn't currently play well with the way selected text in X windows automatically gets copied into some kind of clipboard buffer (usually pasted with the middle mouse button).   Neither selecting (without manually executing a copy operation), nor pasting with the middle mouse button currently works.  Seems like emacs supports two different copy-paste buffers (one for manual copy operations, and the other for the current selection), and most X windows programs support these two different buffers also.
 
 
-A few improvements:
+--There should be spaces around equality tests, like this:
 
---We need a scroll bar on the right side.
+if( x == 5 ) {
+    }
 
---Even when we set the window width to 80, there's still some dead space on the right side, past the fill line.  Not sure what's going on there.
-
---Hitting Enter when finishing a line causes the spacing to auto-align (good), but it should also happen if we hit TAB, and it should work on an incomplete line to show where a variable we're about to type will line up.
-
-
--- Always force a space between the closing paren and the opening bracket of the block.   This is for functions, for loops, while loops, etc., like this:
-
-
-while( 1 ) {
-    x = 5;
-	}
-
-
--- Always force spaces around assignment equals signs, like this:
-
-x = 6;
-
-z[ i ] = 6;
-
-
-   (of course, when it's part of an init table for local variables, keep using
-    two spaces to separate columns of the table).
-
-
---Function arguments should be forced onto multiple lines, both in declarations
-and in calling the functions, like this:
-
-
-int myFunction( int        inArgA,
-                MyStruct  *inStruct ) {
+if( y > 10 ) {
 
     }
 
 
-x = myFunction( 10,
-                &currentStruct );
+--Boolean operations should be split up on multiple lines, with the boolean operator on a line by itself, like this:
 
-
---Parameters for for loops should be formatted as follows:
-
-
-for( x = 0;
-     x < 10;
-     x   ++ ) {
-
-     }
-
+if( x == 10
+    &&
+	y > 20 ) {
+	}
 

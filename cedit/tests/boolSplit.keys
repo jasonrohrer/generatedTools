@@ -1,0 +1,6 @@
+# comparisons get spaces;  && / || go on their own lines (typed, Enter)
+"int f( int  inX ) {\n"
+"if( inX==10&&( inX>20||inX<=3 ) ) {\n"
+"return inX!=4 && inX>=2;\n"
+"}\n"
+"while( a<b ) {\n"

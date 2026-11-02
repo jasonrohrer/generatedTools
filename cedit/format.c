@@ -263,7 +263,7 @@ static int isAssignOp( const char  *inText,
         }
     if( inT->len == 3 ) {
         return ( p[ 0 ] == '<' || p[ 0 ] == '>' ) && p[ 1 ] == p[ 0 ]
-            && p[ 2 ] == '=';
+               && p[ 2 ] == '=';
         }
     return 0;
     }
@@ -295,7 +295,18 @@ static int isIncDec( const char  *inText,
     const char  *p  =  inText + inT->start;
 
     return inT->type == TK_PUNCT && inT->len == 2
-        && ( p[ 0 ] == '+' || p[ 0 ] == '-' ) && p[ 1 ] == p[ 0 ];
+           && ( p[ 0 ] == '+' || p[ 0 ] == '-' ) && p[ 1 ] == p[ 0 ];
+    }
+
+
+
+/* &&  || */
+static int isBoolOp( const char  *inText,
+                     Token       *inT ) {
+    const char  *p  =  inText + inT->start;
+
+    return inT->type == TK_PUNCT && inT->len == 2
+           && ( p[ 0 ] == '&' || p[ 0 ] == '|' ) && p[ 1 ] == p[ 0 ];
     }
 
 
@@ -1096,6 +1107,8 @@ int fmt_alignDeclarations( TextBuffer  *inTB,
 #define G_CALL   2
 /* for( ;; ) */
 #define G_FOR    3
+/* [ ] or { } */
+#define G_BRACE  4
 
 
 /* kind of the paren group whose '(' follows the token inPrev (NULL if
@@ -1237,12 +1250,15 @@ static int splitLine( TextBuffer   *inTB,
     int          numSplits  =  0;
     int          base       =  G_NONE;
     int          inner;
+    int          isReturn;
     int          n;
     int          k;
     int          i;
     Token       *toks;
+    const char  *text;
 
-    if( ! config.splitArgLists && ! config.splitForClauses ) {
+    if( ! config.splitArgLists && ! config.splitForClauses
+        && ! config.splitBoolOps ) {
         return 0;
         }
     if( inCtx->inComment || inCtx->inPreproc ) {
@@ -1262,6 +1278,8 @@ static int splitLine( TextBuffer   *inTB,
         return 0;
         }
     toks = lineToks.tokens;
+    text = inTB->lines[ inLine ].text;
+    isReturn = ( toks[ 0 ].type == TK_KEYWORD && toks[ 0 ].kw == KW_RETURN );
 
     for( k = 0;
          k < n;
@@ -1270,7 +1288,7 @@ static int splitLine( TextBuffer   *inTB,
         int     top  =  numKinds > 0 ? kinds[ numKinds - 1 ] : base;
 
         if( isP( t, '(' ) || isP( t, '[' ) || isP( t, '{' ) ) {
-            int  kind  =  G_OTHER;
+            int  kind  =  G_BRACE;
 
             if( isP( t, '(' ) ) {
                 if( k > 0 ) {
@@ -1294,6 +1312,22 @@ static int splitLine( TextBuffer   *inTB,
                 }
             else {
                 base = G_NONE;
+                }
+            }
+        else if( isBoolOp( text, t ) && config.splitBoolOps
+                 && numSplits < 126
+                 &&
+                 ( top == G_OTHER || top == G_CALL
+                   || ( top == G_NONE && isReturn ) ) ) {
+            /* the operator goes on a line by itself */
+            if( k > 0
+                && ( numSplits == 0 || splits[ numSplits - 1 ] != k - 1 ) ) {
+                splits[ numSplits ] = k - 1;
+                numSplits ++;
+                }
+            if( k + 1 < n ) {
+                splits[ numSplits ] = k;
+                numSplits ++;
                 }
             }
         else if( k + 1 < n && numSplits < 128 ) {
@@ -1843,6 +1877,14 @@ static void spaceTokens( TextBuffer  *inTB,
         if( config.assignSpaces && gap == 0
             &&
             ( isAssignOp( l->text, t ) || isAssignOp( l->text, next ) ) ) {
+            addEdit( &edits, tokEnd( t ), 0, 1 );
+            }
+
+        /* around comparisons and && ||:  x == 5  a && b */
+        if( config.compareSpaces && gap == 0
+            &&
+            ( isCompareOp( l->text, t ) || isCompareOp( l->text, next )
+              || isBoolOp( l->text, t ) || isBoolOp( l->text, next ) ) ) {
             addEdit( &edits, tokEnd( t ), 0, 1 );
             }
 

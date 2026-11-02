@@ -71,9 +71,9 @@ static Token *addToken( TokenList  *inList,
 
 int syn_isIdentChar( char  inC ) {
     return ( inC >= 'a' && inC <= 'z' )
-        || ( inC >= 'A' && inC <= 'Z' )
-        || ( inC >= '0' && inC <= '9' )
-        || inC == '_';
+           || ( inC >= 'A' && inC <= 'Z' )
+           || ( inC >= '0' && inC <= '9' )
+           || inC == '_';
     }
 
 

@@ -1,0 +1,17 @@
+int f( int  inX ) {
+
+    if( inX == 10
+        &&
+        ( inX > 20
+          ||
+          inX <= 3 ) ) {
+
+        return inX != 4
+               &&
+               inX >= 2;
+
+        }
+
+    while( a < b ) {
+
+        

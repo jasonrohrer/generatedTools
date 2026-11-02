@@ -266,6 +266,17 @@ static ConfigEntry  entries[]  =  {
       "start a new table;  0:  any blank line ends the table)" },
     { "assignSpaces", CT_INT, CF_STYLE, &config.assignSpaces, 0,
       "1 = at least one space on each side of = += -= etc:  x = 6;" },
+    { "compareSpaces", CT_INT, CF_STYLE, &config.compareSpaces, 0,
+      "1 = at least one space on each side of == != < > <= >= && ||:\n"
+      "    if( x == 5 ) {" },
+    { "splitBoolOps", CT_INT, CF_STYLE, &config.splitBoolOps, 0,
+      "1 = the operands of && and || inside ( ) (and after return) go\n"
+      "on their own lines, with the operator on a line by itself:\n"
+      "    if( x == 10\n"
+      "        &&\n"
+      "        ( y > 20\n"
+      "          ||\n"
+      "          z ) ) {" },
     { "spaceBeforeBrace", CT_INT, CF_STYLE, &config.spaceBeforeBrace, 0,
       "1 = a space between ) or else and a block's {:  while( 1 ) {" },
     { "splitArgLists", CT_INT, CF_STYLE, &config.splitArgLists, 0,
@@ -429,6 +440,8 @@ static void setDefaults( void ) {
     config.declEqualsSpaces = 2;
     config.declTableBlankLines = 1;
     config.assignSpaces = 1;
+    config.compareSpaces = 1;
+    config.splitBoolOps = 1;
     config.spaceBeforeBrace = 1;
     config.splitArgLists = 1;
     config.splitForClauses = 1;

@@ -149,6 +149,10 @@ void ed_mouseSetCursor( int  inLine,
 void ed_mouseSelectWord( int  inLine,
                          int  inCol );
 
+/* middle click:  pastes the X11 PRIMARY selection at the position */
+void ed_mousePastePrimary( int  inLine,
+                           int  inCol );
+
 void ed_switchToBuffer( int  inIndex );
 
 /* jump to compile error shown on line inOutLine of the compile pane */

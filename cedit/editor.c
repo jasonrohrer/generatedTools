@@ -986,6 +986,27 @@ static void getMarkRegion( int  *outSL,
 
 
 
+/* PRIMARY selection access (SDL 2.26+;  older SDL has none) */
+static char *getPrimaryText( void ) {
+#if SDL_VERSION_ATLEAST( 2, 26, 0 )
+    return SDL_GetPrimarySelectionText();
+#else
+    return NULL;
+#endif
+    }
+
+
+
+static void setPrimaryText( const char  *inText ) {
+#if SDL_VERSION_ATLEAST( 2, 26, 0 )
+    SDL_SetPrimarySelectionText( inText );
+#else
+    (void)inText;
+#endif
+    }
+
+
+
 static void pushKill( const char  *inText,
                       int          inLen,
                       int          inAppend,
@@ -1030,8 +1051,8 @@ static void pushKill( const char  *inText,
 
 static int lastWasKill( void ) {
     return lastCmd == cmdKillLine || lastCmd == cmdKillRegion
-        || lastCmd == cmdKillWordForward || lastCmd == cmdKillWordBackward
-        || lastCmd == cmdCopyRegion;
+           || lastCmd == cmdKillWordForward || lastCmd == cmdKillWordBackward
+           || lastCmd == cmdCopyRegion;
     }
 
 
@@ -1956,7 +1977,7 @@ static void cmdSelfInsert( void ) {
 static int isSpaceAt( int  inLine,
                       int  inCol ) {
     return inCol < lineAt( inLine )->len
-        && lineAt( inLine )->text[ inCol ] == ' ';
+           && lineAt( inLine )->text[ inCol ] == ' ';
     }
 
 
@@ -4519,14 +4540,14 @@ static void cmdMarkOrCancel( void ) {
 
 static int isMovement( CmdFn  inFn ) {
     return inFn == cmdForwardChar || inFn == cmdBackwardChar
-        || inFn == cmdNextLine || inFn == cmdPrevLine
-        || inFn == cmdLineStart || inFn == cmdLineEnd
-        || inFn == cmdSmartHome || inFn == cmdBackToIndent
-        || inFn == cmdForwardWord || inFn == cmdBackwardWord
-        || inFn == cmdBufferStart || inFn == cmdBufferEnd
-        || inFn == cmdPageDown || inFn == cmdPageUp
-        || inFn == cmdForwardParagraph || inFn == cmdBackwardParagraph
-        || inFn == cmdForwardSexp || inFn == cmdBackwardSexp;
+           || inFn == cmdNextLine || inFn == cmdPrevLine
+           || inFn == cmdLineStart || inFn == cmdLineEnd
+           || inFn == cmdSmartHome || inFn == cmdBackToIndent
+           || inFn == cmdForwardWord || inFn == cmdBackwardWord
+           || inFn == cmdBufferStart || inFn == cmdBufferEnd
+           || inFn == cmdPageDown || inFn == cmdPageUp
+           || inFn == cmdForwardParagraph || inFn == cmdBackwardParagraph
+           || inFn == cmdForwardSexp || inFn == cmdBackwardSexp;
     }
 
 
@@ -4789,6 +4810,83 @@ void ed_mouseSelectWord( int  inLine,
 
 
 
+/* middle click:  pastes the X11 PRIMARY selection (the text last
+   selected in any program) at the click, like emacs mouse-2 */
+void ed_mousePastePrimary( int  inLine,
+                           int  inCol ) {
+    char  *text;
+
+    if( ed.mbMode == MB_ISEARCH ) {
+        isearchEnd( 0 );
+        }
+    if( ! checkWritable() ) {
+        return;
+        }
+    text = getPrimaryText();
+    if( text == NULL ) {
+        return;
+        }
+    if( text[ 0 ] != '\0' ) {
+        tb_beginGroup( B() );
+        ed_mouseSetCursor( inLine, inCol, 0 );
+        insertAtCursor( text, (int)strlen( text ) );
+        syncCur();
+        }
+    SDL_free( text );
+    }
+
+
+
+/* ------------------------------------------------------------------
+   The X11 PRIMARY selection
+
+   Like other X programs (and emacs), whatever region is active is
+   offered as the PRIMARY selection (middle-click paste elsewhere),
+   separately from the clipboard that M-w / C-w / C-y use.
+   ------------------------------------------------------------------ */
+
+static TextBuffer     *primaryBuffer  =  NULL;
+static unsigned long   primaryChange  =  0;
+static int             primarySL      =  -1;
+static int             primarySC      =  -1;
+static int             primaryEL      =  -1;
+static int             primaryEC      =  -1;
+
+
+
+static void updatePrimarySelection( void ) {
+    int    sl;
+    int    sc;
+    int    el;
+    int    ec;
+    int    len;
+    char  *text;
+
+    if( ed.numBuffers == 0 || ! ed_getRegion( &sl, &sc, &el, &ec ) ) {
+        return;
+        }
+    if( sl == el && sc == ec ) {
+        return;
+        }
+    if( B() == primaryBuffer && B()->changeCount == primaryChange
+        && sl == primarySL && sc == primarySC
+        && el == primaryEL && ec == primaryEC ) {
+        return;
+        }
+    primaryBuffer = B();
+    primaryChange = B()->changeCount;
+    primarySL = sl;
+    primarySC = sc;
+    primaryEL = el;
+    primaryEC = ec;
+
+    text = tb_getText( B(), sl, sc, el, ec, &len );
+    setPrimaryText( text );
+    free( text );
+    }
+
+
+
 /* ------------------------------------------------------------------
    Init and tick
    ------------------------------------------------------------------ */
@@ -4796,6 +4894,8 @@ void ed_mouseSelectWord( int  inLine,
 int ed_tick( void ) {
     int  changed  =  0;
     int  i;
+
+    updatePrimarySelection();
 
     for( i = 0;
          i < ed.numBuffers;

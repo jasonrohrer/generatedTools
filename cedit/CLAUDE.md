@@ -150,6 +150,16 @@ advance is known and main() resizes the window right after.
 drops the SDL_TEXTINPUT for that keypress (otherwise `M-g g` types a `g`
 into the goto prompt).  Printable keys return 0 and arrive as text.
 
+**Selections.**  `updatePrimarySelection` (top of `ed_tick`) offers the
+active region as the X PRIMARY selection whenever its bounds / the
+buffer's `changeCount` change;  middle click = `ed_mousePastePrimary`.
+The clipboard stays the kill ring's (`pushKill` / `cmdYank`).
+
+**Bool splitting.**  `splitLine` breaks before and after `&&` / `||`
+at the top level of a non-for paren group (or a line starting with
+`return`);  the indenter aligns `return` continuations after `return `
+(Jason's code:  `return b->pressed / && / ! pressedBefore;`).
+
 **Compile.**  Output streams into `ed.compileBuffer` (not in the buffer
 list);  `comp_poll` is called from `ed_tick` every loop iteration while
 running (the loop wakes every 15 ms then).  Indented lines after a

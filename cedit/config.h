@@ -126,6 +126,8 @@ typedef struct Config {
         int    declEqualsSpaces;
         int    declTableBlankLines;
         int    assignSpaces;
+        int    compareSpaces;
+        int    splitBoolOps;
         int    spaceBeforeBrace;
         int    splitArgLists;
         int    splitForClauses;

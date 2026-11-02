@@ -319,6 +319,15 @@ static void parseToken( ParseState  *inP,
                 s->assignLine = inLineIndex;
                 }
             }
+        else if( s->numTokens == 1 && inT->type == TK_KEYWORD
+                 && inT->kw == KW_RETURN ) {
+            /* continuations of  return a  line up after the return:
+                   return b->pressed
+                          &&
+                          ! pressedBefore; */
+            s->afterEquals = 1;
+            s->equalsLine = inLineIndex;
+            }
 
         if( inT->type == TK_KEYWORD ) {
             if( inT->kw == KW_STRUCT || inT->kw == KW_UNION ) {

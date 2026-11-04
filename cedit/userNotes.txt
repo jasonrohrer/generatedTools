@@ -3,23 +3,36 @@ Excellent work!
 
 A few things:
 
---The program doesn't currently play well with the way selected text in X windows automatically gets copied into some kind of clipboard buffer (usually pasted with the middle mouse button).   Neither selecting (without manually executing a copy operation), nor pasting with the middle mouse button currently works.  Seems like emacs supports two different copy-paste buffers (one for manual copy operations, and the other for the current selection), and most X windows programs support these two different buffers also.
+    
+    -- The c89 formatting and syntax highlighting should only happen when you
+    have .c, .cpp, or .h files open.   Other files should be opened like
+    normal text files.  I tried to edit these notes, and there's all kinds
+    of auto-indenting happening, etc.
 
+    
+    --Long lines that go past the right limit line should be displayed wrapped
+    with a little "wrap" symbol, like what emacs does
+    ( but they should not be actually force-wrapped in the underlying
+      text file ).
 
---There should be spaces around equality tests, like this:
+    
+    --All operators (like +, -, *, &, etc.) should have spaces around them
+    like this:
 
-if( x == 5 ) {
-    }
+    x + 5;
+    y - 2;
 
-if( y > 10 ) {
+The only exceptions are the pointer operator, which should hug its target
+    like this:
 
-    }
+    int  *x  =  &y;
 
+And also the de-refernece * operator:
 
---Boolean operations should be split up on multiple lines, with the boolean operator on a line by itself, like this:
+    int  z  =  *x;
 
-if( x == 10
-    &&
-	y > 20 ) {
-	}
+But even the unary ! operator should have space:
+
+    char  x  =  ! y;
+
 

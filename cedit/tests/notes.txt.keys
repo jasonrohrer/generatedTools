@@ -1,6 +1,6 @@
 # a .txt file is plain text:  no auto-indent, no electric { } ; or
-# formatting, Enter keeps the previous line's indentation, Tab is
-# indent-relative
+# formatting, Enter keeps the previous line's indentation, Tab inserts
+# a real tab character
 "Some notes: x=5;\n"
 "    -- indented item {\n"
 "wrapped text (don't touch) x+1\n"

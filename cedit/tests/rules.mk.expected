@@ -1,0 +1,10 @@
+all: prog	# default
+
+prog: prog.o
+	gcc -o pXrog prog.o
+
+clean:
+	rm -f *.o
+	rm -f prog
+
+done:

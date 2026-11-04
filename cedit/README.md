@@ -190,11 +190,14 @@ the whole file.
 Only C files (`.c` `.h` `.cpp` `.cc` `.hpp` ...) get syntax highlighting,
 auto-indent, electric characters, formatting and bracket matching.
 Anything else (`notes.txt`, `Makefile`, `README.md`) is edited as plain
-text:  Enter keeps the previous line's indentation, Tab is
-indent-relative like emacs text-mode (to the next word start on the line
-above, else the next 4-column stop), Tab on a region shifts its lines
-right, and Backspace deletes one character.  The status line shows
-`(Text)` instead of `(C/ah)`.
+text:  tab characters are kept as they are (Makefiles need them;  they
+display `tabWidth` columns wide), Tab inserts a real tab, Tab on a
+region puts a tab at the start of each line, Enter copies the previous
+line's leading whitespace (tabs and all, so the next recipe line of a
+Makefile rule starts with its tab;  after a blank line, none), and
+Backspace deletes one character.  The status line shows `(Text)`
+instead of `(C/ah)`.  In C files tabs are still expanded to spaces on
+load.
 
 
 ## Long lines

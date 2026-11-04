@@ -1,0 +1,7 @@
+# a Makefile (not C):  its tabs load and save as tabs, Enter after a
+# recipe line copies the tab, Tab inserts one, C-n / C-p keep the
+# display column across tabs (tabWidth 4:  column 12 of "prog: prog.o"
+# is just after "\tgcc -o p")
+M-< C-n C-n C-e C-n "X"
+M-< C-e TAB "# default"
+M-> RET "rm -f prog" RET RET "done:"

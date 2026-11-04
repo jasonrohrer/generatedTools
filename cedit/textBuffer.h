@@ -128,10 +128,13 @@ int tb_isCPath( const char  *inPath );
 void tb_destroy( TextBuffer  *inTB );
 
 /* loads file into a fresh buffer.  Returns NULL if the file can't be read.
-   Tabs are expanded to spaces (inTabWidth); *outTabsExpanded gets how many
-   tabs were expanded (buffer is marked modified if any were). */
+   If inExpandTabs, tabs are expanded to spaces (inTabWidth);
+   *outTabsExpanded gets how many tabs were expanded (buffer is marked
+   modified if any were).  Otherwise tabs are kept as they are (plain text
+   files:  Makefiles need them). */
 TextBuffer *tb_load( const char  *inPath,
                      int          inTabWidth,
+                     int          inExpandTabs,
                      int         *outTabsExpanded );
 
 /* returns 1 on success.  Always writes a final newline. */
@@ -230,6 +233,20 @@ int tb_lineIndent( TextBuffer  *inTB,
                    int          inLine );
 
 /* 1 if line is empty or only spaces */
+/* Display columns.  A tab advances to the next multiple of inTabWidth;
+   everything else is one column.  tb_visCol is the display column where
+   byte inCol of a line starts;  tb_colAtVis is the byte whose cell covers
+   display column inVis (the line length when past the end). */
+int tb_visCol( const Line  *inL,
+               int          inCol,
+               int          inTabWidth );
+
+int tb_colAtVis( const Line  *inL,
+                 int          inVis,
+                 int          inTabWidth );
+
+
+
 int tb_lineIsBlank( TextBuffer  *inTB,
                     int          inLine );
 

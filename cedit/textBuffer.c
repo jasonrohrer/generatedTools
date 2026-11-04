@@ -310,6 +310,7 @@ void tb_setText( TextBuffer  *inTB,
 
 TextBuffer *tb_load( const char  *inPath,
                      int          inTabWidth,
+                     int          inExpandTabs,
                      int         *outTabsExpanded ) {
     FILE        *f;
     long         size;
@@ -348,7 +349,7 @@ TextBuffer *tb_load( const char  *inPath,
 
     if( size > 0
         &&
-        memchr( raw, '\t', (size_t)size ) == NULL
+        ( ! inExpandTabs || memchr( raw, '\t', (size_t)size ) == NULL )
         &&
         memchr( raw, '\r', (size_t)size ) == NULL ) {
         /* the common case:  nothing to clean, use the read buffer as is */
@@ -359,7 +360,7 @@ TextBuffer *tb_load( const char  *inPath,
         for( i = 0;
              i < size;
              i ++ ) {
-            if( raw[ i ] == '\t' ) {
+            if( raw[ i ] == '\t' && inExpandTabs ) {
                 numTabs ++;
                 }
             }
@@ -375,7 +376,7 @@ TextBuffer *tb_load( const char  *inPath,
              i ++ ) {
             char  c  =  raw[ i ];
 
-            if( c == '\t' ) {
+            if( c == '\t' && inExpandTabs ) {
                 int  spaces  =  inTabWidth - (int)( col % inTabWidth );
 
                 while( spaces > 0 ) {
@@ -1114,7 +1115,85 @@ int tb_lineIndent( TextBuffer  *inTB,
 
 int tb_lineIsBlank( TextBuffer  *inTB,
                     int          inLine ) {
-    return tb_lineIndent( inTB, inLine ) == inTB->lines[ inLine ].len;
+    Line  *l  =  &( inTB->lines[ inLine ] );
+    int    i;
+
+    for( i = 0;
+         i < l->len;
+         i ++ ) {
+        if( l->text[ i ] != ' ' && l->text[ i ] != '\t' ) {
+            return 0;
+            }
+        }
+    return 1;
+    }
+
+
+
+int tb_visCol( const Line  *inL,
+               int          inCol,
+               int          inTabWidth ) {
+    int  i;
+    int  v  =  0;
+
+    if( inCol > inL->len ) {
+        inCol = inL->len;
+        }
+    if( inCol <= 0 ) {
+        return 0;
+        }
+    if( memchr( inL->text, '\t', (size_t)inCol ) == NULL ) {
+        return inCol;
+        }
+    if( inTabWidth < 1 ) {
+        inTabWidth = 1;
+        }
+    for( i = 0;
+         i < inCol;
+         i ++ ) {
+        if( inL->text[ i ] == '\t' ) {
+            v += inTabWidth - v % inTabWidth;
+            }
+        else {
+            v ++;
+            }
+        }
+    return v;
+    }
+
+
+
+int tb_colAtVis( const Line  *inL,
+                 int          inVis,
+                 int          inTabWidth ) {
+    int  i;
+    int  v  =  0;
+
+    if( inVis <= 0 ) {
+        return 0;
+        }
+    if( inL->len == 0
+        ||
+        memchr( inL->text, '\t', (size_t)inL->len ) == NULL ) {
+        return inVis < inL->len ? inVis : inL->len;
+        }
+    if( inTabWidth < 1 ) {
+        inTabWidth = 1;
+        }
+    for( i = 0;
+         i < inL->len;
+         i ++ ) {
+        int  w  =  1;
+
+        if( inL->text[ i ] == '\t' ) {
+            w = inTabWidth - v % inTabWidth;
+            }
+        if( inVis < v + w ) {
+            return i;
+            }
+        v += w;
+        }
+    return inL->len;
     }
 
 

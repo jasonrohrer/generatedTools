@@ -80,7 +80,7 @@ static SDL_Window  *window  =  NULL;
 
 static int headlessReindent( const char  *inPath,
                              int          inFormat ) {
-    TextBuffer  *tb  =  tb_load( inPath, config.tabWidth, NULL );
+    TextBuffer  *tb  =  tb_load( inPath, config.tabWidth, 1, NULL );
     int          i;
 
     if( tb == NULL ) {
@@ -116,7 +116,7 @@ static int headlessCheckIndent( int     inNumFiles,
     for( f = 0;
          f < inNumFiles;
          f ++ ) {
-        TextBuffer  *tb  =  tb_load( inFiles[ f ], config.tabWidth, NULL );
+        TextBuffer  *tb  =  tb_load( inFiles[ f ], config.tabWidth, 1, NULL );
         int         *before;
         int          i;
 
@@ -472,12 +472,16 @@ static int matchAtFold( Line        *inL,
 
 #define SEG_END_MAX  0x7FFFFFFF
 
+/* display column of byte c of a line (tabs are wider than one cell);
+   view rows, scrolling and drawing all work in display columns */
+#define VCOL( l, c )  tb_visCol( (l), (c), config.tabWidth )
+
 
 /* one row of the text view:  a line, or one piece of a wrapped line */
 typedef struct ViewRow {
         int    line;
-        /* columns [ segStart, segEnd ) show on this row;  the last row
-           of a line has segEnd = SEG_END_MAX */
+        /* display columns [ segStart, segEnd ) show on this row;  the
+           last row of a line has segEnd = SEG_END_MAX */
         int    segStart;
         int    segEnd;
         float  y;
@@ -508,7 +512,7 @@ static int rowOfCol( TextBuffer  *inTB,
     if( n == 1 ) {
         return 0;
         }
-    r = inCol / ed.wrapCols;
+    r = VCOL( &( inTB->lines[ inLine ] ), inCol ) / ed.wrapCols;
     if( r >= n ) {
         r = n - 1;
         }
@@ -630,10 +634,10 @@ static void updateScroll( TextBuffer  *inTB,
                           int          inCols,
                           float        inDT ) {
     int    cl      =  inTB->cursorLine;
-    int    cc      =  inTB->cursorCol;
+    int    cc      =  VCOL( &( inTB->lines[ cl ] ), inTB->cursorCol );
     int    margin  =  config.scrollMargin;
     float  maxTop  =  (float)( inTB->numLines - 1 );
-    int    sub     =  rowOfCol( inTB, cl, cc );
+    int    sub     =  rowOfCol( inTB, cl, inTB->cursorCol );
     float  t;
     float  latest;
     float  earliest;
@@ -812,6 +816,12 @@ static void spanRect( ViewRow       *inRow,
 
 
 
+static int isBlankChar( char  inC ) {
+    return inC == ' ' || inC == '\t';
+    }
+
+
+
 /* the hooked arrow in the gutter of a wrapped line's continuation row,
    like the one emacs puts in its fringe */
 static void drawWrapArrow( float  inGutterW,
@@ -843,6 +853,10 @@ static void drawTextView( float  inTop,
                           float  inDT ) {
     static unsigned char  *classes     =  NULL;
     static int             classesCap  =  0;
+    /* a line with tabs, expanded to display columns for drawing */
+    static char           *expText     =  NULL;
+    static unsigned char  *expClasses  =  NULL;
+    static int             expCap      =  0;
     TextBuffer            *tb          =  ed_cur();
     float                  lineH       =  layout.lineH;
     float                  charW       =  layout.charW;
@@ -859,6 +873,7 @@ static void drawTextView( float  inTop,
     int                    hasRegion;
     int                    cl;
     int                    cc;
+    int                    ccv;
     int                    scrollXi;
     const char            *searchText  =  NULL;
     int                    searchFold  =  0;
@@ -899,12 +914,14 @@ static void drawTextView( float  inTop,
 
     cl = tb->cursorLine;
     cc = tb->cursorCol;
+    ccv = VCOL( &( tb->lines[ cl ] ), cc );
     scrollXi = (int)tb->scrollX;
     buildViewRows( tb, inTop, inBottom, lineH );
     for( i = 0;
          i < numViewRows;
          i ++ ) {
-        if( viewRows[ i ].line == cl && rowHasCol( &( viewRows[ i ] ), cc ) ) {
+        if( viewRows[ i ].line == cl
+            && rowHasCol( &( viewRows[ i ] ), ccv ) ) {
             curRow = &( viewRows[ i ] );
             }
         }
@@ -978,20 +995,24 @@ static void drawTextView( float  inTop,
             }
 
         if( config.showTrailingSpace && l->len > 0
-            && l->text[ l->len - 1 ] == ' '
+            && isBlankChar( l->text[ l->len - 1 ] )
             && ! ( line == cl && cc == l->len ) ) {
             int  s  =  l->len;
 
-            while( s > 0 && l->text[ s - 1 ] == ' ' ) {
+            while( s > 0 && isBlankChar( l->text[ s - 1 ] ) ) {
                 s --;
                 }
-            spanRect( r, s, l->len, textX, charW, scrollXi, lineH,
-                      UC( UI_TRAILING_SPACE ) );
+            spanRect( r, VCOL( l, s ), VCOL( l, l->len ), textX, charW,
+                      scrollXi, lineH, UC( UI_TRAILING_SPACE ) );
             }
 
         if( hasRegion && line >= sl && line <= el ) {
-            int  s  =  ( line == sl ) ? sc : 0;
-            int  e  =  ( line == el ) ? ec : l->len + 1;
+            int  s  =  ( line == sl ) ? VCOL( l, sc ) : 0;
+            int  e  =  VCOL( l, l->len ) + 1;
+
+            if( line == el ) {
+                e = VCOL( l, ec );
+                }
 
             spanRect( r, s, e, textX, charW, scrollXi, lineH,
                       UC( UI_SELECTION ) );
@@ -1006,9 +1027,10 @@ static void drawTextView( float  inTop,
                 if( matchAtFold( l, c, searchText, searchLen, searchFold ) ) {
                     int  cur  =  ( line == ed.matchLine && c == ed.matchCol );
 
-                    spanRect( r, c, c + searchLen, textX, charW, scrollXi,
-                              lineH, UC( cur ? UI_SEARCH_CURRENT
-                                         : UI_SEARCH_MATCH ) );
+                    spanRect( r, VCOL( l, c ), VCOL( l, c + searchLen ),
+                              textX, charW, scrollXi, lineH,
+                              UC( cur ? UI_SEARCH_CURRENT
+                                  : UI_SEARCH_MATCH ) );
                     c += searchLen - 1;
                     }
                 }
@@ -1020,31 +1042,33 @@ static void drawTextView( float  inTop,
                                   : UC( UI_MATCH_PAREN );
 
             if( parenL2 != -2 || line == parenL1 ) {
-                spanRect( r, pc, pc + 1, textX, charW, scrollXi, lineH,
-                          col );
+                spanRect( r, VCOL( l, pc ), VCOL( l, pc ) + 1, textX, charW,
+                          scrollXi, lineH, col );
                 }
             if( line == parenL1 && line == parenL2 ) {
-                spanRect( r, parenC2, parenC2 + 1, textX, charW, scrollXi,
-                          lineH, col );
+                spanRect( r, VCOL( l, parenC2 ), VCOL( l, parenC2 ) + 1,
+                          textX, charW, scrollXi, lineH, col );
                 }
             }
 
-        if( tb->markSet && line == markL && rowHasCol( r, markC )
+        if( tb->markSet && line == markL && rowHasCol( r, VCOL( l, markC ) )
             && ! ( markL == cl && markC == cc ) ) {
             /* visible mark */
-            gui_rect( COL_X( r, markC ), y, COL_X( r, markC + 1 ), y + lineH,
+            int  mv  =  VCOL( l, markC );
+
+            gui_rect( COL_X( r, mv ), y, COL_X( r, mv + 1 ), y + lineH,
                       UC( UI_MARK ) );
-            gui_rect( COL_X( r, markC ), y + lineH - 2,
-                      COL_X( r, markC + 1 ), y + lineH, UC( UI_CURSOR ) );
+            gui_rect( COL_X( r, mv ), y + lineH - 2,
+                      COL_X( r, mv + 1 ), y + lineH, UC( UI_CURSOR ) );
             }
         }
 
     /* current column band and ruler */
     if( config.highlightCurrentColumn ) {
-        float  x  =  textX + (float)( cc - scrollXi ) * charW;
+        float  x  =  textX + (float)( ccv - scrollXi ) * charW;
 
         if( curRow != NULL ) {
-            x = COL_X( curRow, cc );
+            x = COL_X( curRow, ccv );
             }
         gui_rect( x, inTop, x + charW, inBottom, UC( UI_CURRENT_COLUMN ) );
         }
@@ -1065,6 +1089,9 @@ static void drawTextView( float  inTop,
         int       s;
         int       e;
         int       c;
+        const char           *text;
+        const unsigned char  *cls8;
+        int                   len;
 
         if( l->len == 0 ) {
             continue;
@@ -1078,29 +1105,63 @@ static void drawTextView( float  inTop,
             syn_highlightLine( tb, line, classes );
             lastLexed = line;
             }
+        text = l->text;
+        cls8 = classes;
+        len = l->len;
+        if( memchr( l->text, '\t', (size_t)l->len ) != NULL ) {
+            /* tabs:  draw from a copy expanded to display columns */
+            int  v  =  VCOL( l, l->len );
+            int  j;
+
+            if( expCap < v ) {
+                expCap = v * 2 + 256;
+                expText = (char *)realloc( expText, (size_t)expCap );
+                expClasses = (unsigned char *)realloc( expClasses,
+                                                       (size_t)expCap );
+                }
+            v = 0;
+            for( j = 0;
+                 j < l->len;
+                 j ++ ) {
+                int  w  =  1;
+
+                if( l->text[ j ] == '\t' ) {
+                    w = config.tabWidth - v % config.tabWidth;
+                    }
+                while( w > 0 ) {
+                    expText[ v ] = l->text[ j ] == '\t' ? ' ' : l->text[ j ];
+                    expClasses[ v ] = classes[ j ];
+                    v ++;
+                    w --;
+                    }
+                }
+            text = expText;
+            cls8 = expClasses;
+            len = v;
+            }
 
         s = r->segStart + scrollXi;
         e = s + cols + 1;
         if( e > r->segEnd ) {
             e = r->segEnd;
             }
-        if( e > l->len ) {
-            e = l->len;
+        if( e > len ) {
+            e = len;
             }
         c = s;
         while( c < e ) {
             int  k    =  c;
-            int  cls  =  classes[ c ];
+            int  cls  =  cls8[ c ];
 
-            if( l->text[ c ] == ' ' ) {
+            if( text[ c ] == ' ' ) {
                 c ++;
                 continue;
                 }
-            while( k < e && classes[ k ] == cls && l->text[ k ] != ' ' ) {
+            while( k < e && cls8[ k ] == cls && text[ k ] != ' ' ) {
                 k ++;
                 }
             drawCells( COL_X( r, c ), y, charW, config.syntaxColor[ cls ],
-                       l->text + c, k - c );
+                       text + c, k - c );
             c = k;
             }
         }
@@ -1108,8 +1169,14 @@ static void drawTextView( float  inTop,
     /* cursor */
     if( curRow != NULL ) {
         float  y  =  curRow->y;
-        float  x  =  COL_X( curRow, cc );
+        float  x  =  COL_X( curRow, ccv );
         Line  *l  =  &( tb->lines[ cl ] );
+        /* the block covers the whole tab it sits on, like emacs */
+        float  w  =  charW;
+
+        if( cc < l->len && l->text[ cc ] == '\t' ) {
+            w = (float)( VCOL( l, cc + 1 ) - ccv ) * charW;
+            }
 
         if( x + charW > inW + 0.5f ) {
             /* the column just past the last full one (the end of a line
@@ -1118,8 +1185,8 @@ static void drawTextView( float  inTop,
             }
         if( ed.mbMode == MB_NONE || ed.mbMode == MB_ISEARCH
             || ed.mbMode == MB_QUERY_REPLACE ) {
-            gui_rect( x, y, x + charW, y + lineH, UC( UI_CURSOR ) );
-            if( cc < l->len && l->text[ cc ] != ' ' ) {
+            gui_rect( x, y, x + w, y + lineH, UC( UI_CURSOR ) );
+            if( cc < l->len && ! isBlankChar( l->text[ cc ] ) ) {
                 int  n  =  1;
 
                 while( cc + n < l->len
@@ -1653,7 +1720,7 @@ static void mouseToTextPos( int   inX,
     TextBuffer  *tb  =  ed_cur();
     float        fx  =  ( (float)inX - layout.textLeft ) / layout.charW
                         + (float)(int)tb->scrollX;
-    int          c   =  (int)floor( fx + 0.5f );
+    int          c   =  (int)floor( fx );
     ViewRow     *r;
     int          i;
     int          l;
@@ -1678,17 +1745,33 @@ static void mouseToTextPos( int   inX,
         }
     if( c < 0 ) {
         c = 0;
+        fx = 0;
         }
+    /* fx, c:  display column (and the one under the mouse) */
     c += r->segStart;
+    fx += (float)r->segStart;
     if( r->segEnd != SEG_END_MAX && c >= r->segEnd ) {
         /* past the end of a wrapped row:  its last char */
         c = r->segEnd - 1;
         }
-    if( c > tb->lines[ l ].len ) {
-        c = tb->lines[ l ].len;
+    {
+        /* the char whose cell is under the mouse;  the right half of a
+           cell means the gap after it */
+        Line  *ln  =  &( tb->lines[ l ] );
+        int    b   =  tb_colAtVis( ln, c, config.tabWidth );
+
+        if( b < ln->len ) {
+            int  v0  =  VCOL( ln, b );
+            int  v1  =  VCOL( ln, b + 1 );
+
+            if( fx - (float)v0 >= (float)( v1 - v0 ) * 0.5f
+                && ! ( r->segEnd != SEG_END_MAX && v1 >= r->segEnd ) ) {
+                b ++;
+                }
+            }
+        *outLine = l;
+        *outCol = b;
         }
-    *outLine = l;
-    *outCol = c;
     }
 
 

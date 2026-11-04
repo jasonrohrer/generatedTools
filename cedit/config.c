@@ -191,7 +191,8 @@ static ConfigEntry  entries[]  =  {
       "\n"
       "For K&R style set closeBraceOffset = 0." },
     { "tabWidth", CT_INT, CF_STYLE, &config.tabWidth, 0,
-      "tabs in loaded files are expanded to spaces using this width" },
+      "tabs in loaded C files are expanded to spaces using this width;\n"
+      "plain text files keep their tabs and show them this wide" },
     { "indentSize", CT_INT, CF_STYLE, &config.indentSize, 0,
       "block body indent" },
     { "structIndent", CT_INT, CF_STYLE, &config.structIndent, 0,

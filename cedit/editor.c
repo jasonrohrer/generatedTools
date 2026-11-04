@@ -147,7 +147,9 @@ static void setCurNoGoal( int  inLine,
 static void setCur( int  inLine,
                     int  inCol ) {
     setCurNoGoal( inLine, inCol );
-    B()->goalCol = B()->cursorCol;
+    /* a display column, so C-n / C-p keep their place across tabs */
+    B()->goalCol = tb_visCol( &( B()->lines[ B()->cursorLine ] ),
+                              B()->cursorCol, config.tabWidth );
     }
 
 
@@ -412,7 +414,7 @@ static int openFile( const char  *inPath,
         return idx;
         }
 
-    tb = tb_load( path, config.tabWidth, &tabs );
+    tb = tb_load( path, config.tabWidth, tb_isCPath( path ), &tabs );
     if( tb == NULL ) {
         if( stat( path, &st ) == 0 ) {
             ed_errorMessage( "Can't read %s", path );
@@ -621,7 +623,7 @@ static void moveLines( int  inDelta ) {
     if( l >= B()->numLines ) {
         l = B()->numLines - 1;
         }
-    c = B()->goalCol;
+    c = tb_colAtVis( lineAt( l ), B()->goalCol, config.tabWidth );
     setCurNoGoal( l, c );
     }
 
@@ -788,9 +790,15 @@ static void cmdBufferEnd( void ) {
 
 int ed_lineRows( TextBuffer  *inTB,
                  int          inLine ) {
-    int  len  =  inTB->lines[ inLine ].len;
+    Line  *l    =  &( inTB->lines[ inLine ] );
+    int    len;
 
-    if( ed.wrapCols <= 0 || len <= ed.wrapCols ) {
+    if( ed.wrapCols <= 0 || l->len <= ed.wrapCols / config.tabWidth ) {
+        /* can't be wider than the window even if it's all tabs */
+        return 1;
+        }
+    len = tb_visCol( l, l->len, config.tabWidth );
+    if( len <= ed.wrapCols ) {
         return 1;
         }
     return ( len + ed.wrapCols - 1 ) / ed.wrapCols;
@@ -1406,7 +1414,7 @@ static void deleteTrailingSpace( int  inLine ) {
     Line  *l  =  lineAt( inLine );
     int    e  =  l->len;
 
-    while( e > 0 && l->text[ e - 1 ] == ' ' ) {
+    while( e > 0 && ( l->text[ e - 1 ] == ' ' || l->text[ e - 1 ] == '\t' ) ) {
         e --;
         }
     if( e < l->len ) {
@@ -1444,6 +1452,48 @@ static void formatLineAt( int  inLine,
 
 
 
+/* plain text Enter:  the new (cursor) line gets the previous line's
+   leading whitespace, tabs and all (a Makefile recipe line keeps its
+   tab);  after a blank line, none (the next target starts at column 0) */
+static void plainNewLineIndent( void ) {
+    int    l;
+    int    c;
+    int    p;
+    int    n     =  0;
+    int    old   =  0;
+    Line  *cur;
+
+    getCur( &l, &c );
+    p = l - 1;
+    cur = lineAt( l );
+    while( old < cur->len
+           && ( cur->text[ old ] == ' ' || cur->text[ old ] == '\t' ) ) {
+        old ++;
+        }
+    if( old > 0 ) {
+        tb_delete( B(), l, 0, l, old );
+        }
+    if( p >= 0 ) {
+        Line  *pl  =  lineAt( p );
+        char  *ws;
+
+        while( n < pl->len
+               && ( pl->text[ n ] == ' ' || pl->text[ n ] == '\t' ) ) {
+            n ++;
+            }
+        if( n > 0 ) {
+            /* copy:  inserting may move the previous line's text */
+            ws = (char *)malloc( (size_t)n );
+            memcpy( ws, pl->text, (size_t)n );
+            tb_insert( B(), l, 0, ws, n, NULL, NULL );
+            free( ws );
+            }
+        }
+    setCur( l, n );
+    }
+
+
+
 /* the core of Enter */
 static void newlineAndIndent( void ) {
     int  l;
@@ -1464,6 +1514,11 @@ static void newlineAndIndent( void ) {
     insertAtCursor( "\n", 1 );
     /* the old line:  no trailing spaces, and blank lines get no indent */
     deleteTrailingSpace( l );
+
+    if( ! B()->isC ) {
+        plainNewLineIndent();
+        return;
+        }
 
     getCur( &l, &c );
     {
@@ -1527,46 +1582,10 @@ static void cmdIndentRegionLines( int  inFirst,
 
 
 
-/* Tab in plain text:  indent-relative, like emacs text-mode.  Moves the
-   cursor (inserting spaces) to the next column where a word starts on
-   the previous non-blank line, or to the next tab stop. */
+/* Tab in plain text inserts a real tab character, like emacs:
+   Makefiles and other formats need them. */
 static void plainTab( void ) {
-    char   sp[ 256 ];
-    int    l;
-    int    c;
-    int    p;
-    int    target  =  -1;
-    int    n;
-
-    getCur( &l, &c );
-    for( p = l - 1;
-         p >= 0 && tb_lineIsBlank( B(), p );
-         p -- ) {
-        }
-    if( p >= 0 ) {
-        Line  *pl  =  lineAt( p );
-        int    i;
-
-        for( i = c + 1;
-             i < pl->len;
-             i ++ ) {
-            if( pl->text[ i ] != ' ' && pl->text[ i - 1 ] == ' ' ) {
-                target = i;
-                break;
-                }
-            }
-        }
-    if( target < 0 ) {
-        int  w  =  config.indentSize > 0 ? config.indentSize : 4;
-
-        target = ( c / w + 1 ) * w;
-        }
-    n = target - c;
-    if( n > (int)sizeof( sp ) ) {
-        n = (int)sizeof( sp );
-        }
-    memset( sp, ' ', (size_t)n );
-    insertAtCursor( sp, n );
+    insertAtCursor( "\t", 1 );
     }
 
 
@@ -1595,17 +1614,15 @@ static void cmdTab( void ) {
         }
     if( ! B()->isC ) {
         if( ed_getRegion( &sl, &sc, &el, &ec ) && sl != el ) {
-            /* plain text region:  shift its lines right */
+            /* plain text region:  a tab at the start of each line */
             if( ec == 0 && el > sl ) {
                 el --;
                 }
             for( l = sl;
                  l <= el;
                  l ++ ) {
-                int  ind  =  tb_lineIndent( B(), l ) + config.indentSize;
-
                 if( ! tb_lineIsBlank( B(), l ) ) {
-                    tb_setLineIndent( B(), l, ind );
+                    tb_insert( B(), l, 0, "\t", 1, NULL, NULL );
                     }
                 }
             syncCur();
@@ -3680,7 +3697,7 @@ static void revertBuffer( void ) {
     int          l;
     int          c;
 
-    fresh = tb_load( tb->path, config.tabWidth, NULL );
+    fresh = tb_load( tb->path, config.tabWidth, tb->isC, NULL );
     if( fresh == NULL ) {
         ed_errorMessage( "Can't read %s", tb->path );
         return;

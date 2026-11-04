@@ -171,9 +171,19 @@ Notes are skipped by next-error, like emacs.
 and `*scratch*` are C).  When 0:  `syn_highlightLine` leaves everything
 `HL_TEXT`, `syn_scanTypedefs` returns at once (a prose file must not
 pollute the global typedef set), `reindentLine` / `electric` / hungry
-delete do nothing, `newLineIndent` copies the previous non-blank line,
-Tab is `plainTab` (indent-relative), C commands say "Not a C buffer"
-(`checkC`), and cedit.c skips bracket matching.
+delete do nothing, Enter is `plainNewLineIndent` (copies the previous
+line's leading whitespace literally), Tab is `plainTab` (a real `\t`),
+C commands say "Not a C buffer" (`checkC`), and cedit.c skips bracket
+matching.
+
+**Tabs.**  `tb_load( ..., inExpandTabs, ... )` expands tabs only for C
+files;  plain text buffers keep real `\t` (Makefiles).  So a column is
+a byte offset, but the screen works in *display* columns:  `tb_visCol` /
+`tb_colAtVis` (textBuffer.c) convert, `VCOL()` in cedit.c.  `ViewRow`
+segStart/segEnd, `scrollX`, `ed_lineRows` and `goalCol` (C-n / C-p) are
+display columns;  `drawTextView` converts every byte span before
+drawing and draws a tabbed line from a copy expanded to cells.  Both
+functions fast-path lines with no tab (memchr), so C buffers pay ~0.
 
 **Line wrap** (cedit.c "Visual rows").  `ed.wrapCols` = text columns
 when `wrapLines`, else 0;  set by `drawTextView` every frame,

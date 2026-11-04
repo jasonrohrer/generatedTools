@@ -42,6 +42,7 @@ Emacs-style.  Press **F1** inside cedit for the full list (also
 | `C-c C-c`, `F5` | compile (editing the command), recompile |
 | `F4`, `C-x ``, `M-g n` / `S-F4`, `M-g p` | next / previous error |
 | `C-c C-d`, `F9` | launch the debugger at this file:line |
+| `C-S-k`, `C-S-Backspace` | kill the whole line from anywhere in it (repeats append, like `C-k`) |
 | `M-x` | any command by name |
 
 Shift + movement selects;  typing replaces the selection.
@@ -51,6 +52,9 @@ Two copy buffers, like emacs and other X programs:  `M-w` / `C-w` /
 (mouse drag, Shift + movement, `C-Space` + movement) automatically
 becomes the X PRIMARY selection, and the middle mouse button pastes
 PRIMARY at the click.
+
+Saving always ends the file with a newline, and a blank last line in the
+buffer is a real blank line at the end of the file.
 
 
 ## Indentation

@@ -440,8 +440,12 @@ int tb_save( TextBuffer  *inTB,
          i ++ ) {
         Line  *l  =  &( inTB->lines[ i ] );
 
-        /* don't write a trailing empty line as an extra blank line */
-        if( i == inTB->numLines - 1 && l->len == 0 ) {
+        /* every line ends with a newline (load strips exactly one final
+           newline, so this round-trips, and a file that lacked one gets
+           it, like emacs's require-final-newline).  A trailing empty line
+           is a real blank line at the end of the file.  Only a totally
+           empty buffer writes an empty file. */
+        if( inTB->numLines == 1 && l->len == 0 ) {
             break;
             }
         if( l->len > 0

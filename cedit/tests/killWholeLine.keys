@@ -1,0 +1,2 @@
+# C-S-k from mid-line kills whole lines, repeated kills append, then yank both
+M-g g "3" RET C-f C-f C-f C-S-k C-S-BS M-> C-y "// end"

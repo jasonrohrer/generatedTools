@@ -45,6 +45,7 @@ typedef void (*CmdFn)( void );
 /* sentinel "commands" for lastCommand tracking */
 static void cmdSelfInsert( void );
 static void cmdKillLine( void );
+static void cmdKillWholeLine( void );
 static void cmdKillRegion( void );
 static void cmdKillWordForward( void );
 static void cmdKillWordBackward( void );
@@ -1095,7 +1096,8 @@ static void pushKill( const char  *inText,
 
 
 static int lastWasKill( void ) {
-    return lastCmd == cmdKillLine || lastCmd == cmdKillRegion
+    return lastCmd == cmdKillLine || lastCmd == cmdKillWholeLine
+           || lastCmd == cmdKillRegion
            || lastCmd == cmdKillWordForward || lastCmd == cmdKillWordBackward
            || lastCmd == cmdCopyRegion;
     }
@@ -1213,6 +1215,32 @@ static void cmdKillLine( void ) {
         }
     else {
         killRange( l, c, l, lineAt( l )->len, 0 );
+        }
+    }
+
+
+
+/* kills the cursor's whole line (and its newline) no matter where the
+   cursor is in it, without moving first, so repeated kills keep
+   appending to the same kill ring entry (emacs kill-whole-line) */
+static void cmdKillWholeLine( void ) {
+    int  l;
+    int  c;
+
+    if( ! checkWritable() ) {
+        return;
+        }
+    getCur( &l, &c );
+    if( l < B()->numLines - 1 ) {
+        killRange( l, 0, l + 1, 0, 0 );
+        }
+    else if( l > 0 ) {
+        /* last line:  take the newline before it instead */
+        killRange( l - 1, lineAt( l - 1 )->len, l, lineAt( l )->len, 0 );
+        setCur( l - 1, 0 );
+        }
+    else {
+        killRange( l, 0, l, lineAt( l )->len, 0 );
         }
     }
 
@@ -3932,6 +3960,7 @@ static NamedCommand  commands[]  =  {
     { "compile", cmdCompile, "C-c C-c" },
     { "recompile", cmdRecompile, "F5" },
     { "kill-compilation", cmdKillCompile, "" },
+    { "kill-whole-line", cmdKillWholeLine, "C-S-k  C-S-Backspace" },
     { "next-error", cmdNextError, "C-x `  M-g n  F4" },
     { "previous-error", cmdPrevError, "M-g p  S-F4" },
     { "first-error", cmdFirstError, "" },
@@ -4013,6 +4042,7 @@ static const char  *helpLines[]  =  {
     "  C-d Del / Backspace          delete (hungry:  eats all whitespace)",
     "  S-Backspace                  delete a single char",
     "  C-k                          kill line",
+    "  C-S-k / C-S-Backspace        kill whole line (appends when repeated)",
     "  M-d / C-Backspace M-Backsp.  kill word forward / backward",
     "  C-Space                      set mark",
     "  C-w M-w C-y M-y              kill region, copy, yank, yank-pop",
@@ -4602,6 +4632,8 @@ static KeyBinding  globalKeys[]  =  {
     { 0, SDLK_DELETE, cmdDeleteChar },
     { C, SDLK_d, cmdDeleteChar },
     { C, SDLK_k, cmdKillLine },
+    { C | S, SDLK_k, cmdKillWholeLine },
+    { C | S, SDLK_BACKSPACE, cmdKillWholeLine },
     { M, SDLK_d, cmdKillWordForward },
     { C, SDLK_DELETE, cmdKillWordForward },
     { C, SDLK_BACKSPACE, cmdKillWordBackward },

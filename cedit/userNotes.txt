@@ -1,10 +1,2 @@
 Excellent work!
 
-
-A few things:
-
-
---For some reason, if a file ends with a newline, and then we open the file and save it with cedit, the final newline is removed.   But the weird thing is that the newline still appears in the buffer (though it disappears if the buffer is closed and reopened).  A bunch of unix tools freak out of there's no newline at the end of a file, so I actually have that set to force a newline in every text file in my .emacs.   Might as well do the same thing in cedit.
-
---When using Ctrl-k to cut and add things to the kill ring, you can use it to add multiple things, and then paste them all together using Ctrl-y, which works great.   However, if you interrupt the process with the HOME key, it clears the kill ring and starts fresh.  I actually have a macro on my TourBox that jumps back to the start of a line and kills the whole thing (so I can kill a line from the middle, without manually going back to the start of the line).  In emacs, I can do this without jumping by doing C-0 C-k and then C-k (to kill behind the cursor and they beyond the cursor).  Since the cursor doesn't move, it keeps adding to the kill ring.  But in cedit, I'm trying to write this macro using the HOME key.   Anyway... maybe there can be some other key command you can create for just "kill the whole line"
-

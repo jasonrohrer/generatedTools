@@ -80,6 +80,11 @@ bytes, copied out by `lineReserve` on first growth.  Never `free()` a
 line's text directly — use `lineFree`.  This made loading a 1M-line
 file 3x faster.
 
+**Final newline.**  `tb_load` strips exactly one trailing `\n`;
+`tb_save` writes `\n` after EVERY line (only a lone empty line writes
+an empty file).  So files round-trip, a blank last line survives, and a
+missing final newline gets added on save.
+
 **All edits go through `tb_insert` / `tb_delete`** (or `tb_setLineIndent`
 which uses them):  that keeps undo, markers, `changeCount` and the syntax
 state cache (`stateValidThrough`) right.  Undo records coalesce typed

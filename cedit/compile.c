@@ -115,7 +115,7 @@ int comp_exitStatus( void ) {
 
 void comp_kill( void ) {
     if( childPID > 0 ) {
-        kill( -childPID, SIGTERM );
+        kill( - childPID, SIGTERM );
         kill( childPID, SIGTERM );
         }
     }

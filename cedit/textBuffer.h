@@ -67,6 +67,9 @@ typedef struct TextBuffer {
         char        *name;
 
         int          readOnly;
+        /* 1 for C source (.c .h .cpp ...):  syntax highlighting,
+           auto-indent and formatting.  0 = plain text. */
+        int          isC;
 
         UndoRecord  *undo;
         int          numUndo;
@@ -118,6 +121,9 @@ typedef struct TextBuffer {
 
 
 TextBuffer *tb_create( void );
+
+/* 1 if a file name looks like C source (.c .h .cpp .cc .hpp ...) */
+int tb_isCPath( const char  *inPath );
 
 void tb_destroy( TextBuffer  *inTB );
 

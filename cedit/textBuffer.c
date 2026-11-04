@@ -155,8 +155,31 @@ TextBuffer *tb_create( void ) {
     tb->markMarker = tb_addMarker( tb, 0, 0 );
     tb->cursorMarker = tb_addMarker( tb, 0, 0 );
     tb->markActive = 0;
+    tb->isC = 1;
 
     return tb;
+    }
+
+
+
+int tb_isCPath( const char  *inPath ) {
+    static const char  *exts[]  =  { "c", "h", "cpp", "cc", "cxx", "hpp",
+                                     "hh", "hxx", "C", "H", NULL };
+    const char         *dot     =  strrchr( inPath, '.' );
+    const char         *slash   =  strrchr( inPath, '/' );
+    int                 i;
+
+    if( dot == NULL || ( slash != NULL && dot < slash ) ) {
+        return 0;
+        }
+    for( i = 0;
+         exts[ i ] != NULL;
+         i ++ ) {
+        if( strcmp( dot + 1, exts[ i ] ) == 0 ) {
+            return 1;
+            }
+        }
+    return 0;
     }
 
 

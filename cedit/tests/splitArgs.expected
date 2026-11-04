@@ -3,8 +3,8 @@ void f( int  n ) {
                            b );
     int  longName  =  bar( 1 );
 
-    for( y =  BH-1;
-         y >= BH-3;
+    for( y =  BH - 1;
+         y >= BH - 3;
          y    -- ) {
         for( i =  0;
              i <  n;

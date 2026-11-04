@@ -5,7 +5,9 @@
 #   tests/run.sh            run all tests
 #   tests/run.sh --update   regenerate the .expected files (check them!)
 #
-# Each NAME.keys is a keystroke script (see "cedit --script" in cedit.c).
+# Each NAME.keys is a keystroke script (see "cedit --script" in cedit.c),
+# run on NAME.c (or on NAME itself if it has an extension:  notes.txt.keys
+# edits a plain text file).
 # If NAME.input exists, it names a file in tests/ to start from;
 # otherwise the test starts from a new empty file.  The resulting buffer
 # is compared to NAME.expected.
@@ -24,11 +26,16 @@ update=0
 
 for keys in *.keys; do
     name=${keys%.keys}
-    work="$TMP/$name.c"
+    # notes.txt.keys edits notes.txt;  plain NAME.keys edits NAME.c
+    case "$name" in
+        *.*) file="$name" ;;
+        *)   file="$name.c" ;;
+    esac
+    work="$TMP/$file"
     if [ -f "$name.input" ]; then
         cp "$(cat "$name.input")" "$work"
     fi
-    out=$(cd "$TMP" && "$OLDPWD/$CEDIT" --script "$OLDPWD/$keys" "$name.c" 2>/dev/null)
+    out=$(cd "$TMP" && "$OLDPWD/$CEDIT" --script "$OLDPWD/$keys" "$file" 2>/dev/null)
     if [ $update == 1 ]; then
         printf '%s\n' "$out" > "$name.expected"
     elif ! diff <(printf '%s\n' "$out") "$name.expected" > "$TMP/diff.txt"; then

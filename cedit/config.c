@@ -139,6 +139,8 @@ static ConfigEntry  entries[]  =  {
       "scroll bar track" },
     { "color.scrollBarThumb", CT_COLOR, CF_COLORS, UC( UI_SCROLLBAR_THUMB ),
       0, "" },
+    { "color.wrapMark", CT_COLOR, CF_COLORS, UC( UI_WRAP_MARK ), 0,
+      "the arrow marking a wrapped line's continuation rows" },
 
 
     { "Display", CT_HEADER, CF_STYLE, NULL, 0, "" },
@@ -160,6 +162,10 @@ static ConfigEntry  entries[]  =  {
     { "fillColumn", CT_INT, CF_STYLE, &config.fillColumn, 0,
       "column for the ruler line" },
     { "showRuler", CT_INT, CF_STYLE, &config.showRuler, 0, "" },
+    { "wrapLines", CT_INT, CF_STYLE, &config.wrapLines, 0,
+      "1 = lines longer than the window are shown wrapped onto more\n"
+      "rows, with a wrap arrow in the line number gutter (the file\n"
+      "itself is not changed);  0 = scroll sideways instead" },
     { "showScrollBar", CT_INT, CF_STYLE, &config.showScrollBar, 0,
       "vertical scroll bar at the right edge (drag it, or click to jump)" },
     { "showTrailingSpace", CT_INT, CF_STYLE, &config.showTrailingSpace, 0,
@@ -269,6 +275,13 @@ static ConfigEntry  entries[]  =  {
     { "compareSpaces", CT_INT, CF_STYLE, &config.compareSpaces, 0,
       "1 = at least one space on each side of == != < > <= >= && ||:\n"
       "    if( x == 5 ) {" },
+    { "operatorSpaces", CT_INT, CF_STYLE, &config.operatorSpaces, 0,
+      "1 = at least one space on each side of the other binary operators\n"
+      "(+ - * / % & | ^ << >> ? :):  x = a + b * 2;" },
+    { "unarySpaces", CT_INT, CF_STYLE, &config.unarySpaces, 0,
+      "1 = a space after unary ! ~ and - (but -1 stays tight), while\n"
+      "the pointer operators hug their target:\n"
+      "    char  x  =  ! y;    int  *p  =  &y;    z = *p;" },
     { "splitBoolOps", CT_INT, CF_STYLE, &config.splitBoolOps, 0,
       "1 = the operands of && and || inside ( ) (and after return) go\n"
       "on their own lines, with the operator on a line by itself:\n"
@@ -392,6 +405,7 @@ static void setDefaults( void ) {
     u[ UI_LIST_SELECTED ]       = rgb( 0xEEDC82 );
     u[ UI_SCROLLBAR_BG ]        = rgb( 0xF2F2D2 );
     u[ UI_SCROLLBAR_THUMB ]     = rgb( 0xB4B49A );
+    u[ UI_WRAP_MARK ]           = rgb( 0x8C8CB4 );
 
     config.fontPath[ 0 ] = '\0';
     config.fontSize = 16;
@@ -404,6 +418,7 @@ static void setDefaults( void ) {
     config.fillColumn = 80;
     config.showScrollBar = 1;
     config.showRuler = 1;
+    config.wrapLines = 1;
     config.showTrailingSpace = 1;
     config.smoothScroll = 1;
     config.scrollMargin = 3;
@@ -441,6 +456,8 @@ static void setDefaults( void ) {
     config.declTableBlankLines = 1;
     config.assignSpaces = 1;
     config.compareSpaces = 1;
+    config.operatorSpaces = 1;
+    config.unarySpaces = 1;
     config.splitBoolOps = 1;
     config.spaceBeforeBrace = 1;
     config.splitArgLists = 1;

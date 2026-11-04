@@ -166,5 +166,38 @@ running (the loop wakes every 15 ms then).  Indented lines after a
 message are its detail lines (gcc excerpts, cstatic explanations).
 Notes are skipped by next-error, like emacs.
 
+**Plain text buffers.**  `TextBuffer.isC` (from `tb_isCPath`, set in
+`openFile` and save-as;  `tb_create` defaults to 1 so headless tools
+and `*scratch*` are C).  When 0:  `syn_highlightLine` leaves everything
+`HL_TEXT`, `syn_scanTypedefs` returns at once (a prose file must not
+pollute the global typedef set), `reindentLine` / `electric` / hungry
+delete do nothing, `newLineIndent` copies the previous non-blank line,
+Tab is `plainTab` (indent-relative), C commands say "Not a C buffer"
+(`checkC`), and cedit.c skips bracket matching.
+
+**Line wrap** (cedit.c "Visual rows").  `ed.wrapCols` = text columns
+when `wrapLines`, else 0;  set by `drawTextView` every frame,
+`ed_lineRows` (editor.c, also used by paging) gives a line's row count.
+A line exactly `wrapCols` wide takes ONE row (the end-of-line cursor is
+a bar at the edge).  `scrollY` is still a line number;  its fraction is
+a fraction of the top line's rows.  `buildViewRows` lays out
+`viewRows[]` (line, segStart, segEnd, y) once per frame;  every draw
+pass and `mouseToTextPos` go through it (`spanRect`, `COL_X`).
+`updateScroll` keeps the cursor's row in the margin with
+`topWithRowsAbove` / `topWithRowAtMost`, which only walk a screen of
+lines.  `C-n` / `C-p` are still logical-line moves.
+
+**Operator spacing** (`classifyOperators` in format.c) labels each
+token OP_BINARY / OP_UNARY_SPACE (`! ~ -x`) / OP_UNARY_HUG (`*p &x -1`,
+declaration stars) / OP_UNSURE from the token before it (`isOperand`;
+a cast's `)` is not an operand).  `*` after a name goes through
+`isDeclStar` (type names, Capitalized names, decl keywords, statement
+starts, `braceDepth == 0` parameter lists).  A line starting with an
+operator looks at the previous code line's last token
+(`prevLineEndsWithValue`) — Jason's code has `* ( 255 - a )` and
+`& 0xFF` continuation lines.  Against Chessamphetamine the only
+changes are exactly the requested rule (`-x` -> `- x`, `& x` -> `&x`,
+`!x` -> `! x`) and tight operators in imported (sha1-ish) code.
+
 **Huge files.**  Typedef scanning for files > 20k lines is deferred to
 `ed_tick` after the first frame (`needsTypeScan`).

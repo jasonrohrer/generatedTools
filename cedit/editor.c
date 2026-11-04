@@ -435,6 +435,7 @@ static int openFile( const char  *inPath,
             tb->readOnly = 1;
             }
         }
+    tb->isC = tb_isCPath( path );
     idx = addBuffer( tb );
     setUniqueName( tb, baseName( path ) );
     if( tb->numLines > 20000 ) {
@@ -785,26 +786,62 @@ static void cmdBufferEnd( void ) {
 
 
 
-static void cmdPageDown( void ) {
+int ed_lineRows( TextBuffer  *inTB,
+                 int          inLine ) {
+    int  len  =  inTB->lines[ inLine ].len;
+
+    if( ed.wrapCols <= 0 || len <= ed.wrapCols ) {
+        return 1;
+        }
+    return ( len + ed.wrapCols - 1 ) / ed.wrapCols;
+    }
+
+
+
+/* scrolls the view a screen (less two rows) down (inDir 1) or up (-1),
+   counting wrapped rows;  the cursor moves along by as many lines */
+static void pageScroll( int  inDir ) {
     int  page  =  ed.visibleRows - 2;
+    int  top   =  (int)( B()->targetScrollY + 0.5f );
+    int  t     =  top;
+    int  acc   =  0;
 
     if( page < 1 ) {
         page = 1;
         }
-    moveLines( page );
-    B()->targetScrollY += (float)page;
+    if( inDir > 0 ) {
+        while( t < B()->numLines - 1
+               && acc + ed_lineRows( B(), t ) <= page ) {
+            acc += ed_lineRows( B(), t );
+            t ++;
+            }
+        if( t == top && t < B()->numLines - 1 ) {
+            t ++;
+            }
+        }
+    else {
+        while( t > 0 && acc + ed_lineRows( B(), t - 1 ) <= page ) {
+            t --;
+            acc += ed_lineRows( B(), t );
+            }
+        if( t == top && t > 0 ) {
+            t --;
+            }
+        }
+    moveLines( t - top );
+    B()->targetScrollY = (float)t;
+    }
+
+
+
+static void cmdPageDown( void ) {
+    pageScroll( 1 );
     }
 
 
 
 static void cmdPageUp( void ) {
-    int  page  =  ed.visibleRows - 2;
-
-    if( page < 1 ) {
-        page = 1;
-        }
-    moveLines( -page );
-    B()->targetScrollY -= (float)page;
+    pageScroll( -1 );
     }
 
 
@@ -1309,8 +1346,13 @@ static void reindentLine( int  inLine ) {
     int  l;
     int  c;
     int  oldInd  =  tb_lineIndent( B(), inLine );
-    int  want    =  ind_computeIndent( B(), inLine );
+    int  want;
 
+    if( ! B()->isC ) {
+        /* plain text:  indentation is the user's */
+        return;
+        }
+    want = ind_computeIndent( B(), inLine );
     if( want < 0 ) {
         want = ind_commentIndent( B(), inLine );
         }
@@ -1333,8 +1375,18 @@ static void reindentLine( int  inLine ) {
 
 /* indentation for a fresh (empty) line */
 static int newLineIndent( int  inLine ) {
-    int  want  =  ind_computeIndent( B(), inLine );
+    int  want;
 
+    if( ! B()->isC ) {
+        /* plain text:  like the previous non-blank line */
+        int  p  =  inLine - 1;
+
+        while( p >= 0 && tb_lineIsBlank( B(), p ) ) {
+            p --;
+            }
+        return p >= 0 ? tb_lineIndent( B(), p ) : 0;
+        }
+    want = ind_computeIndent( B(), inLine );
     if( want < 0 ) {
         want = ind_commentIndent( B(), inLine );
         }
@@ -1401,7 +1453,7 @@ static void newlineAndIndent( void ) {
     getCur( &l, &c );
     state = syn_getLineState( B(), l );
 
-    if( state == 0 && tokenTypeAt( B(), l, c ) == 0 ) {
+    if( B()->isC && state == 0 && tokenTypeAt( B(), l, c ) == 0 ) {
         if( config.reindentOnEnter && ! tb_lineIsBlank( B(), l ) ) {
             reindentLine( l );
             }
@@ -1475,6 +1527,61 @@ static void cmdIndentRegionLines( int  inFirst,
 
 
 
+/* Tab in plain text:  indent-relative, like emacs text-mode.  Moves the
+   cursor (inserting spaces) to the next column where a word starts on
+   the previous non-blank line, or to the next tab stop. */
+static void plainTab( void ) {
+    char   sp[ 256 ];
+    int    l;
+    int    c;
+    int    p;
+    int    target  =  -1;
+    int    n;
+
+    getCur( &l, &c );
+    for( p = l - 1;
+         p >= 0 && tb_lineIsBlank( B(), p );
+         p -- ) {
+        }
+    if( p >= 0 ) {
+        Line  *pl  =  lineAt( p );
+        int    i;
+
+        for( i = c + 1;
+             i < pl->len;
+             i ++ ) {
+            if( pl->text[ i ] != ' ' && pl->text[ i - 1 ] == ' ' ) {
+                target = i;
+                break;
+                }
+            }
+        }
+    if( target < 0 ) {
+        int  w  =  config.indentSize > 0 ? config.indentSize : 4;
+
+        target = ( c / w + 1 ) * w;
+        }
+    n = target - c;
+    if( n > (int)sizeof( sp ) ) {
+        n = (int)sizeof( sp );
+        }
+    memset( sp, ' ', (size_t)n );
+    insertAtCursor( sp, n );
+    }
+
+
+
+/* the C commands do nothing in a plain text buffer */
+static int checkC( void ) {
+    if( ! B()->isC ) {
+        ed_message( "Not a C buffer (%s)", B()->name );
+        return 0;
+        }
+    return 1;
+    }
+
+
+
 static void cmdTab( void ) {
     int  sl;
     int  sc;
@@ -1484,6 +1591,27 @@ static void cmdTab( void ) {
     int  c;
 
     if( ! checkWritable() ) {
+        return;
+        }
+    if( ! B()->isC ) {
+        if( ed_getRegion( &sl, &sc, &el, &ec ) && sl != el ) {
+            /* plain text region:  shift its lines right */
+            if( ec == 0 && el > sl ) {
+                el --;
+                }
+            for( l = sl;
+                 l <= el;
+                 l ++ ) {
+                int  ind  =  tb_lineIndent( B(), l ) + config.indentSize;
+
+                if( ! tb_lineIsBlank( B(), l ) ) {
+                    tb_setLineIndent( B(), l, ind );
+                    }
+                }
+            syncCur();
+            return;
+            }
+        plainTab();
         return;
         }
     if( ed_getRegion( &sl, &sc, &el, &ec ) && sl != el ) {
@@ -1560,6 +1688,9 @@ static void cmdIndentRegion( void ) {
     int  el;
     int  ec;
 
+    if( ! checkC() ) {
+        return;
+        }
     if( ! checkWritable() ) {
         return;
         }
@@ -1578,6 +1709,9 @@ static void cmdIndentRegion( void ) {
 
 
 static void cmdIndentBuffer( void ) {
+    if( ! checkC() ) {
+        return;
+        }
     if( ! checkWritable() ) {
         return;
         }
@@ -1593,6 +1727,9 @@ static void cmdFormatRegion( void ) {
     int  ec;
     int  savedFlag  =  config.formatOnEnter;
 
+    if( ! checkC() ) {
+        return;
+        }
     if( ! checkWritable() ) {
         return;
         }
@@ -1612,6 +1749,9 @@ static void cmdFormatRegion( void ) {
 static void cmdFormatBuffer( void ) {
     int  savedFlag  =  config.formatOnEnter;
 
+    if( ! checkC() ) {
+        return;
+        }
     if( ! checkWritable() ) {
         return;
         }
@@ -1630,6 +1770,9 @@ static void cmdAlignDeclarations( void ) {
     int  c;
     int  saved  =  config.alignDeclarations;
 
+    if( ! checkC() ) {
+        return;
+        }
     if( ! checkWritable() ) {
         return;
         }
@@ -1859,6 +2002,9 @@ static void electric( char  inC ) {
     int  c;
     int  inCode;
 
+    if( ! B()->isC ) {
+        return;
+        }
     getCur( &l, &c );
     inCode = ( syn_getLineState( B(), l ) == 0
                && tokenTypeAt( B(), l, c - 1 ) == 0
@@ -1996,7 +2142,7 @@ static void cmdBackspace( void ) {
     if( l == 0 && c == 0 ) {
         return;
         }
-    if( config.hungryDelete
+    if( config.hungryDelete && B()->isC
         &&
         ( c == 0 || lineAt( l )->text[ c - 1 ] == ' ' ) ) {
         int  sl  =  l;
@@ -3934,6 +4080,7 @@ static void cmdHelp( void ) {
                  commands[ i ].keys );
         }
     idx = makeScratch( "*help*", text );
+    ed.buffers[ idx ]->isC = 0;
     free( text );
     ed.buffers[ idx ]->readOnly = 1;
     ed_switchToBuffer( idx );
@@ -4096,6 +4243,7 @@ static void mbAccept( void ) {
             expandHome( text, path, sizeof( path ) );
             free( B()->path );
             B()->path = xstrdup( path );
+            B()->isC = tb_isCPath( path );
             setUniqueName( B(), baseName( path ) );
             B()->readOnly = 0;
             saveBuffer( B() );
@@ -4564,7 +4712,7 @@ static CmdFn lookupKey( KeyBinding  *inTable,
         int  m  =  inMods;
 
         if( inIgnoreShift ) {
-            m &= ~MOD_SHIFT;
+            m &= ~ MOD_SHIFT;
             }
         if( inTable[ i ].key == inKey && inTable[ i ].mods == m ) {
             return inTable[ i ].fn;

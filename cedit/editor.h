@@ -114,6 +114,9 @@ typedef struct Editor {
         /* rows of text visible in the main view, set by renderer */
         int            visibleRows;
         int            visibleCols;
+        /* columns per row when long lines wrap (wrapLines), else 0;  set
+           by the renderer */
+        int            wrapCols;
         int            compileRows;
 
         /* debug program chosen this session */
@@ -172,6 +175,10 @@ int ed_getRegion( int  *outStartLine,
 
 /* 1 if any buffer has unsaved changes */
 int ed_anyModified( void );
+
+/* number of screen rows a line takes (more than 1 if it wraps) */
+int ed_lineRows( TextBuffer  *inTB,
+                 int          inLine );
 
 /* request to quit (asks if unsaved buffers) */
 void ed_requestQuit( void );

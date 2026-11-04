@@ -461,6 +461,167 @@ static int matchAtFold( Line        *inL,
 
 
 /* ------------------------------------------------------------------
+   Visual rows (line wrapping)
+
+   With wrapLines on, a line longer than the window shows on several
+   rows, each ed.wrapCols columns wide (a line exactly as wide as the
+   window still takes one row:  its end-of-line cursor is a bar at the
+   edge).  scrollY stays a line number:  its fraction is the part of the
+   top line's rows scrolled off, so smooth scrolling still works.
+   ------------------------------------------------------------------ */
+
+#define SEG_END_MAX  0x7FFFFFFF
+
+
+/* one row of the text view:  a line, or one piece of a wrapped line */
+typedef struct ViewRow {
+        int    line;
+        /* columns [ segStart, segEnd ) show on this row;  the last row
+           of a line has segEnd = SEG_END_MAX */
+        int    segStart;
+        int    segEnd;
+        float  y;
+    } ViewRow;
+
+#define MAX_VIEW_ROWS  2048
+
+/* the rows of the last frame, for mouse hit testing */
+static ViewRow  viewRows[ MAX_VIEW_ROWS ];
+static int      numViewRows  =  0;
+
+
+
+static int lineRows( TextBuffer  *inTB,
+                     int          inLine ) {
+    return ed_lineRows( inTB, inLine );
+    }
+
+
+
+/* which of its line's rows a column is on */
+static int rowOfCol( TextBuffer  *inTB,
+                     int          inLine,
+                     int          inCol ) {
+    int  n  =  lineRows( inTB, inLine );
+    int  r;
+
+    if( n == 1 ) {
+        return 0;
+        }
+    r = inCol / ed.wrapCols;
+    if( r >= n ) {
+        r = n - 1;
+        }
+    return r;
+    }
+
+
+
+/* the latest top line that leaves at least inRowsAbove rows above row
+   inSub of inLine */
+static int topWithRowsAbove( TextBuffer  *inTB,
+                             int          inLine,
+                             int          inSub,
+                             int          inRowsAbove ) {
+    int  top  =  inLine;
+    int  acc  =  inSub;
+
+    while( top > 0 && acc < inRowsAbove ) {
+        top --;
+        acc += lineRows( inTB, top );
+        }
+    return top;
+    }
+
+
+
+/* the earliest top line that keeps row inSub of inLine at or above view
+   row inMaxRow */
+static int topWithRowAtMost( TextBuffer  *inTB,
+                             int          inLine,
+                             int          inSub,
+                             int          inMaxRow ) {
+    int  top  =  inLine;
+    int  acc  =  inSub;
+
+    while( top > 0 && acc + lineRows( inTB, top - 1 ) <= inMaxRow ) {
+        top --;
+        acc += lineRows( inTB, top );
+        }
+    return top;
+    }
+
+
+
+/* the last line whose rows all fit in inRows rows below top line inTop */
+static int lastLineFitting( TextBuffer  *inTB,
+                            int          inTop,
+                            int          inRows ) {
+    int  line  =  inTop;
+    int  acc   =  lineRows( inTB, inTop );
+
+    while( line + 1 < inTB->numLines
+           && acc + lineRows( inTB, line + 1 ) <= inRows ) {
+        line ++;
+        acc += lineRows( inTB, line );
+        }
+    return line;
+    }
+
+
+
+/* lays out the visible rows from the buffer's scroll position */
+static void buildViewRows( TextBuffer  *inTB,
+                           float        inTop,
+                           float        inBottom,
+                           float        inLineH ) {
+    int    line  =  (int)floor( inTB->scrollY );
+    float  frac  =  inTB->scrollY - (float)line;
+    float  y;
+
+    numViewRows = 0;
+    if( line < 0 ) {
+        line = 0;
+        frac = 0;
+        }
+    if( line >= inTB->numLines ) {
+        return;
+        }
+    y = inTop - frac * (float)lineRows( inTB, line ) * inLineH;
+
+    while( line < inTB->numLines && y < inBottom
+           && numViewRows < MAX_VIEW_ROWS ) {
+        int  n  =  lineRows( inTB, line );
+        int  r;
+
+        for( r = 0;
+             r < n && y < inBottom && numViewRows < MAX_VIEW_ROWS;
+             r ++ ) {
+            if( y + inLineH > inTop ) {
+                ViewRow  *v  =  &( viewRows[ numViewRows ] );
+
+                v->line = line;
+                v->segStart = r * ed.wrapCols;
+                v->segEnd = r == n - 1 ? SEG_END_MAX : ( r + 1 ) * ed.wrapCols;
+                v->y = y;
+                numViewRows ++;
+                }
+            y += inLineH;
+            }
+        line ++;
+        }
+    }
+
+
+
+static int rowHasCol( ViewRow  *inRow,
+                      int       inCol ) {
+    return inCol >= inRow->segStart && inCol < inRow->segEnd;
+    }
+
+
+
+/* ------------------------------------------------------------------
    Main text view
    ------------------------------------------------------------------ */
 
@@ -472,7 +633,10 @@ static void updateScroll( TextBuffer  *inTB,
     int    cc      =  inTB->cursorCol;
     int    margin  =  config.scrollMargin;
     float  maxTop  =  (float)( inTB->numLines - 1 );
+    int    sub     =  rowOfCol( inTB, cl, cc );
     float  t;
+    float  latest;
+    float  earliest;
 
     if( margin > inRows / 2 - 1 ) {
         margin = inRows / 2 - 1;
@@ -482,15 +646,21 @@ static void updateScroll( TextBuffer  *inTB,
         }
 
     if( ed.recenterRequest ) {
-        inTB->targetScrollY = (float)( cl - inRows / 2 );
+        inTB->targetScrollY = (float)topWithRowsAbove( inTB, cl, sub,
+                                                       inRows / 2 );
         ed.recenterRequest = 0;
         }
     t = inTB->targetScrollY;
-    if( (float)cl < t + (float)margin ) {
-        t = (float)( cl - margin );
+    /* keep the cursor's row margin rows from the top and bottom
+       (counting wrapped rows) */
+    latest = (float)topWithRowsAbove( inTB, cl, sub, margin );
+    earliest = (float)topWithRowAtMost( inTB, cl, sub,
+                                        inRows - 1 - margin );
+    if( t > latest ) {
+        t = latest;
         }
-    if( (float)cl > t + (float)( inRows - 1 - margin ) ) {
-        t = (float)( cl - inRows + 1 + margin );
+    if( t < earliest ) {
+        t = earliest;
         }
     if( t > maxTop ) {
         t = maxTop;
@@ -520,6 +690,10 @@ static void updateScroll( TextBuffer  *inTB,
         }
 
     /* horizontal */
+    if( ed.wrapCols > 0 ) {
+        inTB->scrollX = 0;
+        return;
+        }
     if( (float)cc < inTB->scrollX ) {
         inTB->scrollX = (float)( cc - inCols / 4 );
         }
@@ -612,6 +786,57 @@ static void drawScrollBar( TextBuffer  *inTB,
 
 
 
+/* fills columns [ inS, inE ) of a line, clipped to view row inRow */
+static void spanRect( ViewRow       *inRow,
+                      int            inS,
+                      int            inE,
+                      float          inTextX,
+                      float          inCharW,
+                      int            inScrollX,
+                      float          inLineH,
+                      unsigned int   inColor ) {
+    if( inS < inRow->segStart ) {
+        inS = inRow->segStart;
+        }
+    if( inE > inRow->segEnd ) {
+        inE = inRow->segEnd;
+        }
+    if( inE <= inS ) {
+        return;
+        }
+    gui_rect( inTextX + (float)( inS - inRow->segStart - inScrollX ) * inCharW,
+              inRow->y,
+              inTextX + (float)( inE - inRow->segStart - inScrollX ) * inCharW,
+              inRow->y + inLineH, inColor );
+    }
+
+
+
+/* the hooked arrow in the gutter of a wrapped line's continuation row,
+   like the one emacs puts in its fringe */
+static void drawWrapArrow( float  inGutterW,
+                           float  inY,
+                           float  inCharW,
+                           float  inLineH ) {
+    unsigned int  col    =  UC( UI_WRAP_MARK );
+    float         w      =  inCharW * 1.1f;
+    float         x1     =  inGutterW - inCharW * 0.3f;
+    float         x0     =  x1 - w;
+    float         yTop   =  inY + inLineH * 0.2f;
+    float         yMid   =  inY + inLineH * 0.6f;
+    float         head   =  inCharW * 0.35f;
+
+    if( x0 < 1 ) {
+        x0 = 1;
+        }
+    gui_line( x0, yTop, x0, yMid, col, 1.5f );
+    gui_line( x0, yMid, x1, yMid, col, 1.5f );
+    gui_line( x1 - head, yMid - head, x1, yMid, col, 1.5f );
+    gui_line( x1 - head, yMid + head, x1, yMid, col, 1.5f );
+    }
+
+
+
 static void drawTextView( float  inTop,
                           float  inBottom,
                           float  inW,
@@ -626,8 +851,6 @@ static void drawTextView( float  inTop,
     float                  textX;
     int                    rows;
     int                    cols;
-    int                    firstLine;
-    float                  yOff;
     int                    i;
     int                    sl          =  0;
     int                    sc          =  0;
@@ -647,6 +870,8 @@ static void drawTextView( float  inTop,
     int                    errLine     =  -1;
     int                    markL;
     int                    markC;
+    int                    lastLexed   =  -1;
+    ViewRow               *curRow      =  NULL;
 
     gutterW = gutterWidth( tb, charW );
     sbW = scrollBarWidth( charW );
@@ -668,22 +893,30 @@ static void drawTextView( float  inTop,
         }
     ed.visibleRows = rows;
     ed.visibleCols = cols;
+    ed.wrapCols = config.wrapLines ? cols : 0;
 
     updateScroll( tb, rows, cols, inDT );
 
     cl = tb->cursorLine;
     cc = tb->cursorCol;
     scrollXi = (int)tb->scrollX;
-    firstLine = (int)floor( tb->scrollY );
-    yOff = inTop - ( tb->scrollY - (float)firstLine ) * lineH;
+    buildViewRows( tb, inTop, inBottom, lineH );
+    for( i = 0;
+         i < numViewRows;
+         i ++ ) {
+        if( viewRows[ i ].line == cl && rowHasCol( &( viewRows[ i ] ), cc ) ) {
+            curRow = &( viewRows[ i ] );
+            }
+        }
 
     hasRegion = ed_getRegion( &sl, &sc, &el, &ec );
     if( ed_searchHighlight( &searchText, &searchFold ) ) {
         searchLen = (int)strlen( searchText );
         }
 
-    /* bracket matching */
-    {
+    /* bracket matching (C only:  in prose, an apostrophe would look like
+       a char literal to the scanner) */
+    if( tb->isC ) {
         Line  *l  =  &( tb->lines[ cl ] );
 
         if( cc < l->len && strchr( "([{", l->text[ cc ] ) != NULL ) {
@@ -724,18 +957,18 @@ static void drawTextView( float  inTop,
 
     gui_pushClip( textX, inTop, inW, inBottom );
 
+    /* x of column c on view row r */
+#define COL_X( r, c )  ( textX + (float)( (c) - (r)->segStart - scrollXi ) \
+                                 * charW )
+
     /* backgrounds */
     for( i = 0;
-         i <= rows;
+         i < numViewRows;
          i ++ ) {
-        int    line  =  firstLine + i;
-        float  y     =  yOff + (float)i * lineH;
-        Line  *l;
-
-        if( line >= tb->numLines ) {
-            break;
-            }
-        l = &( tb->lines[ line ] );
+        ViewRow  *r     =  &( viewRows[ i ] );
+        int       line  =  r->line;
+        float     y     =  r->y;
+        Line     *l     =  &( tb->lines[ line ] );
 
         if( line == cl && config.highlightCurrentLine ) {
             gui_rect( textX, y, inW, y + lineH, UC( UI_CURRENT_LINE ) );
@@ -752,8 +985,7 @@ static void drawTextView( float  inTop,
             while( s > 0 && l->text[ s - 1 ] == ' ' ) {
                 s --;
                 }
-            gui_rect( textX + (float)( s - scrollXi ) * charW, y,
-                      textX + (float)( l->len - scrollXi ) * charW, y + lineH,
+            spanRect( r, s, l->len, textX, charW, scrollXi, lineH,
                       UC( UI_TRAILING_SPACE ) );
             }
 
@@ -761,11 +993,8 @@ static void drawTextView( float  inTop,
             int  s  =  ( line == sl ) ? sc : 0;
             int  e  =  ( line == el ) ? ec : l->len + 1;
 
-            if( e > s ) {
-                gui_rect( textX + (float)( s - scrollXi ) * charW, y,
-                          textX + (float)( e - scrollXi ) * charW, y + lineH,
-                          UC( UI_SELECTION ) );
-                }
+            spanRect( r, s, e, textX, charW, scrollXi, lineH,
+                      UC( UI_SELECTION ) );
             }
 
         if( searchLen > 0 ) {
@@ -777,43 +1006,36 @@ static void drawTextView( float  inTop,
                 if( matchAtFold( l, c, searchText, searchLen, searchFold ) ) {
                     int  cur  =  ( line == ed.matchLine && c == ed.matchCol );
 
-                    gui_rect( textX + (float)( c - scrollXi ) * charW, y,
-                              textX + (float)( c + searchLen - scrollXi )
-                              * charW, y + lineH,
-                              UC( cur ? UI_SEARCH_CURRENT
-                                  : UI_SEARCH_MATCH ) );
+                    spanRect( r, c, c + searchLen, textX, charW, scrollXi,
+                              lineH, UC( cur ? UI_SEARCH_CURRENT
+                                         : UI_SEARCH_MATCH ) );
                     c += searchLen - 1;
                     }
                 }
             }
 
         if( line == parenL1 || line == parenL2 ) {
-            int  pc  =  line == parenL1 ? parenC1 : parenC2;
+            int           pc   =  line == parenL1 ? parenC1 : parenC2;
             unsigned int  col  =  parenL2 == -2 ? UC( UI_MISMATCH_PAREN )
                                   : UC( UI_MATCH_PAREN );
 
             if( parenL2 != -2 || line == parenL1 ) {
-                gui_rect( textX + (float)( pc - scrollXi ) * charW, y,
-                          textX + (float)( pc + 1 - scrollXi ) * charW,
-                          y + lineH, col );
+                spanRect( r, pc, pc + 1, textX, charW, scrollXi, lineH,
+                          col );
                 }
             if( line == parenL1 && line == parenL2 ) {
-                gui_rect( textX + (float)( parenC2 - scrollXi ) * charW, y,
-                          textX + (float)( parenC2 + 1 - scrollXi ) * charW,
-                          y + lineH, col );
+                spanRect( r, parenC2, parenC2 + 1, textX, charW, scrollXi,
+                          lineH, col );
                 }
             }
 
-        if( tb->markSet && line == markL
+        if( tb->markSet && line == markL && rowHasCol( r, markC )
             && ! ( markL == cl && markC == cc ) ) {
             /* visible mark */
-            gui_rect( textX + (float)( markC - scrollXi ) * charW, y,
-                      textX + (float)( markC + 1 - scrollXi ) * charW,
-                      y + lineH, UC( UI_MARK ) );
-            gui_rect( textX + (float)( markC - scrollXi ) * charW,
-                      y + lineH - 2,
-                      textX + (float)( markC + 1 - scrollXi ) * charW,
-                      y + lineH, UC( UI_CURSOR ) );
+            gui_rect( COL_X( r, markC ), y, COL_X( r, markC + 1 ), y + lineH,
+                      UC( UI_MARK ) );
+            gui_rect( COL_X( r, markC ), y + lineH - 2,
+                      COL_X( r, markC + 1 ), y + lineH, UC( UI_CURSOR ) );
             }
         }
 
@@ -821,6 +1043,9 @@ static void drawTextView( float  inTop,
     if( config.highlightCurrentColumn ) {
         float  x  =  textX + (float)( cc - scrollXi ) * charW;
 
+        if( curRow != NULL ) {
+            x = COL_X( curRow, cc );
+            }
         gui_rect( x, inTop, x + charW, inBottom, UC( UI_CURRENT_COLUMN ) );
         }
     if( config.showRuler && config.fillColumn > 0 ) {
@@ -831,30 +1056,34 @@ static void drawTextView( float  inTop,
 
     /* text */
     for( i = 0;
-         i <= rows;
+         i < numViewRows;
          i ++ ) {
-        int    line  =  firstLine + i;
-        float  y     =  yOff + (float)i * lineH;
-        Line  *l;
-        int    s;
-        int    e;
-        int    c;
+        ViewRow  *r     =  &( viewRows[ i ] );
+        int       line  =  r->line;
+        float     y     =  r->y;
+        Line     *l     =  &( tb->lines[ line ] );
+        int       s;
+        int       e;
+        int       c;
 
-        if( line >= tb->numLines ) {
-            break;
-            }
-        l = &( tb->lines[ line ] );
         if( l->len == 0 ) {
             continue;
             }
-        if( classesCap < l->len ) {
-            classesCap = l->len * 2 + 256;
-            classes = (unsigned char *)realloc( classes, (size_t)classesCap );
+        if( line != lastLexed ) {
+            if( classesCap < l->len ) {
+                classesCap = l->len * 2 + 256;
+                classes = (unsigned char *)realloc( classes,
+                                                    (size_t)classesCap );
+                }
+            syn_highlightLine( tb, line, classes );
+            lastLexed = line;
             }
-        syn_highlightLine( tb, line, classes );
 
-        s = scrollXi;
-        e = scrollXi + cols + 1;
+        s = r->segStart + scrollXi;
+        e = s + cols + 1;
+        if( e > r->segEnd ) {
+            e = r->segEnd;
+            }
         if( e > l->len ) {
             e = l->len;
             }
@@ -870,18 +1099,17 @@ static void drawTextView( float  inTop,
             while( k < e && classes[ k ] == cls && l->text[ k ] != ' ' ) {
                 k ++;
                 }
-            drawCells( textX + (float)( c - scrollXi ) * charW, y, charW,
-                       config.syntaxColor[ cls ], l->text + c, k - c );
+            drawCells( COL_X( r, c ), y, charW, config.syntaxColor[ cls ],
+                       l->text + c, k - c );
             c = k;
             }
         }
 
     /* cursor */
-    {
-        int    row  =  cl - firstLine;
-        float  y    =  yOff + (float)row * lineH;
-        float  x    =  textX + (float)( cc - scrollXi ) * charW;
-        Line  *l    =  &( tb->lines[ cl ] );
+    if( curRow != NULL ) {
+        float  y  =  curRow->y;
+        float  x  =  COL_X( curRow, cc );
+        Line  *l  =  &( tb->lines[ cl ] );
 
         if( x + charW > inW + 0.5f ) {
             /* the column just past the last full one (the end of a line
@@ -906,30 +1134,34 @@ static void drawTextView( float  inTop,
                              1.0f );
             }
         }
+#undef COL_X
 
     gui_popClip();
 
-    /* line numbers */
-    if( config.showLineNumbers ) {
-        gui_pushClip( 0, inTop, gutterW, inBottom );
-        for( i = 0;
-             i <= rows;
-             i ++ ) {
-            int    line  =  firstLine + i;
-            float  y     =  yOff + (float)i * lineH;
-            char   num[ 32 ];
-            int    n;
+    /* line numbers, and wrap arrows on continuation rows */
+    gui_pushClip( 0, inTop, gutterW, inBottom );
+    for( i = 0;
+         i < numViewRows;
+         i ++ ) {
+        ViewRow  *r     =  &( viewRows[ i ] );
+        int       line  =  r->line;
+        float     y     =  r->y;
+        char      num[ 32 ];
+        int       n;
 
-            if( line >= tb->numLines ) {
-                break;
-                }
-            n = sprintf( num, "%d", line + 1 );
-            gui_text( gutterW - (float)( n + 1 ) * charW, y,
-                      UC( line == cl ? UI_LINE_NUMBER_CURRENT
-                          : UI_LINE_NUMBER ), num, n );
+        if( r->segStart > 0 ) {
+            drawWrapArrow( gutterW, y, charW, lineH );
+            continue;
             }
-        gui_popClip();
+        if( ! config.showLineNumbers ) {
+            continue;
+            }
+        n = sprintf( num, "%d", line + 1 );
+        gui_text( gutterW - (float)( n + 1 ) * charW, y,
+                  UC( line == cl ? UI_LINE_NUMBER_CURRENT
+                      : UI_LINE_NUMBER ), num, n );
         }
+    gui_popClip();
 
     drawScrollBar( tb, inW, inW + sbW, inTop, inBottom, rows, cl, errLine );
     }
@@ -1133,7 +1365,8 @@ static void drawStatus( float  inTop,
     if( tb->scrollY <= 0 ) {
         strcpy( pos, "Top" );
         }
-    else if( (int)tb->scrollY + ed.visibleRows >= tb->numLines ) {
+    else if( lastLineFitting( tb, (int)tb->scrollY, ed.visibleRows )
+             >= tb->numLines - 1 ) {
         strcpy( pos, "Bot" );
         }
     else {
@@ -1157,8 +1390,8 @@ static void drawStatus( float  inTop,
 
     sprintf( s, "%-4s L%-6d C%-4d  %d lines   %s%s%s", pos,
              tb->cursorLine + 1, tb->cursorCol, tb->numLines,
-             config.autoNewline ? "(C/a" : "(C",
-             config.hungryDelete ? "h" : "",
+             ! tb->isC ? "(Text" : config.autoNewline ? "(C/a" : "(C",
+             tb->isC && config.hungryDelete ? "h" : "",
              ")" );
     drawString( x, inTop + 2, UC( UI_STATUS_FG ), s );
     x += (float)( strlen( s ) + 3 ) * layout.charW;
@@ -1353,6 +1586,7 @@ static void scrollViewTo( float  inTop,
     TextBuffer  *tb   =  ed_cur();
     float        mxs  =  (float)( tb->numLines - 1 );
     int          t;
+    int          last;
 
     if( inTop > mxs ) {
         inTop = mxs;
@@ -1365,12 +1599,12 @@ static void scrollViewTo( float  inTop,
         tb->scrollY = inTop;
         }
     t = (int)( inTop + 0.5f );
+    last = lastLineFitting( tb, t, ed.visibleRows - config.scrollMargin );
     if( tb->cursorLine < t + config.scrollMargin ) {
         ed_mouseSetCursor( t + config.scrollMargin, 0, 0 );
         }
-    else if( tb->cursorLine > t + ed.visibleRows - 1 - config.scrollMargin ) {
-        ed_mouseSetCursor( t + ed.visibleRows - 1 - config.scrollMargin, 0,
-                           0 );
+    else if( tb->cursorLine > last ) {
+        ed_mouseSetCursor( last, 0, 0 );
         }
     }
 
@@ -1417,21 +1651,38 @@ static void mouseToTextPos( int   inX,
                             int  *outLine,
                             int  *outCol ) {
     TextBuffer  *tb  =  ed_cur();
-    float        fy  =  ( (float)inY - layout.textTop ) / layout.lineH
-                        + tb->scrollY;
     float        fx  =  ( (float)inX - layout.textLeft ) / layout.charW
                         + (float)(int)tb->scrollX;
-    int          l   =  (int)floor( fy );
     int          c   =  (int)floor( fx + 0.5f );
+    ViewRow     *r;
+    int          i;
+    int          l;
 
-    if( l < 0 ) {
-        l = 0;
+    if( numViewRows == 0 ) {
+        *outLine = 0;
+        *outCol = 0;
+        return;
         }
+    /* the row under the mouse (the first / last one above / below) */
+    r = &( viewRows[ 0 ] );
+    for( i = 0;
+         i < numViewRows;
+         i ++ ) {
+        if( (float)inY >= viewRows[ i ].y ) {
+            r = &( viewRows[ i ] );
+            }
+        }
+    l = r->line;
     if( l >= tb->numLines ) {
         l = tb->numLines - 1;
         }
     if( c < 0 ) {
         c = 0;
+        }
+    c += r->segStart;
+    if( r->segEnd != SEG_END_MAX && c >= r->segEnd ) {
+        /* past the end of a wrapped row:  its last char */
+        c = r->segEnd - 1;
         }
     if( c > tb->lines[ l ].len ) {
         c = tb->lines[ l ].len;

@@ -1741,25 +1741,325 @@ static int paramListOpenCol( TextBuffer  *inTB,
    Line formatting
    ------------------------------------------------------------------ */
 
+/* how an operator token should be spaced */
+enum OpKind {
+    OP_NONE = 0,
+    /* spaces on both sides:  a + b */
+    OP_BINARY,
+    /* a space after:  ! x   ~ x   - x */
+    OP_UNARY_SPACE,
+    /* hugs its operand:  *p   &x   -1   Deck  *d */
+    OP_UNARY_HUG,
+    /* can't tell (a line-leading operator in a continued expression):
+       leave its spacing alone */
+    OP_UNSURE
+    };
+
+
+#define MAX_OP_TOKS  512
+
+
+/* is the token a value (so that an operator after it is binary)?
+   inMatch[ k ] is the index of the token matching a bracket at k, or
+   -1 */
+static int isOperand( const char  *inText,
+                      Token       *inToks,
+                      int         *inMatch,
+                      int          inK ) {
+    Token  *t  =  &( inToks[ inK ] );
+
+    if( t->type == TK_IDENT || t->type == TK_NUMBER
+        || t->type == TK_STRING || t->type == TK_CHAR ) {
+        return 1;
+        }
+    if( isP( t, ']' ) ) {
+        return 1;
+        }
+    if( isP( t, ')' ) ) {
+        /* but the ) of a cast comes before an operand:  (int)-x */
+        int  open  =  inMatch[ inK ];
+
+        if( open >= 0 && isCast( inText, inToks, open, inK ) ) {
+            return 0;
+            }
+        return 1;
+        }
+    if( isIncDec( inText, t ) ) {
+        /* postfix if it follows a value:  x++ - 1 */
+        return inK > 0 && isOperand( inText, inToks, inMatch, inK - 1 );
+        }
+    return 0;
+    }
+
+
+
+/* a Capitalized name that isn't ALL_CAPS (Deck, MaxiginGUI) looks like
+   a type */
+static int looksLikeTypeName( const char  *inText,
+                              Token       *inT ) {
+    const char  *p  =  inText + inT->start;
+    int          i;
+
+    if( syn_isTypeName( p, inT->len ) ) {
+        return 1;
+        }
+    if( p[ 0 ] < 'A' || p[ 0 ] > 'Z' ) {
+        return 0;
+        }
+    for( i = 1;
+         i < inT->len;
+         i ++ ) {
+        if( p[ i ] >= 'a' && p[ i ] <= 'z' ) {
+            return 1;
+            }
+        }
+    return 0;
+    }
+
+
+
+/* a '*' at inK right after a name:  is it the star of a declaration
+   (Deck *d,  foo *x;) rather than a multiplication? */
+static int isDeclStar( const char   *inText,
+                       Token        *inToks,
+                       int           inNum,
+                       int           inK,
+                       LineContext  *inCtx ) {
+    Token  *name  =  &( inToks[ inK - 1 ] );
+    Token  *pp    =  inK >= 2 ? &( inToks[ inK - 2 ] ) : NULL;
+    int     j     =  inK;
+    int     stmtStart;
+
+    /* the name after the stars */
+    while( j < inNum && isP( &( inToks[ j ] ), '*' ) ) {
+        j ++;
+        }
+    if( j >= inNum ) {
+        /* "Deck *" at the end of the line:  an unfinished declaration,
+           or a multiplication continued on the next line */
+        return looksLikeTypeName( inText, name );
+        }
+    if( isP( &( inToks[ j ] ), ')' ) ) {
+        /* (foo *) is a cast;  a * ) can't be a multiplication */
+        return 1;
+        }
+    if( inToks[ j ].type != TK_IDENT ) {
+        return 0;
+        }
+    if( looksLikeTypeName( inText, name ) ) {
+        return 1;
+        }
+    if( pp != NULL && pp->type == TK_KEYWORD ) {
+        /* struct foo *f,  const foo *f,  but not return a * b */
+        return isDeclKeyword( pp->kw );
+        }
+    if( pp == NULL ) {
+        if( inCtx->inParen ) {
+            /* continued parameter list, or continued call arguments */
+            return inCtx->braceDepth == 0;
+            }
+        stmtStart = ! inCtx->midStatement;
+        }
+    else if( isP( pp, '(' ) || isP( pp, ',' ) ) {
+        /* parameters (outside functions) vs arguments (inside) */
+        return inCtx->braceDepth == 0 && ! inCtx->inList;
+        }
+    else {
+        stmtStart = isP( pp, ';' ) || isP( pp, '{' ) || isP( pp, '}' );
+        }
+    if( ! stmtStart ) {
+        return 0;
+        }
+    if( inCtx->braceDepth == 0 ) {
+        return 1;
+        }
+    /* foo *x;  foo *x = ...  foo *x[ 3 ];  (a * b; does nothing) */
+    if( j + 1 >= inNum ) {
+        return 1;
+        }
+    return isP( &( inToks[ j + 1 ] ), ';' ) || isP( &( inToks[ j + 1 ] ), '=' )
+           || isP( &( inToks[ j + 1 ] ), ',' )
+           || isP( &( inToks[ j + 1 ] ), '[' );
+    }
+
+
+
+/* classifies every token of a line (outKinds[ k ]).  inPrevValue is 1
+   if the line continues a statement whose previous line ended with a
+   value, 0 if it ended with something else, -1 if unknown. */
+static void classifyOperators( const char   *inText,
+                               Token        *inToks,
+                               int           inNum,
+                               LineContext  *inCtx,
+                               int           inPrevValue,
+                               int          *outKinds ) {
+    static int  match[ MAX_OP_TOKS ];
+    int         stack[ 128 ];
+    int         numStack     =  0;
+    int         openTernary  =  0;
+    int         k;
+
+    for( k = 0;
+         k < inNum;
+         k ++ ) {
+        Token  *t  =  &( inToks[ k ] );
+
+        match[ k ] = -1;
+        outKinds[ k ] = OP_NONE;
+        if( isP( t, '(' ) || isP( t, '[' ) ) {
+            if( numStack < 128 ) {
+                stack[ numStack ++ ] = k;
+                }
+            }
+        else if( ( isP( t, ')' ) || isP( t, ']' ) ) && numStack > 0 ) {
+            numStack --;
+            match[ k ] = stack[ numStack ];
+            match[ stack[ numStack ] ] = k;
+            }
+        }
+
+    for( k = 0;
+         k < inNum;
+         k ++ ) {
+        Token  *t        =  &( inToks[ k ] );
+        int     afterValue;
+        int     nextIsNum;
+
+        if( t->type != TK_PUNCT || t->len > 2 ) {
+            continue;
+            }
+        if( t->len == 2 ) {
+            /* << >> */
+            if( ( t->c == '<' || t->c == '>' )
+                && inText[ t->start + 1 ] == t->c ) {
+                outKinds[ k ] = OP_BINARY;
+                }
+            continue;
+            }
+        if( strchr( "+-*/%&|^?:!~", t->c ) == NULL ) {
+            continue;
+            }
+        if( t->c == '?' ) {
+            openTernary ++;
+            outKinds[ k ] = OP_BINARY;
+            continue;
+            }
+        if( t->c == ':' ) {
+            /* only the : of a ?:  (not case X: or a bit field) */
+            if( openTernary > 0 ) {
+                openTernary --;
+                outKinds[ k ] = OP_BINARY;
+                }
+            continue;
+            }
+        if( t->c == '!' || t->c == '~' ) {
+            outKinds[ k ] = OP_UNARY_SPACE;
+            continue;
+            }
+        nextIsNum = k + 1 < inNum && inToks[ k + 1 ].type == TK_NUMBER;
+
+        if( k == 0 && inPrevValue >= 0 ) {
+            /* the previous line ended with a value (a binary operator
+               continuing it) or not */
+            afterValue = inPrevValue;
+            }
+        else if( k == 0 ) {
+            /* nothing before it to go by */
+            if( inCtx->midStatement && ! inCtx->inParen ) {
+                /* x = a
+                       - b   (or a continued unary;  can't tell) */
+                if( ( t->c == '-' || t->c == '+' ) && ! nextIsNum ) {
+                    /* a space after either way */
+                    outKinds[ k ] = OP_UNARY_SPACE;
+                    }
+                else {
+                    outKinds[ k ] = OP_UNSURE;
+                    }
+                continue;
+                }
+            afterValue = 0;
+            }
+        else {
+            afterValue = isOperand( inText, inToks, match, k - 1 );
+            }
+
+        if( t->c == '*' && afterValue && inToks[ k - 1 ].type == TK_IDENT
+            && isDeclStar( inText, inToks, inNum, k, inCtx ) ) {
+            outKinds[ k ] = OP_UNARY_HUG;
+            continue;
+            }
+        if( afterValue ) {
+            outKinds[ k ] = OP_BINARY;
+            }
+        else if( t->c == '*' || t->c == '&' ) {
+            outKinds[ k ] = OP_UNARY_HUG;
+            }
+        else if( t->c == '-' || t->c == '+' ) {
+            outKinds[ k ] = nextIsNum ? OP_UNARY_HUG : OP_UNARY_SPACE;
+            }
+        /* a unary / % | ^ is a syntax error;  leave it alone */
+        }
+    }
+
+
+
+/* 1 if the code line before inLine ends with a value (so an operator
+   starting inLine is binary), 0 if not, -1 if unknown */
+static int prevLineEndsWithValue( TextBuffer  *inTB,
+                                  int          inLine ) {
+    static int  match[ 1 ]  =  { -1 };
+    int         li          =  inLine - 1;
+    int         n;
+
+    while( li >= 0 && tb_lineIsBlank( inTB, li ) ) {
+        li --;
+        }
+    if( li < 0 ) {
+        return 0;
+        }
+    n = lexCodeInto( inTB, li, &auxToks, NULL );
+    if( n <= 0 ) {
+        return -1;
+        }
+    /* (a ')' is taken as a value;  its cast check needs the match, so
+       look at it alone) */
+    return isOperand( inTB->lines[ li ].text, &( auxToks.tokens[ n - 1 ] ),
+                      match, 0 );
+    }
+
+
+
 /* token spacing on one line:  paren / bracket padding, commas, spaces
    around assignments, a space before a block's '{' */
-static void spaceTokens( TextBuffer  *inTB,
-                         int          inLine ) {
+static void spaceTokens( TextBuffer   *inTB,
+                         int           inLine,
+                         LineContext  *inCtx ) {
     static EditList  edits;
+    static int       kinds[ MAX_OP_TOKS ];
     int              n;
     Token           *toks;
     Line            *l;
     int              k;
     int              parenStack[ 128 ];
     int              numParens  =  0;
+    int              prevValue;
 
     n = lexCode( inTB, inLine, NULL );
-    if( n <= 0 ) {
+    if( n <= 0 || n > MAX_OP_TOKS ) {
         return;
         }
     l = &( inTB->lines[ inLine ] );
     toks = lineToks.tokens;
     edits.num = 0;
+    prevValue = -1;
+    if( inCtx->midStatement || inCtx->inParen ) {
+        prevValue = prevLineEndsWithValue( inTB, inLine );
+        /* (that lexed another line into auxToks, not lineToks) */
+        }
+    else {
+        prevValue = 0;
+        }
+    classifyOperators( l->text, toks, n, inCtx, prevValue, kinds );
 
     /* comments were dropped from toks;  gaps that contain a comment must
        not be touched, so check the raw text between tokens */
@@ -1888,6 +2188,31 @@ static void spaceTokens( TextBuffer  *inTB,
             addEdit( &edits, tokEnd( t ), 0, 1 );
             }
 
+        /* around other binary operators:  a + b   x ? y : z */
+        if( config.operatorSpaces && gap == 0
+            &&
+            ( kinds[ k ] == OP_BINARY || kinds[ k + 1 ] == OP_BINARY ) ) {
+            addEdit( &edits, tokEnd( t ), 0, 1 );
+            }
+
+        /* after unary operators:  ! x   - y   but *p  &x  -1 */
+        if( config.unarySpaces ) {
+            if( gap == 0 && t->type == TK_KEYWORD && t->kw != KW_SIZEOF
+                && kinds[ k + 1 ] != OP_NONE ) {
+                /* return-x */
+                addEdit( &edits, tokEnd( t ), 0, 1 );
+                }
+            if( kinds[ k ] == OP_UNARY_SPACE && gap == 0 ) {
+                addEdit( &edits, tokEnd( t ), 0, 1 );
+                }
+            else if( kinds[ k ] == OP_UNARY_HUG && gap > 0
+                     &&
+                     ( next->type != TK_PUNCT || isP( next, '(' )
+                       || kinds[ k + 1 ] == OP_UNARY_HUG ) ) {
+                addEdit( &edits, tokEnd( t ), gap, 0 );
+                }
+            }
+
         /* before the '{' of a block or body:  ) {   else {   struct Foo { */
         if( config.spaceBeforeBrace && gap == 0 && isP( next, '{' )
             &&
@@ -1917,7 +2242,7 @@ static int formatLineAt( TextBuffer  *inTB,
         }
     /* the context at the line's start doesn't change below */
     ind_getLineContext( inTB, inLine, &ctx );
-    spaceTokens( inTB, inLine );
+    spaceTokens( inTB, inLine, &ctx );
     added = splitLine( inTB, inLine, &ctx );
 
     /* for( ) headers that start on these lines, or that this line

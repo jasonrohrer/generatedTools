@@ -111,6 +111,15 @@ cedit tidies it:
 - spaces around assignments (`x=6;` becomes `x = 6;`), comparisons
   and `&&` / `||` (`x==5` becomes `x == 5`), and before a block's brace
   (`while(1){` becomes `while( 1 ) {`)
+- spaces around every other binary operator (`a+b*c` becomes
+  `a + b * c`, also `/ % & | ^ << >>` and `? :`), and after unary
+  `!`, `~` and `-` (`!x` becomes `! x`, `-y` becomes `- y`, but a
+  negative number stays `-1`).  The pointer operators hug their
+  target:  `int  *p  =  &x;`, `z = *p;`.  Whether a `*` is a
+  multiplication or a declaration's star is decided from context
+  (known type names, Capitalized names, statement starts, parameter
+  lists), and a line that starts with an operator continuing the line
+  above (`* ( 255 - a )`) is recognized as binary.
 - parameters get two spaces between type and name:  `int  inX`
 - arguments of calls and parameters of functions go one per line, lined
   up after the `(`;  the parameters become a table:
@@ -170,10 +179,32 @@ on its own line) lines the table up as if it were finished and puts the
 cursor where the name will go.
 
 Each rule can be turned off in `style.conf` (`assignSpaces`,
-`compareSpaces`, `splitBoolOps`, `spaceBeforeBrace`, `splitArgLists`, `splitForClauses`,
+`compareSpaces`, `operatorSpaces`, `unarySpaces`, `splitBoolOps`, `spaceBeforeBrace`, `splitArgLists`, `splitForClauses`,
 `alignForClauses`, `alignDeclarations`, `declTableBlankLines`, ...).
 `C-c C-f` formats a region / the current function, `M-x format-buffer`
 the whole file.
+
+
+## Plain text files
+
+Only C files (`.c` `.h` `.cpp` `.cc` `.hpp` ...) get syntax highlighting,
+auto-indent, electric characters, formatting and bracket matching.
+Anything else (`notes.txt`, `Makefile`, `README.md`) is edited as plain
+text:  Enter keeps the previous line's indentation, Tab is
+indent-relative like emacs text-mode (to the next word start on the line
+above, else the next 4-column stop), Tab on a region shifts its lines
+right, and Backspace deletes one character.  The status line shows
+`(Text)` instead of `(C/ah)`.
+
+
+## Long lines
+
+Lines longer than the window are shown wrapped onto extra rows, with a
+hooked arrow in the line number gutter of each continuation row (like
+the emacs fringe arrows).  The file itself is never changed.  The
+cursor, mouse clicks, selections, search highlights, paging and the
+scroll margin all work in screen rows;  `C-n` / `C-p` still move by
+whole lines.  `wrapLines = 0` in `style.conf` scrolls sideways instead.
 
 
 ## Configuration

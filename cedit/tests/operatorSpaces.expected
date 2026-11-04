@@ -1,0 +1,20 @@
+int f( Deck  *inD,
+       int    inX ) {
+    int   *p  =  &inX;
+    int    z  =  *p;
+    char   c  =  ! inX;
+    Deck  *e;
+    z = inX + 5 * z - z / 2 % 3;
+    z = ( z << 2 ) | ( z >> 1 ) & ~ inX ^ z;
+    z = inX ? 1 : -1;
+    z = - inX;
+    z = sizeof( int ) * 4;
+    bar( z * 2,
+         &z,
+         *p );
+    switch( z ) {
+        case -1:
+            break;
+        }
+    return - z;
+    }

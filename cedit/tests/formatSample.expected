@@ -6,12 +6,12 @@ static int foo( int    a,
     unsigned char  **ptr    =  NULL;
     int              counts[ 10 ];
 
-    x = (int)( a+b );
+    x = (int)( a + b );
     y = foo( a,
              b[ i ] );
     z = (Deck *) q;
     if( a ) {
-        bar( (char*)a,
+        bar( (char *)a,
              sizeof( int ) );
         }
     return 0;

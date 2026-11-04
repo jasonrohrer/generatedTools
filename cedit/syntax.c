@@ -676,6 +676,9 @@ void syn_scanTypedefs( TextBuffer  *inTB ) {
     int        prevWasStar   =  0;
     int        prevPrevParen =  0;
 
+    if( ! inTB->isC ) {
+        return;
+        }
     ensureBuiltins();
     syn_initTokenList( &tl );
 
@@ -883,7 +886,7 @@ void syn_highlightLine( TextBuffer     *inTB,
         }
 
     memset( outClasses, HL_TEXT, (size_t)l->len );
-    if( l->len == 0 ) {
+    if( l->len == 0 || ! inTB->isC ) {
         return;
         }
 

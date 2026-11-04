@@ -66,6 +66,7 @@ enum UIColor {
     UI_LIST_SELECTED,
     UI_SCROLLBAR_BG,
     UI_SCROLLBAR_THUMB,
+    UI_WRAP_MARK,
     UI_COUNT
     };
 
@@ -85,6 +86,7 @@ typedef struct Config {
         int    highlightCurrentColumn;
         int    fillColumn;
         int    showRuler;
+        int    wrapLines;
         int    showScrollBar;
         int    showTrailingSpace;
         int    smoothScroll;
@@ -127,6 +129,8 @@ typedef struct Config {
         int    declTableBlankLines;
         int    assignSpaces;
         int    compareSpaces;
+        int    operatorSpaces;
+        int    unarySpaces;
         int    splitBoolOps;
         int    spaceBeforeBrace;
         int    splitArgLists;

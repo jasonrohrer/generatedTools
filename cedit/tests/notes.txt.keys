@@ -1,0 +1,9 @@
+# a .txt file is plain text:  no auto-indent, no electric { } ; or
+# formatting, Enter keeps the previous line's indentation, Tab is
+# indent-relative
+"Some notes: x=5;\n"
+"    -- indented item {\n"
+"wrapped text (don't touch) x+1\n"
+"\n"
+"}\n"
+TAB "end"

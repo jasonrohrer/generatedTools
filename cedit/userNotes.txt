@@ -3,36 +3,7 @@ Excellent work!
 
 A few things:
 
-    
-    -- The c89 formatting and syntax highlighting should only happen when you
-    have .c, .cpp, or .h files open.   Other files should be opened like
-    normal text files.  I tried to edit these notes, and there's all kinds
-    of auto-indenting happening, etc.
 
-    
-    --Long lines that go past the right limit line should be displayed wrapped
-    with a little "wrap" symbol, like what emacs does
-    ( but they should not be actually force-wrapped in the underlying
-      text file ).
-
-    
-    --All operators (like +, -, *, &, etc.) should have spaces around them
-    like this:
-
-    x + 5;
-    y - 2;
-
-The only exceptions are the pointer operator, which should hug its target
-    like this:
-
-    int  *x  =  &y;
-
-And also the de-refernece * operator:
-
-    int  z  =  *x;
-
-But even the unary ! operator should have space:
-
-    char  x  =  ! y;
+--In regular text files, you are currently auto-replacing tabs with spaces.  This is a problem in Makefiles and other text documents that require tab characters.  So in non-C files, just leave tabs alone, and let the tab key place a tab.  Emacs works this way. 
 
 

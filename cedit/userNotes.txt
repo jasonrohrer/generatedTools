@@ -1,2 +1,31 @@
 Excellent work!
 
+
+--There should be two spaces between the word "static" and the type in a variable declaration, either in global or block scope, like this:
+
+static  int       myVar  =  5;
+static  int       x;
+static  int       y      =  6;
+static  MyStruct  s;
+
+
+--const, unsigned, etc. should stick to the type, though, without double-spaces:
+
+
+static  unsigned int  x  =  5;
+static  char          c  =  'A';
+static  const char   *s  =  "myString";
+
+
+--And a new thing we haven't talked about before, and the above examples
+  don't actually do correctly.   The initialization values, if any, should
+  be right-aligned to their final ;   This puts all the values in a neat
+  column, even if the numbers etc. have different numbers of digits:
+
+static  int            x  =        5000;
+static  int            y  =           0;
+static  int            z  =       -5000;
+static  unsigned int   q  =         -30;
+static  char           c  =         'A';
+static  int            w;
+static  const char    *s  =  "myString";

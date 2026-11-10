@@ -2317,7 +2317,8 @@ static void cmdRedo( void ) {
 
 /* ------------------------------------------------------------------
    Dabbrev:  expand the word before the cursor from words found
-   earlier in this buffer, then later, then in other buffers.
+   in this buffer, nearest first (searching up and down in parallel,
+   ties go to the match above), then in other buffers.
    Repeating M-/ cycles.
    ------------------------------------------------------------------ */
 
@@ -2437,19 +2438,20 @@ static void dabCollect( void ) {
     int          b;
     int          max  =  200;
 
-    /* backward from cursor */
+    /* outward from the cursor in both directions at once, so matches
+       come nearest first;  at equal distance the one above wins */
     dabScanLine( tb, dabLine, 1, dabStartCol );
-    for( i = dabLine - 1;
-         i >= 0 && dabNum < max;
-         i -- ) {
-        dabScanLine( tb, i, 1, -1 );
-        }
-    /* forward */
     dabScanLine( tb, dabLine, 0, dabStartCol + (int)strlen( dabPrefix ) );
-    for( i = dabLine + 1;
-         i < tb->numLines && dabNum < max;
+    for( i = 1;
+         ( dabLine - i >= 0 || dabLine + i < tb->numLines )
+         && dabNum < max;
          i ++ ) {
-        dabScanLine( tb, i, 0, -1 );
+        if( dabLine - i >= 0 ) {
+            dabScanLine( tb, dabLine - i, 1, -1 );
+            }
+        if( dabLine + i < tb->numLines ) {
+            dabScanLine( tb, dabLine + i, 0, -1 );
+            }
         }
     /* other buffers, most recently used first */
     for( b = 1;

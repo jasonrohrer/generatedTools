@@ -1,0 +1,3 @@
+# dabbrev searches up and down in parallel, nearest first (ties: above)
+# 1st M-/ = myEar, 2nd = myFinger, 3rd = myDog
+M-g g "7" RET C-e M-/ M-/ M-/

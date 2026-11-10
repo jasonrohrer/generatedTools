@@ -2,26 +2,21 @@ Excellent work!
 
 
 
---If some variables are mixed into an init list without inits, spacing should
-take them into account.
+--When doing auto-complete with the M-/ command, it currently only searches backwards and then eventually wraps around.  But if the thing you're looking to auto complete is just a few lines down (and visible on the screen currently), it doesn't find it until the full wrap-around happens.  Emacs works like this too, but it can be a pain sometimes.  Fix it to search in both directions in parallel, and order the matches based on distance.
 
-Old:
+For example, in emacs and cedit currently, if you auto-complete the lone "my" there, it goes through myEar, myDog, myCook, myBanana, myApple, and then at the very end myFinger.  Even though myFinger is closer than anything except myEar.
 
-    int  x;
-    int  y;
-    int  i  =  0;
-    int  yPos;
-    int  spriteA;
+It should find myFinger second, after finding myEar (search backwards and forwards in paralle, and if things are equidistant, then break ties by showing the backwards match first).
 
 
-New/correct:
+myApple
+myBanana
+myCook
+myDog
+myEar
 
-    int  x;
-    int  y;
-    int  i         =  0;
-    int  yPos;
-    int  spriteA;
+my
 
-I.e, there should be room for two spaces AFTER the uninitialized variable's ; and the start of the = column.
+myFinger
 
 

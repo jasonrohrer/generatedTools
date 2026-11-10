@@ -984,6 +984,26 @@ static int alignRows( TextBuffer  *inTB,
             }
         }
 
+    /* uninitialized rows ("int  spriteA;") need room for their ';' plus
+       the usual gap before the '=' column of initialized rows.  Arrays
+       ("int  counts[ 10 ];") don't count:  Jason's code doesn't. */
+    for( i = 0;
+         i < inNumRows && eqCol >= 0;
+         i ++ ) {
+        DeclRow  *r  =  &( inRows[ i ] );
+
+        if( r->eqStart < 0 && r->afterName >= 0
+            && memchr( inTB->lines[ r->line ].text + r->nameStart, '[',
+                       (size_t)( r->nameEnd - r->nameStart ) ) == NULL ) {
+            int  c  =  nameCol + ( r->nameEnd - r->nameStart ) + 1
+                       + inEqSpaces;
+
+            if( c > eqCol ) {
+                eqCol = c;
+                }
+            }
+        }
+
     for( i = 0;
          i < inNumRows;
          i ++ ) {

@@ -1,0 +1,8 @@
+"void f(void){"
+"int x;"
+"int y;"
+"int i=0;"
+"int yPos;"
+"int spriteA;"
+"int sprites[ 100 ];"
+"}"

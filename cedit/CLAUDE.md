@@ -150,7 +150,8 @@ sub-column of the type (`storageEnd`/`restStart`, gap
 *literal* one-line initializers (number, `-`number, char, string;
 `valueEnd`/`semiStart`) are right-aligned to a common `;` column
 (`declAlignValuesRight`) — Jason's real code right-aligns `0`/`-1` but
-leaves `p & MASK` / calls left-aligned.  `FMT_PARTIAL` (Tab) lets the cursor line
+leaves `p & MASK` / calls left-aligned.  Uninitialized rows (`int  spriteA;`)
+push the `=` column out to their `;` + `declEqualsSpaces` (arrays don't).  `FMT_PARTIAL` (Tab) lets the cursor line
 be an unfinished row (`float `, `char *`) whose name goes at line end.
 
 **Window width.**  `windowCols` = text columns exactly (gutter is >= 4

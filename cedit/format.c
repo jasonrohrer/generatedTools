@@ -527,6 +527,10 @@ typedef struct DeclRow {
         int  lastLine;
         int  typeStart;
         int  typeEnd;
+        /* end of a leading storage class (static extern register auto)
+           and the start of the type words after it, or -1 */
+        int  storageEnd;
+        int  restStart;
         int  numStars;
         int  nameStart;
         /* end of name including any [ ] dimensions */
@@ -534,11 +538,56 @@ typedef struct DeclRow {
         /* column of '=' or -1 */
         int  eqStart;
         int  valueStart;
+        /* end of a one-line literal initializer ( 5000  -1  'A'  "s" )
+           and the column of its ';', or -1.  Only literals are right-
+           aligned:  expressions stay left-aligned, as in Jason's code */
+        int  valueEnd;
+        int  semiStart;
         /* column of the token after the name (';' ',' ')' '=') */
         int  afterName;
         /* 1 if this is an unfinished row with no name yet (Tab) */
         int  partial;
     } DeclRow;
+
+
+
+static int isStorageKeyword( Token  *inT ) {
+    return inT->type == TK_KEYWORD
+           && ( inT->kw == KW_STATIC || inT->kw == KW_EXTERN
+                || inT->kw == KW_REGISTER || inT->kw == KW_AUTO );
+    }
+
+
+
+/* fills in outRow's storage class span for type tokens
+   inToks[ inFrom .. inLast ] and the rest of a new row's fields */
+static void initRow( Token    *inToks,
+                     int       inFrom,
+                     int       inLast,
+                     DeclRow  *outRow ) {
+    int  k  =  inFrom;
+
+    while( k < inLast && isStorageKeyword( &( inToks[ k ] ) ) ) {
+        k ++;
+        }
+    if( k > inFrom ) {
+        outRow->storageEnd = tokEnd( &( inToks[ k - 1 ] ) );
+        outRow->restStart = inToks[ k ].start;
+        }
+    else {
+        outRow->storageEnd = -1;
+        outRow->restStart = -1;
+        }
+    outRow->typeStart = inToks[ inFrom ].start;
+    outRow->typeEnd = tokEnd( &( inToks[ inLast ] ) );
+    outRow->eqStart = -1;
+    outRow->valueStart = -1;
+    outRow->valueEnd = -1;
+    outRow->semiStart = -1;
+    outRow->afterName = -1;
+    outRow->lastLine = -1;
+    outRow->partial = 0;
+    }
 
 
 
@@ -607,16 +656,10 @@ static int parseDeclSpan( const char  *inText,
     /* "x y" where neither is a type keyword and there are 3+ idents is
        unusual;  but "unsigned long int x" is fine.  Accept. */
 
-    outRow->typeStart = inToks[ inFrom ].start;
-    outRow->typeEnd = tokEnd( &( inToks[ k ] ) );
+    initRow( inToks, inFrom, k, outRow );
     outRow->numStars = nameTok - firstStar;
     outRow->nameStart = inToks[ nameTok ].start;
     outRow->nameEnd = tokEnd( &( inToks[ inTo - 1 ] ) );
-    outRow->eqStart = -1;
-    outRow->valueStart = -1;
-    outRow->afterName = -1;
-    outRow->lastLine = -1;
-    outRow->partial = 0;
     return 1;
     }
 
@@ -668,15 +711,10 @@ static int parsePartialSpan( const char  *inText,
         && tokEnd( &( inToks[ k ] ) ) == inLineLen ) {
         return 0;
         }
-    outRow->typeStart = first->start;
-    outRow->typeEnd = tokEnd( &( inToks[ k ] ) );
+    initRow( inToks, inFrom, k, outRow );
     outRow->numStars = stars;
     outRow->nameStart = inLineLen;
     outRow->nameEnd = inLineLen;
-    outRow->eqStart = -1;
-    outRow->valueStart = -1;
-    outRow->afterName = -1;
-    outRow->lastLine = -1;
     outRow->partial = 1;
     return 1;
     }
@@ -780,6 +818,19 @@ static int parseDeclLine( TextBuffer  *inTB,
     outRow->eqStart = toks[ stop ].start;
     outRow->valueStart = toks[ stop + 1 ].start;
     if( endsLine ) {
+        int     numV  =  n - 1 - ( stop + 1 );
+        Token  *v     =  &( toks[ n - 2 ] );
+
+        if( ( numV == 1
+              && ( v->type == TK_NUMBER || v->type == TK_CHAR
+                   || v->type == TK_STRING ) )
+            ||
+            ( numV == 2 && v->type == TK_NUMBER
+              && ( isP( &( toks[ stop + 1 ] ), '-' )
+                   || isP( &( toks[ stop + 1 ] ), '+' ) ) ) ) {
+            outRow->valueEnd = tokEnd( v );
+            outRow->semiStart = toks[ n - 1 ].start;
+            }
         return depth == 0;
         }
     if( depth <= 0 ) {
@@ -837,6 +888,52 @@ int fmt_isDeclarationLine( TextBuffer  *inTB,
 
 
 
+/* 1 if inLine's text in [ inFrom, inTo ) is only spaces */
+static int onlySpaces( TextBuffer  *inTB,
+                       int          inLine,
+                       int          inFrom,
+                       int          inTo ) {
+    const char  *t  =  inTB->lines[ inLine ].text;
+    int          i;
+
+    for( i = inFrom;
+         i < inTo;
+         i ++ ) {
+        if( t[ i ] != ' ' ) {
+            return 0;
+            }
+        }
+    return 1;
+    }
+
+
+
+/* how much the gap after a row's storage class grows ( static int  ->
+   static  int ) */
+static int storageDelta( TextBuffer  *inTB,
+                         DeclRow     *inRow ) {
+    if( inRow->storageEnd < 0 || config.declStorageSpaces <= 0
+        || ! onlySpaces( inTB, inRow->line, inRow->storageEnd,
+                         inRow->restStart ) ) {
+        return 0;
+        }
+    return config.declStorageSpaces - ( inRow->restStart - inRow->storageEnd );
+    }
+
+
+
+/* 1 if a row's initializer can be right-aligned:  a one-line literal,
+   nothing but spaces before its ';' */
+static int valueAlignable( TextBuffer  *inTB,
+                           DeclRow     *inRow ) {
+    return inRow->eqStart >= 0 && inRow->semiStart >= 0
+           && inRow->lastLine == inRow->line
+           && onlySpaces( inTB, inRow->line, inRow->valueEnd,
+                          inRow->semiStart );
+    }
+
+
+
 /* lines up rows (each starting its own line;  all rows of a table share
    the same typeStart).  inEqSpaces < 0 means these are parameters (no
    initializers and no ';' to tighten). */
@@ -850,6 +947,7 @@ static int alignRows( TextBuffer  *inTB,
     int              starMax  =  0;
     int              nameCol;
     int              eqCol    =  -1;
+    int              valW     =  0;
     int              i;
     int              changed  =  0;
 
@@ -857,9 +955,10 @@ static int alignRows( TextBuffer  *inTB,
          i < inNumRows;
          i ++ ) {
         DeclRow  *r  =  &( inRows[ i ] );
+        int       w  =  r->typeEnd - r->typeStart + storageDelta( inTB, r );
 
-        if( r->typeEnd - r->typeStart > typeW ) {
-            typeW = r->typeEnd - r->typeStart;
+        if( w > typeW ) {
+            typeW = w;
             }
         if( r->numStars > starMax ) {
             starMax = r->numStars;
@@ -878,6 +977,10 @@ static int alignRows( TextBuffer  *inTB,
             if( c > eqCol ) {
                 eqCol = c;
                 }
+            if( config.declAlignValuesRight && valueAlignable( inTB, r )
+                && r->valueEnd - r->valueStart > valW ) {
+                valW = r->valueEnd - r->valueStart;
+                }
             }
         }
 
@@ -887,7 +990,9 @@ static int alignRows( TextBuffer  *inTB,
         DeclRow  *r           =  &( inRows[ i ] );
         Line     *l           =  &( inTB->lines[ r->line ] );
         int       newNameEnd  =  nameCol + ( r->nameEnd - r->nameStart );
-        int       wantGap     =  nameCol - r->numStars - r->typeEnd;
+        int       sDelta      =  storageDelta( inTB, r );
+        int       wantGap     =  nameCol - r->numStars
+                                 - ( r->typeEnd + sDelta );
         int       spanOK      =  1;
         int       j;
 
@@ -907,14 +1012,28 @@ static int alignRows( TextBuffer  *inTB,
 
         if( inEqSpaces >= 0 ) {
             if( r->eqStart >= 0 ) {
+                int  pad  =  0;
+
+                if( config.declAlignValuesRight
+                    && valueAlignable( inTB, r ) ) {
+                    pad = valW - ( r->valueEnd - r->valueStart );
+                    addEdit( &edits, r->valueEnd,
+                             r->semiStart - r->valueEnd, 0 );
+                    }
                 addEdit( &edits, r->eqStart + 1,
-                         r->valueStart - ( r->eqStart + 1 ), inEqSpaces );
+                         r->valueStart - ( r->eqStart + 1 ),
+                         inEqSpaces + pad );
                 addEdit( &edits, r->nameEnd, r->eqStart - r->nameEnd,
                          eqCol - newNameEnd );
                 }
             else if( r->afterName >= 0 ) {
                 addEdit( &edits, r->nameEnd, r->afterName - r->nameEnd, 0 );
                 }
+            }
+
+        if( sDelta != 0 ) {
+            addEdit( &edits, r->storageEnd, r->restStart - r->storageEnd,
+                     config.declStorageSpaces );
             }
 
         /* type-to-name span:  already right? */

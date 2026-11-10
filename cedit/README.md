@@ -178,13 +178,28 @@ int myFunction( int        inArgA,
                                                  inEndX );
 ```
 
+A storage class gets two spaces after it while qualifiers stay with
+the type, and literal initializers (numbers, chars, strings) are
+right-aligned so their `;`s line up;  other initializers stay
+left-aligned:
+
+```c
+static  int            x  =        5000;
+static  int            z  =       -5000;
+static  char           c  =         'A';
+static  int            w;
+static  const char    *s  =  "myString";
+static  int            n  =  countThings( list );
+```
+
 Tab on an unfinished declaration (`float ` or `char *`, or a parameter
 on its own line) lines the table up as if it were finished and puts the
 cursor where the name will go.
 
 Each rule can be turned off in `style.conf` (`assignSpaces`,
 `compareSpaces`, `operatorSpaces`, `unarySpaces`, `splitBoolOps`, `spaceBeforeBrace`, `splitArgLists`, `splitForClauses`,
-`alignForClauses`, `alignDeclarations`, `declTableBlankLines`, ...).
+`alignForClauses`, `alignDeclarations`, `declTableBlankLines`,
+`declStorageSpaces`, `declAlignValuesRight`, ...).
 `C-c C-f` formats a region / the current function, `M-x format-buffer`
 the whole file.
 

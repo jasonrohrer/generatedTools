@@ -267,6 +267,16 @@ static ConfigEntry  entries[]  =  {
       "minimum spaces between type column and name column" },
     { "declEqualsSpaces", CT_INT, CF_STYLE, &config.declEqualsSpaces, 0,
       "spaces on each side of = in aligned declarations" },
+    { "declStorageSpaces", CT_INT, CF_STYLE, &config.declStorageSpaces, 0,
+      "spaces after a storage class (static extern register auto) in a\n"
+      "variable declaration;  qualifiers like const and unsigned stay\n"
+      "with the type (0 = leave alone):   static  const char  *s;" },
+    { "declAlignValuesRight", CT_INT, CF_STYLE, &config.declAlignValuesRight,
+      0, "1 = right-align the initializers of a declaration table, so\n"
+      "their ;s line up:\n"
+      "   int    x  =  5000;\n"
+      "   int    y  =    -1;\n"
+      "   char  *s  =  \"hi\";" },
     { "declTableBlankLines", CT_INT, CF_STYLE, &config.declTableBlankLines,
       0, "a declaration table continues across this many blank lines\n"
       "(1:  one blank line groups declarations within a table, two\n"
@@ -454,6 +464,8 @@ static void setDefaults( void ) {
     config.alignDeclarations = 1;
     config.declTypeSpaces = 2;
     config.declEqualsSpaces = 2;
+    config.declStorageSpaces = 2;
+    config.declAlignValuesRight = 1;
     config.declTableBlankLines = 1;
     config.assignSpaces = 1;
     config.compareSpaces = 1;

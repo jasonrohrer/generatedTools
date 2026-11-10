@@ -144,7 +144,13 @@ hand (`applyEditsCur`) since a deleted gap would collapse a marker.
 Declaration rows may span lines (initializer call continued:
 `DeclRow.lastLine`;  continuation lines are re-indented after the row
 moves) and tables span `declTableBlankLines` (1) blank lines — both are
-how Jason's real code looks.  `FMT_PARTIAL` (Tab) lets the cursor line
+how Jason's real code looks.  A leading storage class (`static extern register auto`) is a
+sub-column of the type (`storageEnd`/`restStart`, gap
+`declStorageSpaces`;  `const`/`unsigned` stay with the type).  Only
+*literal* one-line initializers (number, `-`number, char, string;
+`valueEnd`/`semiStart`) are right-aligned to a common `;` column
+(`declAlignValuesRight`) — Jason's real code right-aligns `0`/`-1` but
+leaves `p & MASK` / calls left-aligned.  `FMT_PARTIAL` (Tab) lets the cursor line
 be an unfinished row (`float `, `char *`) whose name goes at line end.
 
 **Window width.**  `windowCols` = text columns exactly (gutter is >= 4

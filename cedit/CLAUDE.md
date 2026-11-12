@@ -49,7 +49,8 @@ are `"typed text"` (with `\n` = Enter) and keys like `C-x`, `M-/`, `RET`,
 To test the indenter against real hand-indented code, Jason's
 Chessamphetamine source is at `../caSim/Chessamphetamine/` (maxigin.h,
 chess.h, game.c ...):  `./cedit --check-indent ../caSim/Chessamphetamine/*.h`
-(~61k lines;  ~267 differ, all hand alignments — keep it that way).
+(~57k lines;  488 differ as of Nov 2026, all hand alignments — keep it
+that way).
 
 ## File map
 
@@ -118,7 +119,9 @@ first token of the target line.  `ind_indentRegion` carries ONE parse
 forward line by line (feeding each line after re-indenting it) — that's
 why whole-file reindent is ~50 ms.  Comment bodies are never re-aligned
 by region indent;  they shift rigidly with their opener line
-(`ind_commentIndent` is only for Tab/Enter).  Behaviors were tuned
+(`ind_commentIndent` is only for Tab/Enter, and electric `*` / `*/` at
+line start;  lone-`/*` bodies go `commentBodyIndent` in, follow a deeper
+hand-indented previous line, never get pulled left).  Behaviors were tuned
 against Jason's real code — data beats intuition here (e.g. args after a
 line-ending `x = foo(` use line indent +4, NOT the right-hand side, 18
 vs 5 in his code;  but plain continuations of `x = a` align after `=`).

@@ -32,8 +32,10 @@ int ind_computeIndent( TextBuffer  *inTB,
                        int          inLine );
 
 
-/* "smart" indent for a line inside a block comment:  a leading * lines up
-   under the opener's *, text lines up with text after the opener.
+/* "smart" indent for a line inside a block comment:  a leading star-slash lines
+   up with the opener, a leading * under the opener's *, text lines up with
+   text after the opener, or (opener alone on its line) goes
+   commentBodyIndent in, following a hand-indented previous line.
    -1 if there's no good answer. */
 int ind_commentIndent( TextBuffer  *inTB,
                        int          inLine );

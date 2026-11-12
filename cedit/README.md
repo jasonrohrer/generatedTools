@@ -99,6 +99,12 @@ continued assignments line up after the `=`, `else` finds its `if`,
 brace lists and enums, `do { } while( x );`, `extern "C" {`, block
 comments, preprocessor lines at column 0, multi-line array dimensions.
 
+Block comments whose `/*` stands alone get their text indented 2 spaces
+(`commentBodyIndent`);  a line you indent deeper by hand (a quote) is
+kept, and following lines stay with it until a blank line.  Typing `*/`
+at the start of a line pulls it back under the `/*` (under the stars of
+a ` * ` style comment), at any nesting depth.
+
 Tested against ~61,000 lines of hand-indented Ratliff-style code:  it
 agrees on 99.56% of lines, and the rest are hand alignments.
 

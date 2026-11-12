@@ -2051,6 +2051,18 @@ static void electric( char  inC ) {
         return;
         }
     getCur( &l, &c );
+    if( config.electricChars
+        && ( syn_getLineState( B(), l ) & LEX_IN_COMMENT )
+        &&
+        ( ( inC == '*' && c - 1 == tb_lineIndent( B(), l ) )
+          ||
+          ( inC == '/' && c >= 2 && c - 2 == tb_lineIndent( B(), l )
+            && lineAt( l )->text[ c - 2 ] == '*' ) ) ) {
+        /* a comment line starting with a star (under the opener's star)
+           or with the closing star-slash (under the opener) */
+        reindentLine( l );
+        return;
+        }
     inCode = ( syn_getLineState( B(), l ) == 0
                && tokenTypeAt( B(), l, c - 1 ) == 0
                && tokenTypeAt( B(), l, c ) == 0 );

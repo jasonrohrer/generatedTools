@@ -684,26 +684,21 @@ int ind_commentIndent( TextBuffer  *inTB,
     if( indent + 1 < l->len && l->text[ indent ] == '*'
         &&
         l->text[ indent + 1 ] == '/' ) {
-        /* closing a comment whose opener stands alone:  line up with the
-           opener.  Otherwise leave it be. */
-        Line  *o  =  &( inTB->lines[ i ] );
-        int    j  =  openCol + 2;
+        /* closing the comment:  line up with its opener (under the
+           stars of a star-style comment) */
+        if( inLine - 1 > i ) {
+            Line  *pl    =  &( inTB->lines[ inLine - 1 ] );
+            int    pInd  =  tb_lineIndent( inTB, inLine - 1 );
 
-        while( j < o->len && o->text[ j ] == ' ' ) {
-            j ++;
+            if( pInd < pl->len && pl->text[ pInd ] == '*' ) {
+                return openCol + 1;
+                }
             }
-        if( j >= o->len ) {
-            return openCol;
-            }
-        return -1;
+        return openCol;
         }
     if( indent < l->len && l->text[ indent ] == '*' ) {
         return openCol + 1;
         }
-    if( ! config.alignComments ) {
-        return -1;
-        }
-    /* text after the opening slash-star? */
     {
         Line  *o  =  &( inTB->lines[ i ] );
         int    j  =  openCol + 2;
@@ -712,10 +707,43 @@ int ind_commentIndent( TextBuffer  *inTB,
             j ++;
             }
         if( j < o->len ) {
+            /* text after the opening slash-star */
+            if( ! config.alignComments ) {
+                return -1;
+                }
             return j;
             }
         }
-    return -1;
+    /* the opener stands alone:  body text goes commentBodyIndent in,
+       a line right after a hand-indented one follows it, and a line
+       indented deeper by hand is kept */
+    {
+        int  base    =  openCol + config.commentBodyIndent;
+        int  target  =  base;
+        int  blank   =  ( indent >= l->len );
+
+        if( base < 0 ) {
+            base = 0;
+            target = 0;
+            }
+        if( inLine - 1 > i && ! tb_lineIsBlank( inTB, inLine - 1 ) ) {
+            Line  *pl    =  &( inTB->lines[ inLine - 1 ] );
+            int    pInd  =  tb_lineIndent( inTB, inLine - 1 );
+
+            if( pInd < pl->len && pl->text[ pInd ] == '*' ) {
+                /* star-style comment:  the next line goes under the
+                   stars too */
+                target = openCol + 1;
+                }
+            else if( pInd > target ) {
+                target = pInd;
+                }
+            }
+        if( ! blank && indent > target ) {
+            return indent;
+            }
+        return target;
+        }
     }
 
 

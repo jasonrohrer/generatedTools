@@ -224,6 +224,11 @@ static ConfigEntry  entries[]  =  {
       "0 = with the line that has the (" },
     { "alignComments", CT_INT, CF_STYLE, &config.alignComments, 0,
       "1 = continuation lines of a /* comment line up with its text" },
+    { "commentBodyIndent", CT_INT, CF_STYLE, &config.commentBodyIndent, 0,
+      "indent of the text of a block comment whose opening slash-star\n"
+      "stands alone on its line (relative to the slash-star).  A line\n"
+      "you indent deeper by hand is kept, and the next line follows it\n"
+      "until a blank line" },
 
 
     { "Electric keys", CT_HEADER, CF_STYLE, NULL, 0, "" },
@@ -448,6 +453,7 @@ static void setDefaults( void ) {
     config.argIndent = 4;
     config.alignCloseParen = 1;
     config.alignComments = 1;
+    config.commentBodyIndent = 2;
 
     config.autoNewline = 1;
     config.hungryDelete = 1;

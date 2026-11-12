@@ -108,6 +108,7 @@ typedef struct Config {
         int    argIndent;
         int    alignCloseParen;
         int    alignComments;
+        int    commentBodyIndent;
 
         /* --- electric behavior --- */
         int    autoNewline;

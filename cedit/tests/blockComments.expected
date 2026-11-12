@@ -1,0 +1,30 @@
+/*
+  Test comment.
+  This is a test.
+
+  This is another test.
+*/
+void f( void ) {
+    /*
+      Here is a quote:
+
+          Quote first line
+          Quote second line
+
+      Text after the quote.
+    */
+    x = 1;
+
+    /*
+     * star a
+     * star b
+     */
+    /* text after
+       more text
+    */
+    if( x ) {
+        /*
+          deep
+        */
+        }
+    }

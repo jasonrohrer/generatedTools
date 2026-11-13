@@ -1,0 +1,25 @@
+In this folder, you're going to make a brand new game.  The game you make is called Path Master.  It's a hyper-addictive single-player roguelike auto-walker and auto-figher, where the player is in control of the hero's build only, but not the execution of the battle. 
+
+
+You may find this folder empty, in which case, you're just getting started.  On the other hand, you may find that someone before you has already made some progress.  If that's the case, pick up where they left off, analyze the current situation, and try to make some improvements.
+
+Also, as users test your game, they will leave notes about any issues or problems in userNotes.txt  Please study that file and fix any reported issues.
+
+The program will be written in pure C89 code, to be compiled with GCC.  The only linked library dependencies will be SDL 2 and OpenGL for creating a window, getting user controls, outputting sound, and doing accellerated graphics.
+
+For graphics, you will generate your own pixel art assets from scratch.  Same for pixel fonts---make them yourself.  For now, the game is in English only, but please build in support for Unicode to make translations easier in the future.
+
+The game can have a native pixel resolution of 640x480, and it should be blown up in integer multiples (with sharp pixels) to fill a window that comfortably fits on the users current screen resolution, or alternately toggles into full screne mode (black bars on the edges are fine... keep the pixels sharp, and only use integer-multiples for scaling).
+
+For now, the game can be controlled with mouse only.  No keyboard commands.
+
+As the hero walks along the linear path and encounters and fights monsters, items will drop, and the player will assemble those items into a build.
+
+The hero is a wizard with a magic wand.  The wand has some kind of web or matrix-like structure that the player can plug gems into, and the gems change the behavior of the wand.  Neighboring gems in the web might form synergies and grant additional powers and changes to the wand.
+
+
+
+You can launch your game and grab screen shots of it with scrot to see if it looks correct.  I think there's some way you can do this in some kind of x headless display without making a window appear on my screen and interfering with other work that I'm doing on this computer.  Not sure if there's a way for you to interact with the game directly, and observe it in realtime.  Do whatever you need to do to test the game.
+
+After you work on this program, please commit your changes to the local git repo with a detailed commit message describing what you did.
+

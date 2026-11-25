@@ -1,0 +1,5 @@
+# M-/ completes words from the buffer inside both query-replace
+# prompts;  a second M-/ cycles to the next candidate
+# (the target prompt starts out holding the last target:  C-a C-k)
+M-g g "8" RET M-< M-% "tot" M-/ RET "inC" M-/ "er" RET "!"
+M-< M-% C-a C-k "comp" M-/ RET "i" M-/ M-/ "X" RET "!"

@@ -1,0 +1,5 @@
+# word motion / word kill stop at underscores, like other punctuation
+"NUM_SHOP_SLOTS" C-BS RET
+"NUM_SHOP_SLOTS" C-Left C-Left "x" C-e RET
+"NUM_SHOP_SLOTS" C-a C-Right "y" C-DEL C-e RET
+"foo-bar_baz" M-BS M-BS

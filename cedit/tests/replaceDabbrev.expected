@@ -1,0 +1,11 @@
+static int inCountX( int  inCount ) {
+    int  inCounter  =  0;
+    int  i;
+
+    for( i = 0;
+         i < inCount;
+         i ++ ) {
+        inCounter += i;
+        }
+    return inCounter;
+    }

@@ -1,0 +1,8 @@
+# Up / Down cycle through earlier targets and replacements
+M-% "totalValue" RET "sum" RET "q"
+M-< M-% C-a C-k "inCount" RET "n" RET "q"
+# target:  Up from the prefilled "inCount" -> "totalValue"
+# replacement:  Up Up -> "sum", Down -> "n", edited to "n2"
+M-< M-% Up RET Up Up Down "2" RET "!"
+# target:  Up -> "inCount";  replacement:  n2, n, sum -> "sumCount"
+M-< M-% Up RET Up Up Up "Count" RET "!"

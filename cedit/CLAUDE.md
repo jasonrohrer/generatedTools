@@ -165,6 +165,22 @@ advance is known and main() resizes the window right after.
 drops the SDL_TEXTINPUT for that keypress (otherwise `M-g g` types a `g`
 into the goto prompt).  Printable keys return 0 and arrive as text.
 
+**Words.**  Word motion / word kill (`forwardWordPos` /
+`backwardWordPos`, `inSymbol` 0) stop at `_` like any punctuation
+(Jason's request:  C-Backspace on `NUM_SHOP_SLOTS` eats `SLOTS`);  sexp
+motion passes `inSymbol` 1 and travels whole identifiers.  Dabbrev,
+isearch C-w and word-at-point still use whole identifiers.
+
+**Minibuffer extras.**  `mbDabbrev` (M-/ in the free-text prompts:
+replace from/to, compile, debug command) reuses the dabbrev candidate
+list, searching outward from the buffer's cursor (`dabCollect( 1 )`);
+`mbDabActive` = "last minibuffer key was M-/", cleared by any other key
+or typed text.  Query replace keeps two `History` lists (targets,
+replacements;  newest first, deduped, session only);  Up / Down / M-p /
+M-n go through `histMove`, the half-typed text is kept in `histDraft`.
+The target prompt starts prefilled with the last target, so the first
+Up skips that entry.
+
 **Selections.**  `updatePrimarySelection` (top of `ed_tick`) offers the
 active region as the X PRIMARY selection whenever its bounds / the
 buffer's `changeCount` change;  middle click = `ed_mousePastePrimary`.

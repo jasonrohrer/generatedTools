@@ -37,8 +37,9 @@ Emacs-style.  Press **F1** inside cedit for the full list (also
 | `C-Tab`, `C-S-Tab`, `M-1`..`M-9` | next / previous / numbered buffer |
 | `Tab` | re-indent line (or region) |
 | `C-M-\` | re-indent region, or the current function |
-| `M-/` | complete the word from this and other buffers (repeat cycles) |
-| `C-s`, `C-r`, `M-%` | incremental search, query replace |
+| `M-/` | complete the word from this and other buffers (repeat cycles;  also works while typing in the `M-%` prompts) |
+| `C-s`, `C-r`, `M-%` | incremental search, query replace (Up / Down recall earlier targets and replacements) |
+| `C-Left` / `C-Right`, `C-Backspace` / `C-Delete` | move / kill by word;  `_` breaks words, so `NUM_SHOP_SLOTS` is three |
 | `C-c C-c`, `F5` | compile (editing the command), recompile |
 | `F4`, `C-x ``, `M-g n` / `S-F4`, `M-g p` | next / previous error |
 | `C-c C-d`, `F9` | launch the debugger at this file:line |

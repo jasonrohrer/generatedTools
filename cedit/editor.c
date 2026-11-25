@@ -682,8 +682,22 @@ static int isWordChar( char  inC ) {
 
 
 
+/* what word motion / word kill travels over.  A "word" stops at
+   underscores (NUM_SHOP_SLOTS is three words, like emacs);  a symbol
+   (sexp motion) is the whole identifier */
+static int isMoveChar( char  inC,
+                       int   inSymbol ) {
+    if( inC == '_' && ! inSymbol ) {
+        return 0;
+        }
+    return isWordChar( inC );
+    }
+
+
+
 static void forwardWordPos( int  *ioLine,
-                            int  *ioCol ) {
+                            int  *ioCol,
+                            int   inSymbol ) {
     int  l  =  *ioLine;
     int  c  =  *ioCol;
 
@@ -691,7 +705,7 @@ static void forwardWordPos( int  *ioLine,
     while( 1 ) {
         Line  *ln  =  lineAt( l );
 
-        while( c < ln->len && ! isWordChar( ln->text[ c ] ) ) {
+        while( c < ln->len && ! isMoveChar( ln->text[ c ], inSymbol ) ) {
             c ++;
             }
         if( c < ln->len ) {
@@ -703,7 +717,7 @@ static void forwardWordPos( int  *ioLine,
         l ++;
         c = 0;
         }
-    while( c < lineAt( l )->len && isWordChar( lineAt( l )->text[ c ] ) ) {
+    while( c < lineAt( l )->len && isMoveChar( lineAt( l )->text[ c ], inSymbol ) ) {
         c ++;
         }
     *ioLine = l;
@@ -713,14 +727,15 @@ static void forwardWordPos( int  *ioLine,
 
 
 static void backwardWordPos( int  *ioLine,
-                             int  *ioCol ) {
+                             int  *ioCol,
+                             int   inSymbol ) {
     int  l  =  *ioLine;
     int  c  =  *ioCol;
 
     while( 1 ) {
         Line  *ln  =  lineAt( l );
 
-        while( c > 0 && ! isWordChar( ln->text[ c - 1 ] ) ) {
+        while( c > 0 && ! isMoveChar( ln->text[ c - 1 ], inSymbol ) ) {
             c --;
             }
         if( c > 0 ) {
@@ -732,7 +747,7 @@ static void backwardWordPos( int  *ioLine,
         l --;
         c = lineAt( l )->len;
         }
-    while( c > 0 && isWordChar( lineAt( l )->text[ c - 1 ] ) ) {
+    while( c > 0 && isMoveChar( lineAt( l )->text[ c - 1 ], inSymbol ) ) {
         c --;
         }
     *ioLine = l;
@@ -747,7 +762,7 @@ static void cmdForwardWord( void ) {
 
     beginMove();
     getCur( &l, &c );
-    forwardWordPos( &l, &c );
+    forwardWordPos( &l, &c, 0 );
     setCur( l, c );
     }
 
@@ -759,7 +774,7 @@ static void cmdBackwardWord( void ) {
 
     beginMove();
     getCur( &l, &c );
-    backwardWordPos( &l, &c );
+    backwardWordPos( &l, &c, 0 );
     setCur( l, c );
     }
 
@@ -922,7 +937,7 @@ static void cmdForwardSexp( void ) {
         setCur( ml, mc + 1 );
         }
     else {
-        forwardWordPos( &l, &c );
+        forwardWordPos( &l, &c, 1 );
         setCur( l, c );
         }
     }
@@ -951,7 +966,7 @@ static void cmdBackwardSexp( void ) {
         }
     else {
         getCur( &l, &c );
-        backwardWordPos( &l, &c );
+        backwardWordPos( &l, &c, 1 );
         setCur( l, c );
         }
     }
@@ -1258,7 +1273,7 @@ static void cmdKillWordForward( void ) {
     getCur( &l, &c );
     el = l;
     ec = c;
-    forwardWordPos( &el, &ec );
+    forwardWordPos( &el, &ec, 0 );
     killRange( l, c, el, ec, 0 );
     }
 
@@ -1276,7 +1291,7 @@ static void cmdKillWordBackward( void ) {
     getCur( &l, &c );
     sl = l;
     sc = c;
-    backwardWordPos( &sl, &sc );
+    backwardWordPos( &sl, &sc, 0 );
     killRange( sl, sc, l, c, 1 );
     }
 
@@ -2444,7 +2459,9 @@ static void dabScanLine( TextBuffer  *inTB,
 
 
 
-static void dabCollect( void ) {
+/* inMinibuffer:  the word being completed is in the minibuffer, so
+   the whole cursor line of the buffer is fair game */
+static void dabCollect( int  inMinibuffer ) {
     TextBuffer  *tb   =  B();
     int          i;
     int          b;
@@ -2452,8 +2469,15 @@ static void dabCollect( void ) {
 
     /* outward from the cursor in both directions at once, so matches
        come nearest first;  at equal distance the one above wins */
-    dabScanLine( tb, dabLine, 1, dabStartCol );
-    dabScanLine( tb, dabLine, 0, dabStartCol + (int)strlen( dabPrefix ) );
+    if( inMinibuffer ) {
+        dabScanLine( tb, dabLine, 1, dabStartCol );
+        dabScanLine( tb, dabLine, 0, dabStartCol );
+        }
+    else {
+        dabScanLine( tb, dabLine, 1, dabStartCol );
+        dabScanLine( tb, dabLine, 0,
+                     dabStartCol + (int)strlen( dabPrefix ) );
+        }
     for( i = 1;
          ( dabLine - i >= 0 || dabLine + i < tb->numLines )
          && dabNum < max;
@@ -2509,7 +2533,7 @@ static void cmdDabbrev( void ) {
         dabStartCol = s;
         dabInsertedLen = plen;
         dabIndex = -1;
-        dabCollect();
+        dabCollect( 0 );
         if( dabNum == 0 ) {
             ed_errorMessage( "No expansion for \"%s\"", dabPrefix );
             return;
@@ -3557,6 +3581,9 @@ static void bufferCandidates( void ) {
 
 static void commandCandidates( void );
 
+static int  mbDabActive;
+static int  histIndex;
+
 static void refreshCandidates( void ) {
     switch( ed.mbMode ) {
         case MB_FIND_FILE:
@@ -3588,6 +3615,8 @@ static void startPrompt( int          inMode,
     ed.mbCursor = (int)strlen( ed.mbText );
     ed.yesNoAction = 0;
     ed.message[ 0 ] = '\0';
+    mbDabActive = 0;
+    histIndex = -1;
     refreshCandidates();
     }
 
@@ -4154,6 +4183,171 @@ static void cmdHelp( void ) {
    Minibuffer input
    ------------------------------------------------------------------ */
 
+/* ---- M-/ inside a minibuffer prompt ----
+   Same candidates as in the text (nearest to the buffer's cursor
+   first, then other buffers), but the word lives in mbText.
+   mbDabActive says the last minibuffer key was M-/, so the next one
+   cycles;  any other key or typed text clears it. */
+
+static int  mbDabActive  =  0;
+static int  mbDabStart;
+static int  mbDabLen;
+
+
+
+static void mbReplaceSpan( int          inStart,
+                           int          inLen,
+                           const char  *inWith ) {
+    int  wl   =  (int)strlen( inWith );
+    int  len  =  (int)strlen( ed.mbText );
+
+    if( len - inLen + wl >= MB_TEXT_MAX - 1 ) {
+        return;
+        }
+    memmove( ed.mbText + inStart + wl, ed.mbText + inStart + inLen,
+             (size_t)( len - inStart - inLen + 1 ) );
+    memcpy( ed.mbText + inStart, inWith, (size_t)wl );
+    ed.mbCursor = inStart + wl;
+    mbDabLen = wl;
+    }
+
+
+
+static void mbDabbrev( void ) {
+    if( ! mbDabActive ) {
+        int  s  =  ed.mbCursor;
+        int  plen;
+        int  l;
+        int  c;
+
+        while( s > 0 && syn_isIdentChar( ed.mbText[ s - 1 ] ) ) {
+            s --;
+            }
+        plen = ed.mbCursor - s;
+        if( plen == 0 || plen > 200 ) {
+            ed_errorMessage( "No word to complete" );
+            return;
+            }
+        memcpy( dabPrefix, ed.mbText + s, (size_t)plen );
+        dabPrefix[ plen ] = '\0';
+        dabClear();
+        getCur( &l, &c );
+        dabLine = l;
+        dabStartCol = c;
+        dabIndex = -1;
+        dabCollect( 1 );
+        if( dabNum == 0 ) {
+            ed_errorMessage( "No expansion for \"%s\"", dabPrefix );
+            return;
+            }
+        mbDabStart = s;
+        mbDabLen = plen;
+        mbDabActive = 1;
+        }
+    dabIndex ++;
+    if( dabIndex >= dabNum ) {
+        mbReplaceSpan( mbDabStart, mbDabLen, dabPrefix );
+        dabIndex = -1;
+        ed_message( "No further expansions (back to \"%s\")", dabPrefix );
+        return;
+        }
+    mbReplaceSpan( mbDabStart, mbDabLen, dabCands[ dabIndex ] );
+    ed_message( "Expansion %d of %d  (M-/ again for next)", dabIndex + 1,
+                dabNum );
+    }
+
+
+
+/* ---- minibuffer history (query replace:  one list for the targets,
+   one for the replacements;  Up = older, Down = newer) ---- */
+
+#define HIST_MAX  64
+
+typedef struct History {
+        char  *items[ HIST_MAX ];
+        int    num;
+    } History;
+
+static History   replaceFromHist;
+static History   replaceToHist;
+/* -1:  showing the text being typed (kept in histDraft) */
+static int       histIndex  =  -1;
+static char      histDraft[ MB_TEXT_MAX ];
+
+
+
+static History *currentHistory( void ) {
+    if( ed.mbMode == MB_REPLACE_FROM ) {
+        return &replaceFromHist;
+        }
+    if( ed.mbMode == MB_REPLACE_TO ) {
+        return &replaceToHist;
+        }
+    return NULL;
+    }
+
+
+
+/* newest first, no duplicates */
+static void histAdd( History     *inH,
+                     const char  *inText ) {
+    int    i;
+    char  *item  =  NULL;
+
+    for( i = 0;
+         i < inH->num;
+         i ++ ) {
+        if( strcmp( inH->items[ i ], inText ) == 0 ) {
+            item = inH->items[ i ];
+            break;
+            }
+        }
+    if( item == NULL ) {
+        item = xstrdup( inText );
+        if( inH->num == HIST_MAX ) {
+            free( inH->items[ HIST_MAX - 1 ] );
+            i = HIST_MAX - 1;
+            }
+        else {
+            i = inH->num;
+            inH->num ++;
+            }
+        }
+    memmove( inH->items + 1, inH->items, (size_t)i * sizeof( char * ) );
+    inH->items[ 0 ] = item;
+    }
+
+
+
+/* inDir +1 = older, -1 = newer */
+static void histMove( History  *inH,
+                      int       inDir ) {
+    int  i  =  histIndex + inDir;
+
+    if( histIndex < 0 ) {
+        strcpy( histDraft, ed.mbText );
+        /* the prompt may start out showing the newest entry */
+        if( inDir > 0 && inH->num > 0
+            && strcmp( inH->items[ 0 ], ed.mbText ) == 0 ) {
+            i ++;
+            }
+        }
+    if( i >= inH->num ) {
+        ed_errorMessage( "Beginning of history" );
+        return;
+        }
+    if( i < -1 ) {
+        ed_errorMessage( "End of history" );
+        return;
+        }
+    histIndex = i;
+    strcpy( ed.mbText, i < 0 ? histDraft : inH->items[ i ] );
+    ed.mbCursor = (int)strlen( ed.mbText );
+    ed.message[ 0 ] = '\0';
+    }
+
+
+
 static void mbInsert( const char  *inText ) {
     int  n  =  (int)strlen( inText );
     int  l  =  (int)strlen( ed.mbText );
@@ -4165,6 +4359,7 @@ static void mbInsert( const char  *inText ) {
              (size_t)( l - ed.mbCursor + 1 ) );
     memcpy( ed.mbText + ed.mbCursor, inText, (size_t)n );
     ed.mbCursor += n;
+    mbDabActive = 0;
     refreshCandidates();
     }
 
@@ -4406,6 +4601,7 @@ static void mbAccept( void ) {
                 return;
                 }
             scopy( ed.replaceFrom, text, sizeof( ed.replaceFrom ) );
+            histAdd( &replaceFromHist, ed.replaceFrom );
             {
                 char  p[ 400 ];
 
@@ -4415,6 +4611,7 @@ static void mbAccept( void ) {
             break;
         case MB_REPLACE_TO:
             scopy( ed.replaceTo, text, sizeof( ed.replaceTo ) );
+            histAdd( &replaceToHist, ed.replaceTo );
             ed.replaceCount = 0;
             tb_beginGroup( B() );
             queryReplaceNext();
@@ -4479,6 +4676,28 @@ static int mbKey( int  inKey,
             }
         /* y n ! . q arrive as text input */
         return 0;
+        }
+
+    if( alt && ! ctrl && inKey == SDLK_SLASH ) {
+        /* complete a word from the text, in the free-text prompts */
+        if( ed.mbMode == MB_REPLACE_FROM || ed.mbMode == MB_REPLACE_TO
+            || ed.mbMode == MB_COMPILE || ed.mbMode == MB_DEBUG_COMMAND ) {
+            mbDabbrev();
+            }
+        return 1;
+        }
+    if( inKey != SDLK_LSHIFT && inKey != SDLK_RSHIFT && inKey != SDLK_LCTRL
+        && inKey != SDLK_RCTRL && inKey != SDLK_LALT
+        && inKey != SDLK_RALT ) {
+        mbDabActive = 0;
+        }
+    if( currentHistory() != NULL
+        && ( inKey == SDLK_UP || inKey == SDLK_DOWN
+             || ( ctrl && ( inKey == SDLK_p || inKey == SDLK_n ) )
+             || ( alt && ( inKey == SDLK_p || inKey == SDLK_n ) ) ) ) {
+        histMove( currentHistory(),
+                  ( inKey == SDLK_UP || inKey == SDLK_p ) ? 1 : -1 );
+        return 1;
         }
 
     if( ( ctrl && inKey == SDLK_g ) || inKey == SDLK_ESCAPE ) {

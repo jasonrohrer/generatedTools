@@ -1,29 +1,10 @@
 Excellent work!
 
 
---When formatting block comments, it should auto-indent everything inside the comment by two spaces, like this:
+--When doing search-and-replace (M-%), the field at the bottom that you type into should respond to auto-complete (M-/) by searching back through the document in both directions (and other open documents), just like it does when typing text.
 
+--Search-and-replace should keep a history (for both the target and the replacement) and permit cycling through with up and down arrow.
 
-/*
-  Test comment.
-  This is a test.
-
-  This is another test.
-
-
-  This is another test.
-*/
-
-
-And if the user manually indents more than that, that indent should be continued on subsequent lines (as long as there is no black line in between).  You're already doing this correctly, so don't break it.  The main thing is auto-indenting everything in a block comment by 2 spaces by default.
-
-/*
-  Here is a quote:
-
-      Quote first line
-	  Quote second line
-
-  Text after the quote.
-*/
+--Ctrl-arrow (or ctrl-backspace) currently correctly honors punctuation as well as spaces when "eating" the next word.  It should also honor underscore.  Currentlyl ctrl-backspace on NUM_SHOP_SLOTS will eat the whole thing, but it should just eat SLOTS... i.e.. _ should be treated just like - for ctrl-jumping.  I.e... just add _ to your "punctuation list" that you are using for this purpose.
 
 
